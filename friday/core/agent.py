@@ -66,12 +66,16 @@ async def voice_run(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
     tier: Tier = Tier.LOCAL,
+    fallback_tier: Tier = Tier.MEDIUM,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Lightweight agent turn for voice mode — no tools, short responses.
 
     Uses VOICE_SYSTEM_PROMPT to enforce spoken-language brevity and avoid
     Gemma/Ollama tool-call format issues on the LOCAL tier.
-    Falls back to HEAVY tier (Claude) for queries Gemma can't handle.
+    Escalates to fallback_tier (free Groq/Gemini by default) when the local
+    model returns garbage — never Claude unless the caller opts in. If the
+    fallback is unavailable (no keys / offline), the local reply is kept rather
+    than raising, so voice degrades instead of crashing.
     """
     messages: list[dict[str, Any]] = [{"role": "system", "content": VOICE_SYSTEM_PROMPT}]
     if history:
@@ -82,11 +86,13 @@ async def voice_run(
     msg = response.choices[0].message
     reply = (msg.content or "").strip()
 
-    # If Gemma returns empty or garbled output, escalate to Claude
+    # If Gemma returns empty or garbled (tool-call JSON) output, escalate.
     if not reply or reply.startswith("{"):
-        response = await complete(messages, tier=Tier.HEAVY, tools=None, max_tokens=128)
-        msg = response.choices[0].message
-        reply = (msg.content or "").strip()
+        try:
+            response = await complete(messages, tier=fallback_tier, tools=None, max_tokens=128)
+            reply = (response.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001 — fallback tier unavailable; keep local reply
+            pass
 
     messages.append({"role": "assistant", "content": reply})
     return reply, messages[1:]
@@ -96,12 +102,15 @@ async def voice_stream(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
     tier: Tier = Tier.LOCAL,
+    fallback_tier: Tier = Tier.MEDIUM,
 ) -> AsyncIterator[str]:
     """Stream voice response token-by-token.
 
     Yields text tokens as they arrive so TTS can start on the first sentence
     before the LLM finishes generating — reduces time-to-first-audio.
-    Falls back to HEAVY if LOCAL returns garbage.
+    Escalates to fallback_tier (free Groq/Gemini by default) if the local model
+    returns garbage — never Claude unless the caller opts in. A failed fallback
+    (no keys / offline) is swallowed so the stream ends cleanly.
     """
     from friday.core.router import stream_complete
 
@@ -115,10 +124,13 @@ async def voice_stream(
         full_reply += token
         yield token
 
-    # If Gemma returned garbage (tool call JSON), escalate to HEAVY
+    # If Gemma returned garbage (tool-call JSON), escalate to the free fallback.
     if not full_reply.strip() or full_reply.strip().startswith("{"):
-        async for token in stream_complete(messages, tier=Tier.HEAVY, max_tokens=128):
-            yield token
+        try:
+            async for token in stream_complete(messages, tier=fallback_tier, max_tokens=128):
+                yield token
+        except Exception:  # noqa: BLE001 — fallback tier unavailable; end stream cleanly
+            pass
 
 
 async def _run_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
