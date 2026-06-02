@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from friday.core.router import Tier, complete
+from friday.memory.store import get_store
 from friday.skills import registry
 
 SYSTEM_PROMPT = """You are Sutra — a voice-native ambient AI assistant.
@@ -35,10 +36,23 @@ async def run(
     registry.autodiscover()
     tools = registry.all_tools()
 
-    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Pull relevant long-term memory into context (no-op if memory unavailable).
+    system_content = SYSTEM_PROMPT
+    memories = await get_store().recall(user_input, limit=5)
+    if memories:
+        system_content += "\n\nRelevant long-term memory (may be incomplete):\n" + "\n".join(
+            f"- {m}" for m in memories
+        )
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
+
+    async def _finish(reply: str) -> tuple[str, list[dict[str, Any]]]:
+        # Persist the turn (no-op/instant if memory is unavailable).
+        await get_store().remember(f"User: {user_input}\nSutra: {reply}", source="conversation")
+        return reply, messages[1:]  # strip system from returned history
 
     for _ in range(max_tool_rounds):
         response = await complete(messages, tier=tier, tools=tools or None)
@@ -48,7 +62,7 @@ async def run(
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
             # No more tool calls — done
-            return msg.content or "", messages[1:]  # strip system from returned history
+            return await _finish(msg.content or "")
 
         # Execute all tool calls (in parallel where possible)
         tool_results = await _run_tool_calls(tool_calls)
@@ -59,7 +73,7 @@ async def run(
     response = await complete(messages, tier=tier, tools=None)
     msg = response.choices[0].message
     messages.append({"role": "assistant", "content": msg.content})
-    return msg.content or "", messages[1:]
+    return await _finish(msg.content or "")
 
 
 async def voice_run(

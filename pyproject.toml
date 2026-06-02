@@ -36,7 +36,8 @@ voice = [
     "scipy>=1.13",
 ]
 memory = [
-    "graphiti-core>=0.3",
+    "graphiti-core>=0.29",
+    "falkordb>=1.1",
     "qdrant-client>=1.9",
     "redis>=5",
 ]
