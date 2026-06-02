@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "friday-os"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "litellm>=1.40",
+    "anthropic>=0.40",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+    "keyring>=25",
+    "rich>=13",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+search = ["httpx>=0.27"]
+voice = [
+    "faster-whisper>=1.0",
+    "kokoro-onnx>=0.3",
+    "pipecat-ai>=0.0.50",
+    "sounddevice>=0.4",
+]
+memory = [
+    "graphiti-core>=0.3",
+    "qdrant-client>=1.9",
+    "redis>=5",
+]
+action = [
+    "playwright>=1.44",
+    "open-interpreter>=0.3",
+]
+
+[project.scripts]
+sutra = "friday.cli:app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
