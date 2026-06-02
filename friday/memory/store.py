@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 _OLLAMA_BASE = os.getenv("GRAPHITI_LLM_BASE_URL", "http://localhost:11434/v1")
 _LLM_API_KEY = os.getenv("GRAPHITI_LLM_API_KEY", "ollama")  # dummy for Ollama
-_LLM_MODEL = os.getenv("GRAPHITI_LLM_MODEL", "gemma3:4b")
+# qwen2.5:14b for extraction — gemma3:4b drops relationships, qwen2.5:7b leaks
+# Chinese; 14b extracts cleanly (see Phase 1.3 notes). gemma stays the voice handler.
+_LLM_MODEL = os.getenv("GRAPHITI_LLM_MODEL", "qwen2.5:14b")
 _EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 _EMBED_DIM = int(os.getenv("EMBED_DIM", "768"))
 _FALKOR_HOST = os.getenv("FALKORDB_HOST", "localhost")
