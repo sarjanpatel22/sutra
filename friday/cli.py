@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Any
 
 import typer
@@ -12,7 +11,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
-from rich import print as rprint
 
 from friday.core.router import Tier, get_budget
 
@@ -32,7 +30,7 @@ async def _chat_loop(tier: Tier) -> None:
 
     console.print(Panel(
         "[bold cyan]Sutra[/bold cyan] — ready.\n"
-        f"[dim]tier: {tier.value}  |  /tier <name>  /skills  /budget  /clear  /quit[/dim]",
+        f"[dim]tier: {tier.value}  |  /tier <name>  /skills  /budget  /status  /clear  /quit[/dim]",
         border_style="cyan",
     ))
 
@@ -75,9 +73,15 @@ async def _chat_loop(tier: Tier) -> None:
             elif cmd == "budget":
                 b = get_budget()
                 console.print(
-                    f"[dim]Daily: ${b.daily_spent:.4f} / ${b.daily_limit:.2f}  "
-                    f"Monthly: ${b.monthly_spent:.4f} / ${b.monthly_limit:.2f}[/dim]"
+                    f"[dim]Daily: ${b.daily_spent:.4f} / ${b.daily_limit:.2f} ({b.daily_pct:.1f}%)  "
+                    f"Monthly: ${b.monthly_spent:.4f} / ${b.monthly_limit:.2f} ({b.monthly_pct:.1f}%)  "
+                    f"| Tokens: {b.daily_tokens:,} daily / {b.monthly_tokens:,} monthly[/dim]"
                 )
+            elif cmd == "status":
+                from friday.core.monitor import print_report, run_health_checks
+                with console.status("[cyan]running health checks…[/cyan]"):
+                    report = await run_health_checks()
+                print_report(report)
             else:
                 console.print(f"[yellow]Unknown command: /{cmd}[/yellow]")
             continue
@@ -122,6 +126,58 @@ def show_skills() -> None:
     from friday.skills.registry import autodiscover, dump_registry
     autodiscover()
     console.print_json(dump_registry())
+
+
+@app.command()
+def status() -> None:
+    """Run a one-shot health check and print results."""
+    from friday.core.monitor import print_report, run_health_checks
+
+    async def _run() -> None:
+        report = await run_health_checks()
+        print_report(report)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def monitor(
+    interval: int = typer.Option(300, "--interval", "-i", help="Check interval in seconds"),
+) -> None:
+    """Run the health + budget watchdog on a loop (Ctrl+C to stop)."""
+    from friday.core.monitor import run_watchdog
+    asyncio.run(run_watchdog(interval_s=interval))
+
+
+@app.command()
+def budget() -> None:
+    """Print current API spend vs limits."""
+    b = get_budget()
+    t = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+    t.add_column("Scope")
+    t.add_column("Spent", justify="right")
+    t.add_column("Limit", justify="right")
+    t.add_column("Pct", justify="right")
+    t.add_column("Tokens", justify="right")
+
+    daily_color = "red" if b.daily_pct >= 85 else "yellow" if b.daily_pct >= 60 else "green"
+    monthly_color = "red" if b.monthly_pct >= 85 else "yellow" if b.monthly_pct >= 60 else "green"
+
+    t.add_row(
+        "Daily",
+        f"${b.daily_spent:.4f}",
+        f"${b.daily_limit:.2f}",
+        f"[{daily_color}]{b.daily_pct:.1f}%[/{daily_color}]",
+        f"{b.daily_tokens:,}",
+    )
+    t.add_row(
+        "Monthly",
+        f"${b.monthly_spent:.4f}",
+        f"${b.monthly_limit:.2f}",
+        f"[{monthly_color}]{b.monthly_pct:.1f}%[/{monthly_color}]",
+        f"{b.monthly_tokens:,}",
+    )
+    console.print(t)
 
 
 if __name__ == "__main__":

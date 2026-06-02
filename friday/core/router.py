@@ -1,11 +1,14 @@
-"""LiteLLM tiered router with fallback chain and budget tracking."""
+"""LiteLLM tiered router with fallback chain, budget tracking, and alert callbacks."""
 
 from __future__ import annotations
 
+import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import litellm
@@ -13,17 +16,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-litellm.drop_params = True  # ignore unsupported params per provider
+litellm.drop_params = True
+
+_STATE_DIR = Path.home() / ".local" / "share" / "friday"
+_BUDGET_FILE = _STATE_DIR / "budget.json"
+
+ALERT_THRESHOLD = float(os.getenv("BUDGET_ALERT_THRESHOLD", "0.85"))
 
 
 class Tier(str, Enum):
-    LOCAL = "local"       # Gemma 4 E4B via Ollama — handles ~70% of queries
-    MEDIUM = "medium"     # Groq Llama 3.3 70B or Gemini Flash — free tier
-    HEAVY = "heavy"       # Claude Sonnet — complex reasoning
-    MAX = "max"           # Claude Opus — hardest 5-10%
+    LOCAL = "local"
+    MEDIUM = "medium"
+    HEAVY = "heavy"
+    MAX = "max"
 
 
-# Model identifiers per tier
 TIER_MODELS: dict[Tier, list[str]] = {
     Tier.LOCAL: [
         os.getenv("ROUTER_LOCAL_MODEL", "ollama/gemma2:4b"),
@@ -34,23 +41,38 @@ TIER_MODELS: dict[Tier, list[str]] = {
     ],
     Tier.HEAVY: [
         os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),
-        "groq/llama-3.3-70b-versatile",   # fallback if Claude down
+        "groq/llama-3.3-70b-versatile",
     ],
     Tier.MAX: [
         os.getenv("ROUTER_CLOUD_MAX", "claude-opus-4-8"),
-        os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),  # fallback
+        os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),
     ],
 }
 
-# Approximate cost per 1K tokens (input, output) in USD
 _COST_PER_1K: dict[str, tuple[float, float]] = {
-    "claude-opus-4-8":                    (0.015, 0.075),
-    "claude-sonnet-4-6":                  (0.003, 0.015),
-    "claude-haiku-4-5":                   (0.0008, 0.004),
-    "groq/llama-3.3-70b-versatile":       (0.0, 0.0),
+    "claude-opus-4-8":                       (0.015, 0.075),
+    "claude-sonnet-4-6":                     (0.003, 0.015),
+    "claude-haiku-4-5":                      (0.0008, 0.004),
+    "groq/llama-3.3-70b-versatile":          (0.0, 0.0),
     "gemini/gemini-2.5-flash-preview-04-17": (0.0, 0.0),
-    "ollama/gemma2:4b":                   (0.0, 0.0),
+    "ollama/gemma2:4b":                      (0.0, 0.0),
 }
+
+# Registered alert callbacks: fn(scope, pct_used) where scope is "daily"|"monthly"
+_alert_callbacks: list[Callable[[str, float], None]] = []
+
+
+def register_alert(fn: Callable[[str, float], None]) -> None:
+    """Register a callback invoked when spend crosses ALERT_THRESHOLD."""
+    _alert_callbacks.append(fn)
+
+
+def _fire_alerts(scope: str, pct: float) -> None:
+    for cb in _alert_callbacks:
+        try:
+            cb(scope, pct)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @dataclass
@@ -59,20 +81,93 @@ class BudgetTracker:
     monthly_limit: float = float(os.getenv("MONTHLY_BUDGET_USD", "30.0"))
     _daily_spent: float = field(default=0.0, init=False)
     _monthly_spent: float = field(default=0.0, init=False)
+    _daily_tokens: int = field(default=0, init=False)
+    _monthly_tokens: int = field(default=0, init=False)
     _day_start: float = field(default_factory=time.time, init=False)
+    _month_start: float = field(default_factory=time.time, init=False)
+    # Track whether alert has been fired this period to avoid spam
+    _daily_alert_fired: bool = field(default=False, init=False)
+    _monthly_alert_fired: bool = field(default=False, init=False)
 
-    def record(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        cost_in, cost_out = _COST_PER_1K.get(model, (0.005, 0.015))
-        cost = (input_tokens / 1000) * cost_in + (output_tokens / 1000) * cost_out
-        self._daily_spent += cost
-        self._monthly_spent += cost
-        return cost
+    def __post_init__(self) -> None:
+        self._load()
 
-    def can_afford(self, tier: Tier) -> bool:
-        # Reset daily counter if a new day started
+    def _load(self) -> None:
+        if not _BUDGET_FILE.exists():
+            return
+        try:
+            data = json.loads(_BUDGET_FILE.read_text())
+            now = time.time()
+            # Restore daily if same calendar day
+            if now - data.get("day_start", 0) < 86400:
+                self._daily_spent = data.get("daily_spent", 0.0)
+                self._daily_tokens = data.get("daily_tokens", 0)
+                self._day_start = data.get("day_start", now)
+                self._daily_alert_fired = data.get("daily_alert_fired", False)
+            # Restore monthly if same 30-day window
+            if now - data.get("month_start", 0) < 30 * 86400:
+                self._monthly_spent = data.get("monthly_spent", 0.0)
+                self._monthly_tokens = data.get("monthly_tokens", 0)
+                self._month_start = data.get("month_start", now)
+                self._monthly_alert_fired = data.get("monthly_alert_fired", False)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _save(self) -> None:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _BUDGET_FILE.write_text(json.dumps({
+            "daily_spent": self._daily_spent,
+            "daily_tokens": self._daily_tokens,
+            "monthly_spent": self._monthly_spent,
+            "monthly_tokens": self._monthly_tokens,
+            "day_start": self._day_start,
+            "month_start": self._month_start,
+            "daily_alert_fired": self._daily_alert_fired,
+            "monthly_alert_fired": self._monthly_alert_fired,
+        }, indent=2))
+
+    def _reset_day_if_needed(self) -> None:
         if time.time() - self._day_start > 86400:
             self._daily_spent = 0.0
+            self._daily_tokens = 0
             self._day_start = time.time()
+            self._daily_alert_fired = False
+
+    def _reset_month_if_needed(self) -> None:
+        if time.time() - self._month_start > 30 * 86400:
+            self._monthly_spent = 0.0
+            self._monthly_tokens = 0
+            self._month_start = time.time()
+            self._monthly_alert_fired = False
+
+    def record(self, model: str, input_tokens: int, output_tokens: int) -> float:
+        self._reset_day_if_needed()
+        self._reset_month_if_needed()
+        cost_in, cost_out = _COST_PER_1K.get(model, (0.005, 0.015))
+        cost = (input_tokens / 1000) * cost_in + (output_tokens / 1000) * cost_out
+        total_tokens = input_tokens + output_tokens
+        self._daily_spent += cost
+        self._monthly_spent += cost
+        self._daily_tokens += total_tokens
+        self._monthly_tokens += total_tokens
+        self._check_thresholds()
+        self._save()
+        return cost
+
+    def _check_thresholds(self) -> None:
+        if self.daily_limit > 0:
+            daily_pct = self._daily_spent / self.daily_limit
+            if daily_pct >= ALERT_THRESHOLD and not self._daily_alert_fired:
+                self._daily_alert_fired = True
+                _fire_alerts("daily", daily_pct)
+        if self.monthly_limit > 0:
+            monthly_pct = self._monthly_spent / self.monthly_limit
+            if monthly_pct >= ALERT_THRESHOLD and not self._monthly_alert_fired:
+                self._monthly_alert_fired = True
+                _fire_alerts("monthly", monthly_pct)
+
+    def can_afford(self, tier: Tier) -> bool:
+        self._reset_day_if_needed()
         if self._daily_spent >= self.daily_limit:
             return False
         if self._monthly_spent >= self.monthly_limit:
@@ -86,6 +181,22 @@ class BudgetTracker:
     @property
     def monthly_spent(self) -> float:
         return self._monthly_spent
+
+    @property
+    def daily_tokens(self) -> int:
+        return self._daily_tokens
+
+    @property
+    def monthly_tokens(self) -> int:
+        return self._monthly_tokens
+
+    @property
+    def daily_pct(self) -> float:
+        return (self._daily_spent / self.daily_limit * 100) if self.daily_limit else 0.0
+
+    @property
+    def monthly_pct(self) -> float:
+        return (self._monthly_spent / self.monthly_limit * 100) if self.monthly_limit else 0.0
 
 
 _budget = BudgetTracker()
@@ -105,14 +216,9 @@ async def complete(
     tools: list[dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Route a completion request through the tier's model chain with fallback.
-
-    Falls back to the next model in the chain on failure, then escalates to
-    the next tier if all models in the chain fail.
-    """
+    """Route a completion through the tier's model chain with automatic fallback."""
     models = list(TIER_MODELS[tier])
 
-    # Budget pressure: downgrade cloud tiers to medium if daily cap hit
     if tier in (Tier.HEAVY, Tier.MAX) and not _budget.can_afford(tier):
         models = list(TIER_MODELS[Tier.MEDIUM])
 
@@ -151,7 +257,7 @@ async def stream_complete(
     tier: Tier = Tier.HEAVY,
     **kwargs: Any,
 ) -> AsyncIterator[str]:
-    """Convenience wrapper that yields text chunks from a streaming completion."""
+    """Yield text chunks from a streaming completion."""
     response = await complete(messages, tier=tier, stream=True, **kwargs)
     async for chunk in response:
         delta = chunk.choices[0].delta
