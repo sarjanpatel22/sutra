@@ -40,6 +40,12 @@ class TTS:
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
         model_path = os.getenv("KOKORO_MODEL_PATH", str(_ONNX_MODEL))
         voices_path = os.getenv("KOKORO_VOICES_PATH", str(_VOICES_FILE))
+        # Default to GPU — CUDAExecutionProvider confirmed working
+        if "ONNX_PROVIDER" not in os.environ:
+            os.environ["ONNX_PROVIDER"] = "CUDAExecutionProvider"
+        # Suppress verbose onnxruntime session warnings (memcpy, node assignment)
+        import onnxruntime as rt
+        rt.set_default_logger_severity(3)  # ERROR only
         self._kokoro = Kokoro(model_path, voices_path)
         self._voice = voice
         self._speed = speed

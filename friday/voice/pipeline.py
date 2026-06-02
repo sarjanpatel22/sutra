@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue as q_mod
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -24,15 +26,45 @@ from friday.voice.vad import VAD
 _log = logging.getLogger("sutra.voice")
 _LATENCY_LOG = Path.home() / ".local" / "share" / "friday" / "voice_latency.jsonl"
 
+_stt_instance = None
+_tts_instance = None
+
+
+def _get_stt():
+    global _stt_instance
+    if _stt_instance is None:
+        from friday.voice.stt import STT
+        _stt_instance = STT()
+    return _stt_instance
+
+
+def _get_tts():
+    global _tts_instance
+    if _tts_instance is None:
+        from friday.voice.tts import TTS
+        _tts_instance = TTS()
+    return _tts_instance
+
+
+def prewarm() -> None:
+    """Pre-load STT and TTS models so first voice turn has no cold-start penalty."""
+    import numpy as np
+    _log.info("pre-warming STT...")
+    stt = _get_stt()
+    stt.transcribe(np.zeros(16000, dtype=np.int16))
+    _log.info("pre-warming TTS...")
+    tts = _get_tts()
+    tts.synthesize("warm")
+    _log.info("voice models ready")
+
 
 @dataclass
 class TurnLatency:
-    """Latency breakdown for one voice turn."""
-    vad_ms: float = 0.0         # time from speech-start to end-of-speech detection
-    stt_ms: float = 0.0         # Whisper transcription time
-    agent_ttft_ms: float = 0.0  # agent time-to-first-token
-    tts_first_ms: float = 0.0   # TTS first audio chunk
-    total_ms: float = 0.0       # wall time: speech-end → first audio
+    """Per-stage latency for one voice turn."""
+    stt_ms: float = 0.0
+    agent_ttft_ms: float = 0.0
+    tts_first_ms: float = 0.0
+    total_ms: float = 0.0
 
 
 @dataclass
@@ -50,7 +82,6 @@ def _log_latency(turn: VoiceTurn) -> None:
         f.write(json.dumps({
             "ts": turn.timestamp,
             "transcript": turn.transcript[:80],
-            "vad_ms": round(turn.latency.vad_ms),
             "stt_ms": round(turn.latency.stt_ms),
             "agent_ttft_ms": round(turn.latency.agent_ttft_ms),
             "tts_first_ms": round(turn.latency.tts_first_ms),
@@ -60,53 +91,35 @@ def _log_latency(turn: VoiceTurn) -> None:
 
 async def process_audio(
     audio: np.ndarray,
-    history: list[dict],
-    *,
-    stt_latency_hint: float = 0.0,
-) -> tuple[str, list[dict], TurnLatency]:
-    """STT → agent → streaming TTS → play. Returns (reply, updated_history, latency)."""
-    from friday.core.agent import run
-    from friday.core.router import Tier
-    from friday.voice.audio import play_audio
-    from friday.voice.stt import get_stt
-    from friday.voice.tts import get_tts
+    history: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]], TurnLatency]:
+    """STT → streaming agent → streaming TTS → play.
 
-    lat = TurnLatency(stt_ms=stt_latency_hint)
-    t_total_start = time.monotonic()
+    Returns (reply_text, updated_history, latency).
+    history is extended in-place and also returned.
+    """
+    from friday.core.agent import voice_stream
+    from friday.core.router import Tier
+
+    lat = TurnLatency()
+    t_total = time.monotonic()
 
     # STT
+    stt = _get_stt()
     t0 = time.monotonic()
-    stt = get_stt()
     result = stt.transcribe(audio)
     lat.stt_ms = (time.monotonic() - t0) * 1000
-    transcript = result.text
+    transcript = result.text.strip()
 
-    if not transcript.strip():
+    if not transcript:
         return "", history, lat
 
     _log.info("STT [%.0fms]: %s", lat.stt_ms, transcript)
 
-    # Agent streaming → TTS streaming → play
-    # Token stream from LLM feeds directly into TTS so playback starts
-    # on the first sentence boundary, not after the full reply arrives.
-    from friday.core.agent import voice_run, voice_stream
-    from friday.core.router import Tier
-
-    tts = get_tts()
-    reply_tokens: list[str] = []
-    first_audio = True
-    t_agent_start = time.monotonic()
-
-    async def _token_iter():
-        async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
-            reply_tokens.append(token)
-            yield token
-
-    # Run TTS streaming in a thread so async token iter can feed it
-    import threading, queue as q_mod
-
+    # Streaming agent → TTS worker thread → speaker
+    tts = _get_tts()
     token_queue: q_mod.Queue[str | None] = q_mod.Queue()
-    audio_queue: q_mod.Queue[object] = q_mod.Queue()
+    audio_queue: q_mod.Queue[Any] = q_mod.Queue()
 
     def tts_worker() -> None:
         def _gen():
@@ -115,43 +128,59 @@ async def process_audio(
                 if tok is None:
                     return
                 yield tok
-        for chunk in tts.stream(_gen()):
-            audio_queue.put(chunk)
-        audio_queue.put(None)  # sentinel
+        try:
+            for chunk in tts.stream(_gen()):
+                audio_queue.put(chunk)
+        except Exception as e:  # noqa: BLE001
+            _log.error("TTS error: %s", e)
+        finally:
+            audio_queue.put(None)
 
     tts_thread = threading.Thread(target=tts_worker, daemon=True)
     tts_thread.start()
 
-    # Feed tokens to TTS worker while collecting full reply
+    reply_tokens: list[str] = []
+    t_agent = time.monotonic()
+    first_token = True
+
     async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
         reply_tokens.append(token)
-        if not lat.agent_ttft_ms:
-            lat.agent_ttft_ms = (time.monotonic() - t_agent_start) * 1000
+        if first_token:
+            lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
+            first_token = False
         token_queue.put(token)
-    token_queue.put(None)  # signal TTS worker to flush
+    token_queue.put(None)  # signal TTS to flush and stop
 
-    # Play audio chunks as they arrive from TTS worker
+    reply = "".join(reply_tokens).strip()
+
+    # Play audio chunks as they arrive; bail if TTS thread dies
+    first_audio = True
     while True:
-        chunk = audio_queue.get()
+        try:
+            chunk = audio_queue.get(timeout=10.0)
+        except q_mod.Empty:
+            _log.warning("TTS audio queue timeout — TTS thread may have crashed")
+            break
         if chunk is None:
             break
         if first_audio:
-            lat.tts_first_ms = (time.monotonic() - t_agent_start) * 1000
-            lat.total_ms = (time.monotonic() - t_total_start) * 1000
+            lat.tts_first_ms = (time.monotonic() - t_agent) * 1000
+            lat.total_ms = (time.monotonic() - t_total) * 1000
             first_audio = False
         play_audio(chunk.audio, sample_rate=chunk.sample_rate, blocking=True)
 
-    tts_thread.join()
-    reply = "".join(reply_tokens).strip()
-    _log.info("Agent+TTS [%.0fms total]: %s", lat.total_ms, reply[:80])
+    tts_thread.join(timeout=5.0)
+
+    # Update history with this turn
+    history.append({"role": "user", "content": transcript})
+    history.append({"role": "assistant", "content": reply})
+
+    _log.info("Turn done — total=%.0fms reply=%r", lat.total_ms, reply[:60])
     return reply, history, lat
 
 
-async def push_to_talk_loop(history: list[dict] | None = None) -> None:
-    """Hold SPACE to record, release to get a spoken answer.
-
-    Runs until KeyboardInterrupt.
-    """
+async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None:
+    """Hold SPACE to record, release to get a spoken answer."""
     from pynput import keyboard
     from rich.console import Console
 
@@ -161,7 +190,10 @@ async def push_to_talk_loop(history: list[dict] | None = None) -> None:
     if history is None:
         history = []
 
-    console.print("[bold cyan]Voice mode[/bold cyan] — hold [bold]SPACE[/bold] to speak, [bold]Ctrl+C[/bold] to exit")
+    console.print("[bold cyan]Sutra voice[/bold cyan] — hold [bold]SPACE[/bold] to speak  [bold]Ctrl+C[/bold] to exit")
+    console.print("[dim]Pre-warming models…[/dim]", end="\r")
+    await asyncio.get_event_loop().run_in_executor(None, prewarm)
+    console.print("[dim]Ready.                [/dim]")
 
     stop_event = threading.Event()
     is_recording = threading.Event()
@@ -170,7 +202,6 @@ async def push_to_talk_loop(history: list[dict] | None = None) -> None:
         if key == keyboard.Key.space and not is_recording.is_set():
             is_recording.set()
             stop_event.clear()
-            console.print("[dim]● recording…[/dim]", end="\r")
 
     def on_release(key: keyboard.Key) -> None:
         if key == keyboard.Key.space:
@@ -183,19 +214,16 @@ async def push_to_talk_loop(history: list[dict] | None = None) -> None:
         while True:
             is_recording.wait()
             is_recording.clear()
+            console.print("[dim]● recording…[/dim]", end="\r")
 
-            t_speech_end = time.monotonic()
             audio = record_while_held(stop_event)
-            vad_ms = (time.monotonic() - t_speech_end) * 1000
 
-            if len(audio) < 8000:  # < 0.5s — too short, ignore
+            if len(audio) < 8000:
                 console.print("[dim]too short, ignored[/dim]")
                 continue
 
-            console.print("[cyan]processing…[/cyan]", end="\r")
-            reply, history, lat = await process_audio(
-                audio, history, stt_latency_hint=vad_ms
-            )
+            console.print("[cyan]processing…  [/cyan]", end="\r")
+            reply, history, lat = await process_audio(audio, history)
 
             if reply:
                 _log_latency(VoiceTurn(
@@ -205,7 +233,7 @@ async def push_to_talk_loop(history: list[dict] | None = None) -> None:
                 ))
                 console.print(
                     f"[dim]stt={lat.stt_ms:.0f}ms  "
-                    f"agent={lat.agent_ttft_ms:.0f}ms  "
+                    f"ttft={lat.agent_ttft_ms:.0f}ms  "
                     f"tts={lat.tts_first_ms:.0f}ms  "
                     f"total={lat.total_ms:.0f}ms[/dim]"
                 )
@@ -219,11 +247,8 @@ async def push_to_talk_loop(history: list[dict] | None = None) -> None:
         console.print("\n[dim]Voice mode off.[/dim]")
 
 
-async def vad_listen_loop(history: list[dict] | None = None) -> None:
-    """Continuous VAD mode — speaks automatically when silence detected.
-
-    More natural but requires clean mic environment.
-    """
+async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
+    """Continuous VAD mode — activates when speech is detected."""
     from rich.console import Console
 
     console = Console()
@@ -232,27 +257,22 @@ async def vad_listen_loop(history: list[dict] | None = None) -> None:
     if history is None:
         history = []
 
-    console.print(
-        "[bold cyan]Voice mode (VAD)[/bold cyan] — listening… [bold]Ctrl+C[/bold] to exit"
-    )
+    console.print("[bold cyan]Sutra voice (VAD)[/bold cyan] — listening  [bold]Ctrl+C[/bold] to exit")
+    console.print("[dim]Pre-warming models…[/dim]", end="\r")
+    await asyncio.get_event_loop().run_in_executor(None, prewarm)
+    console.print("[dim]Ready.            [/dim]")
 
     try:
         while True:
             console.print("[dim]listening…[/dim]", end="\r")
-            t0 = time.monotonic()
-            audio = record_with_vad(
-                vad_fn=vad,
-                silence_threshold_s=0.35,
-                max_duration_s=30.0,
-            )
-            vad_ms = (time.monotonic() - t0) * 1000
+            audio = record_with_vad(vad_fn=vad, silence_threshold_s=0.35, max_duration_s=30.0)
 
             if len(audio) < 8000:
                 await asyncio.sleep(0.1)
                 continue
 
-            console.print("[cyan]heard you, processing…[/cyan]", end="\r")
-            reply, history, lat = await process_audio(audio, history, stt_latency_hint=vad_ms)
+            console.print("[cyan]heard you…[/cyan]", end="\r")
+            reply, history, lat = await process_audio(audio, history)
 
             if reply:
                 _log_latency(VoiceTurn(
@@ -261,8 +281,8 @@ async def vad_listen_loop(history: list[dict] | None = None) -> None:
                     latency=lat,
                 ))
                 console.print(
-                    f"[dim]vad={lat.vad_ms:.0f}ms  stt={lat.stt_ms:.0f}ms  "
-                    f"agent={lat.agent_ttft_ms:.0f}ms  "
+                    f"[dim]stt={lat.stt_ms:.0f}ms  "
+                    f"ttft={lat.agent_ttft_ms:.0f}ms  "
                     f"tts={lat.tts_first_ms:.0f}ms  "
                     f"total={lat.total_ms:.0f}ms[/dim]"
                 )

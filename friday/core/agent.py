@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from friday.core.router import Tier, complete
@@ -95,31 +96,28 @@ async def voice_stream(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
     tier: Tier = Tier.LOCAL,
-) -> "AsyncIterator[str]":
+) -> AsyncIterator[str]:
     """Stream voice response token-by-token.
 
     Yields text tokens as they arrive so TTS can start on the first sentence
     before the LLM finishes generating — reduces time-to-first-audio.
     Falls back to HEAVY if LOCAL returns garbage.
     """
-    from collections.abc import AsyncIterator
+    from friday.core.router import stream_complete
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": VOICE_SYSTEM_PROMPT}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
 
-    from friday.core.router import stream_complete
     full_reply = ""
     async for token in stream_complete(messages, tier=tier, max_tokens=128):
         full_reply += token
         yield token
 
-    # If we got garbage (e.g. Gemma outputting tool JSON), re-run on HEAVY
+    # If Gemma returned garbage (tool call JSON), escalate to HEAVY
     if not full_reply.strip() or full_reply.strip().startswith("{"):
-        full_reply = ""
         async for token in stream_complete(messages, tier=Tier.HEAVY, max_tokens=128):
-            full_reply += token
             yield token
 
 
