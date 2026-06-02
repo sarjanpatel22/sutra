@@ -86,24 +86,64 @@ async def process_audio(
 
     _log.info("STT [%.0fms]: %s", lat.stt_ms, transcript)
 
-    # Agent (use LOCAL tier first — Gemma via Ollama)
-    t0 = time.monotonic()
-    reply, history = await run(transcript, history=history, tier=Tier.LOCAL)
-    lat.agent_ttft_ms = (time.monotonic() - t0) * 1000
+    # Agent streaming → TTS streaming → play
+    # Token stream from LLM feeds directly into TTS so playback starts
+    # on the first sentence boundary, not after the full reply arrives.
+    from friday.core.agent import voice_run, voice_stream
+    from friday.core.router import Tier
 
-    _log.info("Agent [%.0fms]: %s", lat.agent_ttft_ms, reply[:80])
-
-    # TTS + streaming playback
     tts = get_tts()
-    t0 = time.monotonic()
-    first_chunk = True
-    for chunk in tts.stream(iter(reply.split())):
-        if first_chunk:
-            lat.tts_first_ms = (time.monotonic() - t0) * 1000
+    reply_tokens: list[str] = []
+    first_audio = True
+    t_agent_start = time.monotonic()
+
+    async def _token_iter():
+        async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
+            reply_tokens.append(token)
+            yield token
+
+    # Run TTS streaming in a thread so async token iter can feed it
+    import threading, queue as q_mod
+
+    token_queue: q_mod.Queue[str | None] = q_mod.Queue()
+    audio_queue: q_mod.Queue[object] = q_mod.Queue()
+
+    def tts_worker() -> None:
+        def _gen():
+            while True:
+                tok = token_queue.get()
+                if tok is None:
+                    return
+                yield tok
+        for chunk in tts.stream(_gen()):
+            audio_queue.put(chunk)
+        audio_queue.put(None)  # sentinel
+
+    tts_thread = threading.Thread(target=tts_worker, daemon=True)
+    tts_thread.start()
+
+    # Feed tokens to TTS worker while collecting full reply
+    async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
+        reply_tokens.append(token)
+        if not lat.agent_ttft_ms:
+            lat.agent_ttft_ms = (time.monotonic() - t_agent_start) * 1000
+        token_queue.put(token)
+    token_queue.put(None)  # signal TTS worker to flush
+
+    # Play audio chunks as they arrive from TTS worker
+    while True:
+        chunk = audio_queue.get()
+        if chunk is None:
+            break
+        if first_audio:
+            lat.tts_first_ms = (time.monotonic() - t_agent_start) * 1000
             lat.total_ms = (time.monotonic() - t_total_start) * 1000
-            first_chunk = False
+            first_audio = False
         play_audio(chunk.audio, sample_rate=chunk.sample_rate, blocking=True)
 
+    tts_thread.join()
+    reply = "".join(reply_tokens).strip()
+    _log.info("Agent+TTS [%.0fms total]: %s", lat.total_ms, reply[:80])
     return reply, history, lat
 
 

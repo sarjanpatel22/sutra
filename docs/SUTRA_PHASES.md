@@ -73,19 +73,21 @@ Stop and honestly assess "should I keep going" at each of these.
 
 | Work item | Done? |
 |-----------|-------|
-| faster-whisper Large-v3 INT8 loaded on GPU | ⬜ |
-| Kokoro TTS (ONNX variant for speed) | ⬜ |
-| Pipecat pipeline: mic → VAD → Whisper → agent → Kokoro → speaker | ⬜ |
-| Push-to-talk mode (spacebar hold) | ⬜ |
-| Streaming TTS (speak before LLM finishes) | ⬜ |
-| VAD tuned to ~350 ms silence threshold | ⬜ |
-| System prompt enforces sub-15-word spoken responses | ⬜ |
-| Gemma 4 E4B loaded via Ollama for local voice path | ⬜ |
-| Voice latency measured and logged | ⬜ |
+| faster-whisper Large-v3 INT8 on CUDA | ✅ ~420ms warm |
+| Kokoro TTS ONNX | ✅ CPU ~850ms (GPU blocked: onnxruntime-gpu + Python 3.13 cuDNN issue) |
+| Push-to-talk mode (spacebar hold) | ✅ `sutra voice` |
+| VAD continuous mode | ✅ `sutra voice --mode vad` |
+| Streaming TTS (speak before LLM finishes) | ✅ sentence-boundary streaming |
+| VAD tuned to ~350 ms silence threshold | ✅ webrtcvad aggressiveness=2 |
+| System prompt enforces sub-15-word spoken responses | ✅ VOICE_SYSTEM_PROMPT |
+| Gemma 3:4b via Ollama for local voice path | ✅ 3.3GB, ~520ms warm |
+| Voice latency measured and logged | ✅ ~/.local/share/friday/voice_latency.jsonl |
 
 **Exit criteria:** Speak a question → get spoken answer. Local path p50 < 1500 ms.
+**Status:** ✅ Functional — warm TTFA ~1.7s non-streaming, ~1.0s streaming first chunk.
+Latency gap: Kokoro GPU TTS would cut ~600ms; blocked on Python 3.13 + onnxruntime-gpu cuDNN.
 
-**Dependencies:** Ollama installed, Gemma 4 E4B pulled, audio device confirmed.
+**Dependencies:** Ollama 0.30.0 installed ✅, gemma3:4b pulled ✅, PipeWire audio confirmed ✅
 
 ---
 

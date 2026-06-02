@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 
 _MODEL_DIR = Path.home() / ".local" / "share" / "friday" / "models" / "kokoro"
+_ONNX_MODEL = _MODEL_DIR / "kokoro-v1.0.onnx"
+_VOICES_FILE = _MODEL_DIR / "voices-v1.0.bin"
 
 # Sentence boundary pattern — split here for streaming TTS chunks
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
@@ -32,10 +34,13 @@ class TTS:
     """
 
     def __init__(self, voice: str = "af_heart", speed: float = 1.0) -> None:
+        import os
         from kokoro_onnx import Kokoro  # type: ignore[import-untyped]
 
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        self._kokoro = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
+        model_path = os.getenv("KOKORO_MODEL_PATH", str(_ONNX_MODEL))
+        voices_path = os.getenv("KOKORO_VOICES_PATH", str(_VOICES_FILE))
+        self._kokoro = Kokoro(model_path, voices_path)
         self._voice = voice
         self._speed = speed
         self.sample_rate = 24000

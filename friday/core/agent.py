@@ -15,6 +15,11 @@ Never sycophantic. Never preachy.
 Default spoken responses: sub-15 words. Text responses can be longer when detail is useful.
 You have access to tools. Use them when needed. Think before calling."""
 
+VOICE_SYSTEM_PROMPT = """You are Sutra, a voice assistant. Respond in spoken English only.
+Keep responses under 15 words unless the question genuinely requires more.
+Answer from your own knowledge — do NOT call any tools or functions.
+No markdown, no lists, no code. Just natural spoken sentences."""
+
 
 async def run(
     user_input: str,
@@ -54,6 +59,68 @@ async def run(
     msg = response.choices[0].message
     messages.append({"role": "assistant", "content": msg.content})
     return msg.content or "", messages[1:]
+
+
+async def voice_run(
+    user_input: str,
+    history: list[dict[str, Any]] | None = None,
+    tier: Tier = Tier.LOCAL,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Lightweight agent turn for voice mode — no tools, short responses.
+
+    Uses VOICE_SYSTEM_PROMPT to enforce spoken-language brevity and avoid
+    Gemma/Ollama tool-call format issues on the LOCAL tier.
+    Falls back to HEAVY tier (Claude) for queries Gemma can't handle.
+    """
+    messages: list[dict[str, Any]] = [{"role": "system", "content": VOICE_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_input})
+
+    response = await complete(messages, tier=tier, tools=None, max_tokens=128)
+    msg = response.choices[0].message
+    reply = (msg.content or "").strip()
+
+    # If Gemma returns empty or garbled output, escalate to Claude
+    if not reply or reply.startswith("{"):
+        response = await complete(messages, tier=Tier.HEAVY, tools=None, max_tokens=128)
+        msg = response.choices[0].message
+        reply = (msg.content or "").strip()
+
+    messages.append({"role": "assistant", "content": reply})
+    return reply, messages[1:]
+
+
+async def voice_stream(
+    user_input: str,
+    history: list[dict[str, Any]] | None = None,
+    tier: Tier = Tier.LOCAL,
+) -> "AsyncIterator[str]":
+    """Stream voice response token-by-token.
+
+    Yields text tokens as they arrive so TTS can start on the first sentence
+    before the LLM finishes generating — reduces time-to-first-audio.
+    Falls back to HEAVY if LOCAL returns garbage.
+    """
+    from collections.abc import AsyncIterator
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": VOICE_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_input})
+
+    from friday.core.router import stream_complete
+    full_reply = ""
+    async for token in stream_complete(messages, tier=tier, max_tokens=128):
+        full_reply += token
+        yield token
+
+    # If we got garbage (e.g. Gemma outputting tool JSON), re-run on HEAVY
+    if not full_reply.strip() or full_reply.strip().startswith("{"):
+        full_reply = ""
+        async for token in stream_complete(messages, tier=Tier.HEAVY, max_tokens=128):
+            full_reply += token
+            yield token
 
 
 async def _run_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
