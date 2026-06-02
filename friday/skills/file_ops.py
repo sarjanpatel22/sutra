@@ -37,8 +37,9 @@ async def read_file(path: str, max_bytes: int = 65536) -> dict[str, str | int]:
         return {"error": f"File not found: {p}"}
     if not p.is_file():
         return {"error": f"Not a file: {p}"}
-    content = p.read_bytes()[:max_bytes]
-    truncated = len(p.read_bytes()) > max_bytes
+    raw = p.read_bytes()
+    truncated = len(raw) > max_bytes
+    content = raw[:max_bytes]
     return {
         "content": content.decode(errors="replace"),
         "bytes_read": len(content),

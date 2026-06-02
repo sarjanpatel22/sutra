@@ -20,7 +20,7 @@ console = Console()
 
 def _tier_from_str(s: str) -> Tier:
     mapping = {"local": Tier.LOCAL, "medium": Tier.MEDIUM, "heavy": Tier.HEAVY, "max": Tier.MAX}
-    return mapping.get(s.lower(), Tier.HEAVY)
+    return mapping.get(s.lower(), Tier.MEDIUM)
 
 
 async def _chat_loop(tier: Tier) -> None:
@@ -99,7 +99,7 @@ async def _chat_loop(tier: Tier) -> None:
 
 @app.command()
 def chat(
-    tier: str = typer.Option("heavy", "--tier", "-t", help="Routing tier: local/medium/heavy/max"),
+    tier: str = typer.Option("medium", "--tier", "-t", help="Routing tier: local/medium/heavy/max"),
 ) -> None:
     """Start an interactive chat session."""
     asyncio.run(_chat_loop(_tier_from_str(tier)))
@@ -108,7 +108,7 @@ def chat(
 @app.command()
 def ask(
     query: str = typer.Argument(..., help="Single question to ask"),
-    tier: str = typer.Option("heavy", "--tier", "-t"),
+    tier: str = typer.Option("medium", "--tier", "-t"),
 ) -> None:
     """Ask a single question and exit."""
     from friday.core.agent import run

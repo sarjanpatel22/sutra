@@ -99,12 +99,6 @@ def _build_schema(fn: Callable[..., Any], name: str, description: str) -> dict[s
         except Exception:  # noqa: BLE001
             json_schema = {"type": "string"}
 
-        # Inline the schema (strip $defs for simple types)
-        if "$defs" in json_schema and "allOf" in json_schema:
-            json_schema = json_schema  # keep as-is for complex types
-        elif "$ref" in json_schema:
-            pass
-
         # Pull docstring param descriptions if present
         doc = inspect.getdoc(fn) or ""
         param_desc = _extract_param_doc(doc, param_name)

@@ -55,8 +55,12 @@ _COST_PER_1K: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5":                      (0.0008, 0.004),
     "groq/llama-3.3-70b-versatile":          (0.0, 0.0),
     "gemini/gemini-2.5-flash-preview-04-17": (0.0, 0.0),
-    "ollama/gemma2:4b":                      (0.0, 0.0),
+    "ollama/gemma3:4b":                      (0.0, 0.0),
 }
+
+# Provider prefixes that are always free (local or free-tier APIs).
+# Guards against silently charging the default rate on a model-name typo.
+_FREE_PREFIXES = ("ollama/", "groq/", "gemini/")
 
 # Registered alert callbacks: fn(scope, pct_used) where scope is "daily"|"monthly"
 _alert_callbacks: list[Callable[[str, float], None]] = []
@@ -143,7 +147,10 @@ class BudgetTracker:
     def record(self, model: str, input_tokens: int, output_tokens: int) -> float:
         self._reset_day_if_needed()
         self._reset_month_if_needed()
-        cost_in, cost_out = _COST_PER_1K.get(model, (0.005, 0.015))
+        if model.startswith(_FREE_PREFIXES):
+            cost_in, cost_out = 0.0, 0.0
+        else:
+            cost_in, cost_out = _COST_PER_1K.get(model, (0.005, 0.015))
         cost = (input_tokens / 1000) * cost_in + (output_tokens / 1000) * cost_out
         total_tokens = input_tokens + output_tokens
         self._daily_spent += cost
@@ -168,6 +175,7 @@ class BudgetTracker:
 
     def can_afford(self, tier: Tier) -> bool:
         self._reset_day_if_needed()
+        self._reset_month_if_needed()
         if self._daily_spent >= self.daily_limit:
             return False
         if self._monthly_spent >= self.monthly_limit:
@@ -206,6 +214,24 @@ def get_budget() -> BudgetTracker:
     return _budget
 
 
+async def _tracked_stream(response: Any, model: str) -> AsyncIterator[Any]:
+    """Re-yield a streaming response, recording budget from the usage chunk.
+
+    With stream_options={"include_usage": True}, the final chunk carries token
+    usage (empty choices). Providers that ignore the option (e.g. Ollama) simply
+    never emit it — fine, since those tiers are free anyway.
+    """
+    async for chunk in response:
+        usage = getattr(chunk, "usage", None)
+        if usage:
+            _budget.record(
+                model,
+                getattr(usage, "prompt_tokens", 0),
+                getattr(usage, "completion_tokens", 0),
+            )
+        yield chunk
+
+
 async def complete(
     messages: list[dict[str, Any]],
     tier: Tier = Tier.HEAVY,
@@ -225,6 +251,9 @@ async def complete(
     last_err: Exception | None = None
     for model in models:
         try:
+            call_kwargs = dict(kwargs)
+            if stream:
+                call_kwargs.setdefault("stream_options", {"include_usage": True})
             response = await litellm.acompletion(
                 model=model,
                 messages=messages,
@@ -232,16 +261,17 @@ async def complete(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
-                **kwargs,
+                **call_kwargs,
             )
-            if not stream:
-                usage = getattr(response, "usage", None)
-                if usage:
-                    _budget.record(
-                        model,
-                        getattr(usage, "prompt_tokens", 0),
-                        getattr(usage, "completion_tokens", 0),
-                    )
+            if stream:
+                return _tracked_stream(response, model)
+            usage = getattr(response, "usage", None)
+            if usage:
+                _budget.record(
+                    model,
+                    getattr(usage, "prompt_tokens", 0),
+                    getattr(usage, "completion_tokens", 0),
+                )
             return response
         except Exception as e:  # noqa: BLE001
             last_err = e
@@ -260,6 +290,8 @@ async def stream_complete(
     """Yield text chunks from a streaming completion."""
     response = await complete(messages, tier=tier, stream=True, **kwargs)
     async for chunk in response:
+        if not chunk.choices:  # usage-only final chunk has empty choices
+            continue
         delta = chunk.choices[0].delta
         if delta.content:
             yield delta.content

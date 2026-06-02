@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import platform
 import shutil
+import time
 
 import psutil  # type: ignore[import-untyped]
 
@@ -22,7 +23,7 @@ async def system_info() -> dict[str, object]:
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     cpu_pct = psutil.cpu_percent(interval=0.2)
-    uptime_s = int(asyncio.get_event_loop().time())
+    uptime_s = int(time.time() - psutil.boot_time())
 
     result: dict[str, object] = {
         "platform": platform.platform(),
@@ -34,6 +35,7 @@ async def system_info() -> dict[str, object]:
         "disk_total_gb": round(disk.total / 1e9, 1),
         "disk_used_gb": round(disk.used / 1e9, 1),
         "disk_percent": disk.percent,
+        "uptime_hours": round(uptime_s / 3600, 1),
     }
 
     # GPU info via nvidia-smi if available
@@ -74,7 +76,12 @@ async def run_command(command: str) -> dict[str, str | int]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return {"stdout": "", "stderr": "command timed out after 30s", "returncode": 124}
     return {
         "stdout": stdout.decode(errors="replace"),
         "stderr": stderr.decode(errors="replace"),
