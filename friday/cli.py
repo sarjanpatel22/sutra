@@ -129,6 +129,37 @@ def show_skills() -> None:
 
 
 @app.command()
+def devices() -> None:
+    """List available audio input/output devices."""
+    from friday.voice.audio import list_devices
+    t = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+    t.add_column("Index", justify="right")
+    t.add_column("Name")
+    t.add_column("In", justify="right")
+    t.add_column("Out", justify="right")
+    for d in list_devices():
+        t.add_row(
+            str(d["index"]),
+            str(d["name"]),
+            str(d["inputs"]) if d["inputs"] else "-",
+            str(d["outputs"]) if d["outputs"] else "-",
+        )
+    console.print(t)
+
+
+@app.command()
+def voice(
+    mode: str = typer.Option("ptt", "--mode", "-m", help="ptt (push-to-talk) or vad (auto-detect)"),
+) -> None:
+    """Start voice mode. ptt=hold SPACE, vad=always listening."""
+    from friday.voice.pipeline import push_to_talk_loop, vad_listen_loop
+    if mode == "vad":
+        asyncio.run(vad_listen_loop())
+    else:
+        asyncio.run(push_to_talk_loop())
+
+
+@app.command()
 def status() -> None:
     """Run a one-shot health check and print results."""
     from friday.core.monitor import print_report, run_health_checks

@@ -33,7 +33,7 @@ class Tier(str, Enum):
 
 TIER_MODELS: dict[Tier, list[str]] = {
     Tier.LOCAL: [
-        os.getenv("ROUTER_LOCAL_MODEL", "ollama/gemma2:4b"),
+        os.getenv("ROUTER_LOCAL_MODEL", "ollama/gemma3:4b"),
     ],
     Tier.MEDIUM: [
         "groq/llama-3.3-70b-versatile",

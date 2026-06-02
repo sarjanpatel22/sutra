@@ -27,9 +27,13 @@ dev = [
 search = ["httpx>=0.27"]
 voice = [
     "faster-whisper>=1.0",
-    "kokoro-onnx>=0.3",
-    "pipecat-ai>=0.0.50",
+    "kokoro-onnx>=0.4",
+    "onnxruntime-gpu>=1.18",
     "sounddevice>=0.4",
+    "webrtcvad-wheels>=2.0",
+    "pynput>=1.7",
+    "numpy>=1.26",
+    "scipy>=1.13",
 ]
 memory = [
     "graphiti-core>=0.3",
