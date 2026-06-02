@@ -81,3 +81,20 @@ async def test_run_health_checks_returns_report():
     assert "budget" in check_names
     assert "disk" in check_names
     assert "anthropic_key" in check_names
+    assert "falkordb" in check_names  # added: memory-layer backend
+
+
+def test_parse_redis_url():
+    from friday.core.monitor import _parse_redis_url
+    assert _parse_redis_url("redis://localhost:6380") == ("localhost", 6380)
+    assert _parse_redis_url("redis://10.0.0.5:6379/0") == ("10.0.0.5", 6379)
+    assert _parse_redis_url("garbage") == ("localhost", 6379)  # safe fallback
+
+
+@pytest.mark.asyncio
+async def test_missing_anthropic_key_is_warn_not_fail(monkeypatch):
+    """Free-by-default: a missing Claude key must not trigger a FAIL (alert spam)."""
+    from friday.core.monitor import Status, _check_api_key
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = await _check_api_key()
+    assert result.status == Status.WARN

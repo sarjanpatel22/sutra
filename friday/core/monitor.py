@@ -122,7 +122,11 @@ register_alert(_budget_alert_callback)
 async def _check_api_key() -> CheckResult:
     key = os.getenv("ANTHROPIC_API_KEY", "")
     if not key:
-        return CheckResult("anthropic_key", Status.FAIL, "ANTHROPIC_API_KEY not set")
+        # Optional under free-by-default (local Ollama + free Groq/Gemini tiers).
+        # WARN, not FAIL, so the watchdog doesn't fire critical alerts every cycle.
+        return CheckResult(
+            "anthropic_key", Status.WARN, "not set — fine on free tiers; needed only for Claude"
+        )
     if not key.startswith("sk-ant-"):
         return CheckResult("anthropic_key", Status.WARN, "Key present but format unexpected")
     return CheckResult("anthropic_key", Status.OK, f"sk-ant-...{key[-4:]}")
@@ -145,18 +149,21 @@ async def _check_http(name: str, url: str, timeout: float = 3.0) -> CheckResult:
         return CheckResult(name, Status.FAIL, str(e))
 
 
-async def _check_redis() -> CheckResult:
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-    # Try a raw PING without importing redis to keep startup cheap
-    host = "localhost"
-    port = 6379
+def _parse_redis_url(url: str) -> tuple[str, int]:
+    """Extract (host, port) from a redis:// URL, falling back to localhost:6379."""
+    host, port = "localhost", 6379
     try:
-        if "://" in redis_url:
-            parts = redis_url.split("://")[1].split(":")
-            host = parts[0]
-            port = int(parts[1].split("/")[0]) if len(parts) > 1 else 6379
+        if "://" in url:
+            parts = url.split("://")[1].split(":")
+            host = parts[0] or host
+            port = int(parts[1].split("/")[0]) if len(parts) > 1 else port
     except Exception:  # noqa: BLE001
         pass
+    return host, port
+
+
+async def _ping_redis_proto(name: str, host: str, port: int) -> CheckResult:
+    """Raw RESP PING (no redis client) — works for both Redis and FalkorDB."""
     t0 = time.monotonic()
     try:
         reader, writer = await asyncio.wait_for(
@@ -169,14 +176,25 @@ async def _check_redis() -> CheckResult:
         await writer.wait_closed()
         latency = (time.monotonic() - t0) * 1000
         if b"PONG" in response:
-            return CheckResult("redis", Status.OK, f"{host}:{port}", latency)
-        return CheckResult("redis", Status.WARN, f"unexpected response: {response[:20]!r}", latency)
+            return CheckResult(name, Status.OK, f"{host}:{port}", latency)
+        return CheckResult(name, Status.WARN, f"unexpected response: {response[:20]!r}", latency)
     except (ConnectionRefusedError, OSError):
-        return CheckResult("redis", Status.FAIL, "connection refused — Redis not running")
+        return CheckResult(name, Status.FAIL, f"connection refused — {name} not running")
     except asyncio.TimeoutError:
-        return CheckResult("redis", Status.WARN, "timeout")
+        return CheckResult(name, Status.WARN, "timeout")
     except Exception as e:  # noqa: BLE001
-        return CheckResult("redis", Status.FAIL, str(e))
+        return CheckResult(name, Status.FAIL, str(e))
+
+
+async def _check_redis() -> CheckResult:
+    host, port = _parse_redis_url(os.getenv("REDIS_URL", "redis://localhost:6380"))
+    return await _ping_redis_proto("redis", host, port)
+
+
+async def _check_falkordb() -> CheckResult:
+    host = os.getenv("FALKORDB_HOST", "localhost")
+    port = int(os.getenv("FALKORDB_PORT", "6379"))
+    return await _ping_redis_proto("falkordb", host, port)
 
 
 async def _check_disk() -> CheckResult:
@@ -247,6 +265,7 @@ async def run_health_checks() -> HealthReport:
         _check_api_key(),
         _check_http("searxng", searxng_url),
         _check_redis(),
+        _check_falkordb(),
         _check_http("qdrant", f"{qdrant_url}/healthz"),
         _check_disk(),
         _check_gpu(),

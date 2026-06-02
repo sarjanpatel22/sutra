@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -9,8 +10,6 @@ from typing import Callable
 
 import numpy as np
 import sounddevice as sd
-
-import os
 
 SAMPLE_RATE = 16000   # Hz — Whisper native
 CHANNELS = 1
@@ -70,6 +69,16 @@ def record_while_held(stop_event: threading.Event, sample_rate: int = SAMPLE_RAT
     return np.concatenate(chunks) if chunks else np.array([], dtype=DTYPE)
 
 
+def _speech_window_start(first_speech_idx: int | None, pad_frames: int) -> int | None:
+    """Index to start the captured clip: pad_frames before first speech, clamped.
+
+    Returns None if no speech was ever detected.
+    """
+    if first_speech_idx is None:
+        return None
+    return max(0, first_speech_idx - pad_frames)
+
+
 def record_with_vad(
     vad_fn: Callable[[bytes], bool],
     *,
@@ -80,9 +89,9 @@ def record_with_vad(
 ) -> np.ndarray:
     """Record until VAD detects end-of-speech (silence_threshold_s of silence).
 
+    Captures from pad_frames before the first detected speech through end-of-speech.
     Returns int16 PCM array ready for Whisper.
     """
-    frame_bytes = BLOCK_SIZE * 2  # int16 = 2 bytes per sample
     silence_frames = int(silence_threshold_s * sample_rate / BLOCK_SIZE)
     max_frames = int(max_duration_s * sample_rate / BLOCK_SIZE)
     pad_frames = int(pre_speech_pad_s * sample_rate / BLOCK_SIZE)
@@ -93,9 +102,9 @@ def record_with_vad(
         audio_q.put(indata[:, 0].copy())
 
     all_frames: list[np.ndarray] = []
-    speech_frames: list[np.ndarray] = []
     consecutive_silence = 0
     speech_started = False
+    first_speech_idx: int | None = None
 
     with sd.InputStream(
         device=_INPUT_DEVICE,
@@ -108,21 +117,21 @@ def record_with_vad(
         while len(all_frames) < max_frames:
             frame = audio_q.get()
             all_frames.append(frame)
-            is_speech = vad_fn(frame.tobytes())
 
-            if is_speech:
-                speech_started = True
+            if vad_fn(frame.tobytes()):
+                if not speech_started:
+                    first_speech_idx = len(all_frames) - 1
+                    speech_started = True
                 consecutive_silence = 0
-                # Include pre-speech padding
-                start = max(0, len(all_frames) - len(speech_frames) - pad_frames)
-                speech_frames = all_frames[start:]
             elif speech_started:
-                speech_frames.append(frame)
                 consecutive_silence += 1
                 if consecutive_silence >= silence_frames:
                     break
 
-    return np.concatenate(speech_frames) if speech_frames else np.array([], dtype=DTYPE)
+    start = _speech_window_start(first_speech_idx, pad_frames)
+    if start is None:
+        return np.array([], dtype=DTYPE)
+    return np.concatenate(all_frames[start:])
 
 
 def play_audio(audio: np.ndarray, sample_rate: int = 24000, blocking: bool = True) -> None:
