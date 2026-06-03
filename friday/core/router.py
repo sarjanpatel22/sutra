@@ -37,7 +37,7 @@ TIER_MODELS: dict[Tier, list[str]] = {
     ],
     Tier.MEDIUM: [
         "groq/llama-3.3-70b-versatile",
-        "gemini/gemini-2.5-flash-preview-04-17",
+        "gemini/gemini-2.5-flash",
     ],
     Tier.HEAVY: [
         os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),
@@ -54,7 +54,7 @@ _COST_PER_1K: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-6":                     (0.003, 0.015),
     "claude-haiku-4-5":                      (0.0008, 0.004),
     "groq/llama-3.3-70b-versatile":          (0.0, 0.0),
-    "gemini/gemini-2.5-flash-preview-04-17": (0.0, 0.0),
+    "gemini/gemini-2.5-flash": (0.0, 0.0),
     "ollama/gemma3:4b":                      (0.0, 0.0),
 }
 

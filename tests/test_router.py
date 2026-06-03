@@ -31,7 +31,7 @@ def _tracker(daily=2.0, monthly=30.0):
         "ollama/gemma3:4b",
         "ollama/some-other-local-model",  # prefix guard, not in cost table
         "groq/llama-3.3-70b-versatile",
-        "gemini/gemini-2.5-flash-preview-04-17",
+        "gemini/gemini-2.5-flash",
     ],
 )
 def test_free_models_cost_zero(model):
