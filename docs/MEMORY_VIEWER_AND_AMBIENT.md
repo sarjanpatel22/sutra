@@ -86,9 +86,11 @@ entity-extraction stays bounded.
 
 | Check | Result |
 |-------|--------|
-| Tests | **49 passing** (`pytest -q`) |
+| Tests | **50 passing** (`pytest -q`) |
 | Lint  | new files clean (`ruff`); only pre-existing nits remain |
-| Git   | latest `8d20876`, pushed, up to date with `origin/main` |
+| Git   | latest `fde6767` — **4 commits committed locally, not yet pushed** |
+| Tiers | Groq + Gemini verified live ($0); fallback chain proven |
+| Search| `sutra-searxng` :8080 up; `web_search` verified live |
 | Graph | ~50 nodes (entities + episodes, incl. orange `ambient:*`) in FalkorDB |
 | Viewer| `sutra graph` → `:8700` → HTTP 200 |
 | Voice | **VERIFIED LIVE** — push-to-talk p50 1221ms (see below) |
@@ -122,24 +124,46 @@ turns, gemma3:4b local agent. **Every turn under the 1500ms target.**
 
 Working an ordered gap-closing checklist. **Where we stopped (resume here):**
 
-- **Step 1 — voice fixes committed** ✅ `8d20876` pushed.
-- **Step 2 — SearXNG / web_search** ⏸ BLOCKED ON DECISION. SearXNG was **never
-  provisioned** (no container, not in `docker-compose.yml`, no compose plugin).
-  Making `web_search` work = standing up a new `searxng/searxng` container from
-  scratch + `settings.yml` (enable `json` format, set secret key, relax limiter
-  for localhost). All $0/local, but it's net-new infra → flagged, awaiting go/defer.
-- **Step 3 — Groq (MEDIUM tier)** ⏳ needs free `GROQ_API_KEY` (user to paste).
-- **Step 4 — Gemini (HEAVY tier)** ⏳ needs free `GEMINI_API_KEY` (user to paste).
-- **Step 5 — fallback chain** ⏳ depends on 3 + 4.
-- **Step 6 — VAD live test** ⏳ needs user at mic.
-- **Step 7 — safety-net** ⏳ (a) budget prefix-guard typo test, (b) seeder
-  idempotency test. No keys/mic needed — can do solo next session.
-- **Step 8 — final verification + this doc.**
+- **Step 1 — voice fixes committed** ✅ `8d20876`.
+- **Step 2 — SearXNG / web_search** ✅ `2c27557`. Stood up the `searxng/searxng`
+  container (`sutra-searxng` on `:8080`); `infra/searxng/settings.yml` enables the
+  `json` API + disables the limiter; added to `docker-compose.yml`. Verified live:
+  `web_search("weather in Sudbury Ontario today")` → Environment Canada / Weather
+  Network / AccuWeather. $0/local.
+- **Step 3 — Groq (MEDIUM tier)** ✅ live — `GROQ_OK` via `llama-3.3-70b`, $0.
+- **Step 4 — Gemini (HEAVY tier)** ✅ `fde6767`. **Bug fixed:** Gemini was pinned
+  to the retired `gemini-2.5-flash-preview-04-17` (v1beta now 404s) → corrected to
+  `gemini-2.5-flash`. Verified live, $0.
+- **Step 5 — fallback chain** ✅ `fde6767`, all $0:
+  - HEAVY: no Claude key → falls through to Groq → `FALLBACK_OK`
+  - MEDIUM: dead Groq key → falls through to Gemini → `GEMINI_OK`
+  - MEDIUM: both providers dead → clean `RuntimeError`, never a fake charge
 
-**Honest real-vs-theoretical:**
-- REAL & verified: local voice loop, memory layer, viewer, ambient daemon, 49 tests.
-- THEORETICAL (never run): Groq/Gemini/Claude cloud tiers (no API keys), the
-  router fallback chain, VAD voice mode, `web_search` (SearXNG never provisioned).
+  *Note:* fallback is **intra-tier** (each tier has its own model chain:
+  `MEDIUM=[groq,gemini]`, `HEAVY=[claude,groq]`), not the `MEDIUM→HEAVY→LOCAL`
+  cross-tier cascade the plan's wording implied. Cross-tier degrade-to-local lives
+  in the voice/agent layer (`fallback_tier`).
+- **Step 6 — VAD live test** ⏳ still needs a human at the mic (PTT is proven).
+- **Step 7 — safety-net** ✅ `53a792d`. (a) `test_model_name_typo_is_safe` locks the
+  budget guard (`claud-haiku` typo → conservative default, never fake $0); (b)
+  `scripts/check_seed_idempotency.py` — live: entity nodes 38→38 (0 dupes),
+  Episodic 20→29, Sudbury + Toronto distinct.
+- **Step 8 — final verification** — 50 tests pass; every tier smoke-tested live.
+  Only VAD (Step 6) remains.
+
+**Keys:** Groq + Gemini free keys live in `~/friday-os/.env` (gitignored). The
+Gemini key is an `AQ.`-prefixed token (not the classic `AIza` form) — authenticates
+fine against `v1beta`.
+
+**Honest real-vs-theoretical (updated):**
+- REAL & verified: local voice loop (PTT), memory layer, viewer, ambient daemon,
+  `web_search`/SearXNG, **Groq + Gemini cloud tiers, the router fallback chain**,
+  50 tests.
+- STILL THEORETICAL: VAD voice mode (0 turns), Claude tiers (no `ANTHROPIC_API_KEY`,
+  by design — opt-in/paid).
+
+**Flagged, not fixed (awaiting go):** `.env.example` line 58 `AUDIO_INPUT_DEVICE=`
+blank re-introduces the mic-crash trap on copy (fixed in the real `.env`).
 
 ---
 
