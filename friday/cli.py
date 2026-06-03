@@ -170,6 +170,20 @@ def graph(
 
 
 @app.command()
+def ambient(
+    once: bool = typer.Option(False, "--once", help="Single poll+flush then exit (test)"),
+) -> None:
+    """Run the ambient OS-memory daemon — watches activity and feeds the graph."""
+    from friday.ambient.daemon import AmbientDaemon
+    d = AmbientDaemon()
+    if once:
+        n = asyncio.run(d.run_once())
+        console.print(f"[dim]Flushed {n} episode(s).[/dim]")
+    else:
+        asyncio.run(d.run())
+
+
+@app.command()
 def status() -> None:
     """Run a one-shot health check and print results."""
     from friday.core.monitor import print_report, run_health_checks

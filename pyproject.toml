@@ -45,6 +45,10 @@ action = [
     "playwright>=1.44",
     "open-interpreter>=0.3",
 ]
+ambient = [
+    "psutil>=5.9",
+    "pynput>=1.7",
+]
 
 [project.scripts]
 sutra = "friday.cli:app"
