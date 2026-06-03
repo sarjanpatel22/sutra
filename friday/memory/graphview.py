@@ -38,6 +38,9 @@ _LABEL_STYLE: dict[str, dict[str, Any]] = {
     "Saga": {"color": "#fbbf24", "val": 9, "group": "saga"},
 }
 _DEFAULT_STYLE = {"color": "#94a3b8", "val": 4, "group": "other"}
+# Episodes the ambient daemon captured (source_description "ambient:*") get a
+# distinct warm colour so OS-observed activity stands out from seeded memory.
+_AMBIENT_STYLE = {"color": "#fb923c", "val": 5, "group": "ambient"}
 
 
 def fetch_graph(graph_name: str = _GRAPH) -> dict[str, Any]:
@@ -54,22 +57,27 @@ def fetch_graph(graph_name: str = _GRAPH) -> dict[str, Any]:
     res = g.query(
         "MATCH (n) RETURN id(n), labels(n), "
         "coalesce(n.name, n.content, '') AS label, "
-        "coalesce(n.summary, n.content, '') AS summary"
+        "coalesce(n.summary, n.content, '') AS summary, "
+        "coalesce(n.source_description, '') AS source"
     )
-    for nid, labels, label, summary in res.result_set:
+    for nid, labels, label, summary, source in res.result_set:
         lbl = labels[0] if labels else "Other"
         style = _LABEL_STYLE.get(lbl, _DEFAULT_STYLE)
+        badge = lbl
         # Episodes carry an internal "smoke-test-<ts>" name; show their text instead.
         if lbl == "Episodic":
             display = summary or label
             name = (display[:48] + "…") if len(display) > 49 else display
+            if source.startswith("ambient"):  # OS-observed activity → distinct style
+                style = _AMBIENT_STYLE
+                badge = source  # e.g. "ambient:window" — shown in the detail panel
         else:
             name = label or lbl
         nodes[str(nid)] = {
             "id": str(nid),
             "name": name,
             "summary": summary or "",
-            "label": lbl,
+            "label": badge,
             "color": style["color"],
             "val": style["val"],
             "group": style["group"],

@@ -293,7 +293,8 @@ function showErr(m){
 }
 
 const GROUPS=[['entity','Entity','#5eead4'],['episode','Episode','#a78bfa'],
-  ['community','Community','#f0abfc'],['saga','Saga','#fbbf24'],['other','Other','#94a3b8']];
+  ['ambient','Ambient (OS)','#fb923c'],['community','Community','#f0abfc'],
+  ['saga','Saga','#fbbf24'],['other','Other','#94a3b8']];
 function buildLegend(counts){
   const byGroup={}; for(const n of DATA.nodes) byGroup[n.group]=(byGroup[n.group]||0)+1;
   const el=document.getElementById('legend'); el.innerHTML='';
