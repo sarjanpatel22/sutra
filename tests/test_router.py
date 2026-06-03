@@ -60,6 +60,27 @@ def test_unknown_paid_model_uses_default_rate():
     assert cost == pytest.approx(0.020)
 
 
+def test_model_name_typo_is_safe():
+    """A model-name typo must never throw, and must never silently fake $0.
+
+    Two failure modes we guard against:
+      * free-provider typo (suffix wrong, prefix intact) -> still $0, never charged
+      * paid-model typo ("claud-haiku" missing the 'e') -> NOT a free prefix, so it
+        falls back to the conservative default rate instead of recording $0. The
+        budget must over-, never under-count an unrecognised paid call.
+    """
+    b = _tracker()
+
+    # free prefix intact, suffix garbled -> guard keeps it free
+    assert b.record("groq/llama-TYPO-9000", 1000, 1000) == 0.0
+    assert b.record("gemini/flash-TYPO", 1000, 1000) == 0.0
+
+    # paid-model typo: no free prefix -> conservative default, not a fake $0
+    cost = b.record("claud-haiku", 1000, 1000)  # missing the 'e'
+    assert cost == pytest.approx(0.020)          # (0.005 + 0.015), didn't throw
+    assert cost > 0.0                            # crucially NOT silently free
+
+
 def test_cost_accumulates_across_calls():
     b = _tracker()
     b.record("claude-sonnet-4-6", 1000, 1000)
