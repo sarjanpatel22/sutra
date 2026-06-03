@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,11 @@ import numpy as np
 from faster_whisper import WhisperModel
 
 _MODEL_DIR = Path.home() / ".local" / "share" / "friday" / "models"
-_DEFAULT_MODEL = "large-v3"
+# small.en transcribes a 3s clip in ~75ms vs large-v3's ~440ms — 6x faster with
+# identical output on clear speech — the dominant cut to voice "dead air". Override
+# with WHISPER_MODEL (e.g. large-v3 for noisy/multilingual). This env was previously
+# unwired: STT() ignored it and always loaded large-v3.
+_DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "small.en")
 
 
 @dataclass

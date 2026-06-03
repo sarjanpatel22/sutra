@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import queue as q_mod
 import threading
 import time
@@ -270,7 +271,10 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     from rich.console import Console
 
     console = Console()
-    vad = VAD(aggressiveness=2)
+    # aggressiveness 3 = most aggressive non-speech rejection. At 2, ambient noise
+    # reads as speech so end-of-turn never triggers and the mic stays open ~10-15s.
+    # Override with VAD_AGGRESSIVENESS (0-3) for very quiet rooms.
+    vad = VAD(aggressiveness=int(os.getenv("VAD_AGGRESSIVENESS", "3")))
 
     if history is None:
         history = []
@@ -283,7 +287,7 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     try:
         while True:
             console.print("[dim]listening…[/dim]", end="\r")
-            audio = record_with_vad(vad_fn=vad, silence_threshold_s=0.35, max_duration_s=30.0)
+            audio = record_with_vad(vad_fn=vad, silence_threshold_s=0.25, max_duration_s=30.0)
 
             if len(audio) < 8000:
                 await asyncio.sleep(0.1)

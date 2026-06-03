@@ -80,6 +80,30 @@ def _speech_window_start(first_speech_idx: int | None, pad_frames: int) -> int |
     return max(0, first_speech_idx - pad_frames)
 
 
+def _frame_rms(frame: np.ndarray) -> float:
+    """RMS amplitude of an int16 PCM frame (0 for an empty frame)."""
+    f = frame.astype(np.float32)
+    return float(np.sqrt(np.mean(f * f))) if f.size else 0.0
+
+
+def _is_speech_frame(
+    vad_flag: bool,
+    rms: float,
+    noise_floor: float,
+    *,
+    margin: float = 2.5,
+    min_rms: float = 250.0,
+) -> bool:
+    """webrtcvad + energy gate: a frame is speech only if BOTH agree.
+
+    webrtcvad alone flags steady room noise as "speech", so end-of-turn never
+    fires and the mic stays open for seconds. Require the frame to also be louder
+    than the calibrated ambient floor (× margin) and a small absolute minimum, so
+    that once the speaker goes quiet the silence actually registers.
+    """
+    return vad_flag and rms > max(min_rms, noise_floor * margin)
+
+
 def record_with_vad(
     vad_fn: Callable[[bytes], bool],
     *,
@@ -106,6 +130,9 @@ def record_with_vad(
     consecutive_silence = 0
     speech_started = False
     first_speech_idx: int | None = None
+    # Ambient noise floor, estimated from the quiet lead-in before speech starts.
+    noise_samples: list[float] = []
+    noise_floor = 0.0
 
     with sd.InputStream(
         device=_INPUT_DEVICE,
@@ -119,7 +146,15 @@ def record_with_vad(
             frame = audio_q.get()
             all_frames.append(frame)
 
-            if vad_fn(frame.tobytes()):
+            rms = _frame_rms(frame)
+            vad_flag = vad_fn(frame.tobytes())
+            if not speech_started:
+                # Calibrate the room noise floor from pre-speech frames (median is
+                # robust to the odd transient). Frozen once speech begins.
+                noise_samples.append(rms)
+                noise_floor = float(np.median(noise_samples[-30:]))
+
+            if _is_speech_frame(vad_flag, rms, noise_floor):
                 if not speech_started:
                     first_speech_idx = len(all_frames) - 1
                     speech_started = True
