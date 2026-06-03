@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sutra · Memory</title>
+<style>
+  :root{
+    --bg:#04060d; --ink:#dbe7ff; --dim:#7e8aa6; --line:#1b2740;
+    --teal:#5eead4; --violet:#a78bfa; --pink:#f0abfc; --amber:#fbbf24;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
+    font-family:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,monospace;color:var(--ink)}
+  #graph{position:fixed;inset:0}
+  /* radial vignette so the glow reads against the void */
+  #graph::after{content:"";position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(120% 120% at 50% 40%,transparent 55%,rgba(0,0,0,.65) 100%)}
+
+  .panel{position:fixed;z-index:10;backdrop-filter:blur(14px);
+    background:rgba(10,16,30,.55);border:1px solid var(--line);border-radius:14px}
+
+  /* top-left identity */
+  #hud{top:18px;left:18px;padding:14px 16px;min-width:230px}
+  #hud .brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:.14em;
+    font-size:13px;text-transform:uppercase}
+  #hud .dot{width:9px;height:9px;border-radius:50%;background:var(--teal);
+    box-shadow:0 0 10px var(--teal),0 0 22px var(--teal)}
+  #hud .sub{margin-top:3px;color:var(--dim);font-size:11px;letter-spacing:.05em}
+  #stats{margin-top:12px;display:flex;gap:16px}
+  #stats .n{font-size:21px;font-weight:600}
+  #stats .k{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em}
+  #legend{margin-top:13px;display:flex;flex-direction:column;gap:6px}
+  #legend .row{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);cursor:pointer;user-select:none}
+  #legend .row.off{opacity:.32;text-decoration:line-through}
+  #legend .sw{width:10px;height:10px;border-radius:3px;box-shadow:0 0 8px currentColor}
+
+  /* controls top-right */
+  #ctrl{top:18px;right:18px;padding:12px;display:flex;flex-direction:column;gap:9px;width:220px}
+  #ctrl input{width:100%;padding:8px 10px;border-radius:9px;border:1px solid var(--line);
+    background:rgba(0,0,0,.35);color:var(--ink);font:inherit;font-size:12px;outline:none}
+  #ctrl input:focus{border-color:var(--teal)}
+  #ctrl .btns{display:flex;gap:8px}
+  #ctrl button{flex:1;padding:7px 0;border-radius:9px;border:1px solid var(--line);
+    background:rgba(255,255,255,.03);color:var(--ink);font:inherit;font-size:11px;cursor:pointer;
+    transition:.15s}
+  #ctrl button:hover{border-color:var(--teal);color:#fff;background:rgba(94,234,212,.08)}
+  #ctrl button.on{border-color:var(--teal);color:var(--teal)}
+
+  /* node detail bottom-left */
+  #info{bottom:18px;left:18px;max-width:380px;padding:0;opacity:0;transform:translateY(8px);
+    transition:.22s;pointer-events:none}
+  #info.show{opacity:1;transform:none;pointer-events:auto}
+  #info .head{padding:13px 16px 10px;border-bottom:1px solid var(--line);display:flex;
+    align-items:center;gap:10px}
+  #info .badge{font-size:9px;padding:3px 8px;border-radius:20px;letter-spacing:.1em;
+    text-transform:uppercase;font-weight:600}
+  #info .title{font-size:15px;font-weight:600;line-height:1.2}
+  #info .body{padding:12px 16px 15px;font-size:12.5px;line-height:1.55;color:#b9c6e4}
+  #info .rel{margin-top:10px;font-size:11px;color:var(--dim)}
+  #info .rel b{color:var(--teal);font-weight:500}
+  #info .x{margin-left:auto;cursor:pointer;color:var(--dim);font-size:16px;line-height:1}
+  #info .x:hover{color:#fff}
+
+  #err{position:fixed;inset:0;display:none;place-items:center;z-index:20;text-align:center}
+  #err .box{padding:26px 30px;max-width:440px}
+  #err h2{margin:0 0 8px;color:#fca5a5}
+  #err code{color:var(--teal);background:rgba(0,0,0,.4);padding:2px 6px;border-radius:5px}
+  .hint{position:fixed;bottom:18px;right:18px;z-index:10;color:var(--dim);font-size:10.5px;
+    letter-spacing:.04em;text-align:right;line-height:1.7;pointer-events:none}
+</style>
+</head>
+<body>
+  <div id="graph"></div>
+
+  <div id="hud" class="panel">
+    <div class="brand"><span class="dot"></span> Sutra · Memory</div>
+    <div class="sub" id="sub">connecting…</div>
+    <div id="stats">
+      <div><div class="n" id="nNodes">—</div><div class="k">nodes</div></div>
+      <div><div class="n" id="nLinks">—</div><div class="k">synapses</div></div>
+    </div>
+    <div id="legend"></div>
+  </div>
+
+  <div id="ctrl" class="panel">
+    <input id="search" placeholder="search memory…" autocomplete="off"/>
+    <div class="btns">
+      <button id="bParticles" class="on">particles</button>
+      <button id="bLabels">labels</button>
+    </div>
+    <div class="btns">
+      <button id="bReload">reload</button>
+      <button id="bFit">recenter</button>
+    </div>
+  </div>
+
+  <div id="info" class="panel">
+    <div class="head">
+      <span class="badge" id="iBadge"></span>
+      <span class="title" id="iTitle"></span>
+      <span class="x" id="iClose">✕</span>
+    </div>
+    <div class="body"><span id="iBody"></span><div class="rel" id="iRel"></div></div>
+  </div>
+
+  <div id="err"><div class="box panel"><h2>memory graph unreachable</h2>
+    <div id="errMsg" style="color:#b9c6e4;font-size:13px"></div>
+    <p style="color:#7e8aa6;font-size:12px;margin-top:14px">
+      Is FalkorDB up? <code>sudo docker start sutra-falkordb</code></p></div></div>
+
+  <div class="hint">drag · scroll-zoom · click node<br/>click legend to filter</div>
+
+<script>
+// Surface any module/load error straight onto the HUD so failures are visible.
+function __report(m){var s=document.getElementById('sub');if(s)s.textContent=String(m).slice(0,90);}
+window.addEventListener('error',e=>__report('ERR: '+(e.message||e.error||e.type)));
+window.addEventListener('unhandledrejection',e=>__report('REJ: '+((e.reason&&e.reason.message)||e.reason)));
+</script>
+
+<script type="module">
+// Self-contained graph bundle (its own three baked in) + a standalone three for
+// our glow sprites. Two instances, but sprites interop fine via three's *.isX flags.
+import ForceGraph3D from 'https://esm.sh/3d-force-graph@1.79.1';
+import * as THREE from 'https://esm.sh/three@0.170.0';
+
+// ---- glowing halo sprite (guaranteed glow, independent of postprocessing) ----
+const haloCache = new Map();
+function halo(color){
+  if(haloCache.has(color)) return haloCache.get(color);
+  const s=128, c=document.createElement('canvas'); c.width=c.height=s;
+  const x=c.getContext('2d'), g=x.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
+  g.addColorStop(0,color); g.addColorStop(.25,color);
+  g.addColorStop(.45,hexA(color,.35)); g.addColorStop(1,hexA(color,0));
+  x.fillStyle=g; x.fillRect(0,0,s,s);
+  const tex=new THREE.CanvasTexture(c);
+  const mat=new THREE.SpriteMaterial({map:tex,blending:THREE.AdditiveBlending,
+    depthWrite:false,transparent:true});
+  haloCache.set(color,mat); return mat;
+}
+function hexA(hex,a){const n=parseInt(hex.slice(1),16);
+  return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;}
+
+let DATA={nodes:[],links:[]}, hidden=new Set();
+let showParticles=true, showLabels=false, selected=null;
+// zoom-to-reveal: labels fade in between LBL_NEAR (full) and LBL_FAR (hidden),
+// auto-calibrated to the overview distance after each load.
+let LBL_NEAR=120, LBL_FAR=320;
+
+// kapsule pattern: ForceGraph3D() returns a generator; call it with the DOM node.
+const Graph = ForceGraph3D()(document.getElementById('graph'))
+  .backgroundColor('#04060d')
+  .showNavInfo(false)
+  .nodeRelSize(5)
+  .nodeThreeObject(n=>{
+    const grp=new THREE.Group();
+    // two additive halo layers (soft + hot) fake a bloom around a white core
+    const outer=new THREE.Sprite(halo(n.color));
+    const r=9+n.val*3.4; outer.scale.set(r,r,1); grp.add(outer);
+    const inner=new THREE.Sprite(halo(n.color));
+    const ri=4.5+n.val*1.5; inner.scale.set(ri,ri,1); grp.add(inner);
+    const core=new THREE.Mesh(
+      new THREE.SphereGeometry(1.1+n.val*0.2,16,16),
+      new THREE.MeshBasicMaterial({color:0xffffff}));
+    grp.add(core);
+    // label the "main folders" = well-connected hub entities (degree ≥ 2).
+    // leaves (e.g. "151 GB disk") stay clean and show on hover/click.
+    const isMain = n.group==='community'||n.group==='saga'||n.isHub;
+    const showName = showLabels || isMain;
+    if(showName){ const lt=labelSprite(n.name, n.color); lt.position.set(0,-(r*0.5+5),0); grp.add(lt); n.__label=lt; }
+    return grp;
+  })
+  .nodeLabel(n=>`<div style="font:12px monospace;color:#dbe7ff;background:rgba(6,10,20,.85);
+      padding:5px 9px;border:1px solid #1b2740;border-radius:7px;max-width:260px">
+      <b style="color:${n.color}">${esc(n.name)}</b><br>
+      <span style="color:#7e8aa6;font-size:10px">${n.label}</span></div>`)
+  .linkColor(()=> 'rgba(120,150,210,0.28)')
+  .linkWidth(0.5)
+  .linkDirectionalParticles(l=> showParticles ? 2 : 0)
+  .linkDirectionalParticleWidth(1.7)
+  .linkDirectionalParticleSpeed(0.006)
+  .linkDirectionalParticleColor(()=> '#7dd3fc')
+  .onNodeClick(focusNode)
+  .onBackgroundClick(()=>closeInfo());
+
+// gentle auto-orbit until the user grabs it — controls/renderer exist only after
+// the first render tick, so configure them once they're ready.
+function setupControls(){
+  const c=Graph.controls&&Graph.controls(), r=Graph.renderer&&Graph.renderer();
+  if(!c||!r){ setTimeout(setupControls,150); return; }
+  c.autoRotate=true; c.autoRotateSpeed=0.42;
+  ['mousedown','touchstart','wheel'].forEach(e=>
+    r.domElement.addEventListener(e,()=>c.autoRotate=false,{passive:true}));
+}
+setupControls();
+
+// zoom-to-reveal fade loop: a label's opacity tracks how close the camera is.
+function updateLabels(){
+  const cam = Graph.camera && Graph.camera();
+  if(cam){
+    const cp=cam.position, span=Math.max(1,LBL_FAR-LBL_NEAR);
+    for(const n of Graph.graphData().nodes){
+      const lt=n.__label; if(!lt) continue;
+      if(showLabels){ lt.material.opacity=1; lt.visible=true; continue; }
+      const dx=n.x-cp.x, dy=n.y-cp.y, dz=(n.z||0)-cp.z;
+      const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+      let o=(LBL_FAR-d)/span; o=o<0?0:o>1?1:o;
+      lt.material.opacity=o; lt.visible=o>0.02;
+    }
+  }
+  requestAnimationFrame(updateLabels);
+}
+requestAnimationFrame(updateLabels);
+
+// spread the cloud out a touch for a roomier "brain"
+try{ Graph.d3Force('charge').strength(-320); Graph.d3Force('link').distance(95); }catch(e){}
+
+function rrect(x,X,Y,W,H,r){
+  if(x.roundRect){ x.beginPath(); x.roundRect(X,Y,W,H,r); return; }
+  x.beginPath(); x.moveTo(X+r,Y);
+  x.arcTo(X+W,Y,X+W,Y+H,r); x.arcTo(X+W,Y+H,X,Y+H,r);
+  x.arcTo(X,Y+H,X,Y,r); x.arcTo(X,Y,X+W,Y,r); x.closePath();
+}
+function labelSprite(text, color){
+  // a dark "pill" chip: rounded translucent bg + node-colored accent bar + text.
+  const dpr=2, f=26, padX=15, padY=8, bar=5, gap=11;
+  const meas=document.createElement('canvas').getContext('2d');
+  meas.font=`600 ${f}px monospace`; const tw=meas.measureText(text).width;
+  const W=Math.ceil(bar+gap+tw+padX), H=Math.ceil(f+padY*2);
+  const c=document.createElement('canvas'); c.width=W*dpr; c.height=H*dpr;
+  const x=c.getContext('2d'); x.scale(dpr,dpr);
+  // pill background + hairline border
+  rrect(x,0.5,0.5,W-1,H-1,H/2);
+  x.fillStyle='rgba(8,13,26,0.82)'; x.fill();
+  x.lineWidth=1; x.strokeStyle='rgba(120,150,210,0.30)'; x.stroke();
+  // colored accent bar (node type)
+  x.fillStyle=color; rrect(x,8,H*0.27,bar,H*0.46,bar/2); x.fill();
+  // text
+  x.font=`600 ${f}px monospace`; x.fillStyle='#e9f1ff'; x.textBaseline='middle';
+  x.fillText(text, bar+gap+5, H/2+1);
+  const tex=new THREE.CanvasTexture(c); tex.anisotropy=4;
+  // sizeAttenuation:false → constant on-screen size; opacity starts at 0 and is
+  // driven by camera distance in the fade loop below (zoom-to-reveal).
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,
+    depthWrite:false,transparent:true,sizeAttenuation:false,opacity:0}));
+  const k=0.046; s.scale.set(k*W/H, k, 1); return s;
+}
+const esc=s=>String(s).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+
+// ----------------------------- data + render -----------------------------
+function applyFilter(){
+  const nodes=DATA.nodes.filter(n=>!hidden.has(n.group));
+  const ok=new Set(nodes.map(n=>n.id));
+  const links=DATA.links.filter(l=>ok.has(idOf(l.source))&&ok.has(idOf(l.target)));
+  Graph.graphData({nodes,links});
+}
+const idOf=v=> (v&&typeof v==='object')? v.id : v;
+
+async function load(){
+  document.getElementById('sub').textContent='loading…';
+  try{
+    const r=await fetch('/api/graph'); const d=await r.json();
+    if(d.error){ showErr(d.error); return; }
+    DATA=d; document.getElementById('err').style.display='none';
+    // degree per node, then tag the top hubs — those are the "main folders" we label
+    const deg={}; for(const l of d.links){ deg[idOf(l.source)]=(deg[idOf(l.source)]||0)+1; deg[idOf(l.target)]=(deg[idOf(l.target)]||0)+1; }
+    for(const n of d.nodes) n.deg=deg[n.id]||0;
+    const HUBS=8;
+    const ranked=d.nodes.filter(n=>n.group==='entity').sort((a,b)=>b.deg-a.deg);
+    ranked.forEach((n,i)=> n.isHub = i<HUBS);
+    document.getElementById('nNodes').textContent=d.stats.nodes;
+    document.getElementById('nLinks').textContent=d.stats.links;
+    document.getElementById('sub').textContent=
+      `graph "${d.stats.graph}"  ·  live`;
+    buildLegend(d.stats.labels||{});
+    applyFilter();
+    setTimeout(()=>{
+      Graph.zoomToFit(800,90);
+      // after the overview is framed, calibrate fade range to that distance:
+      // hidden at the overview, fully readable once you zoom ~halfway in.
+      setTimeout(()=>{
+        const cp=Graph.cameraPosition();
+        const D0=Math.hypot(cp.x,cp.y,cp.z)||300;
+        LBL_FAR=D0*0.82; LBL_NEAR=D0*0.40;
+      },650);
+    },1000);
+  }catch(e){ showErr(e.message); }
+}
+function showErr(m){
+  document.getElementById('errMsg').textContent=m;
+  document.getElementById('err').style.display='grid';
+  document.getElementById('sub').textContent='offline';
+}
+
+const GROUPS=[['entity','Entity','#5eead4'],['episode','Episode','#a78bfa'],
+  ['community','Community','#f0abfc'],['saga','Saga','#fbbf24'],['other','Other','#94a3b8']];
+function buildLegend(counts){
+  const byGroup={}; for(const n of DATA.nodes) byGroup[n.group]=(byGroup[n.group]||0)+1;
+  const el=document.getElementById('legend'); el.innerHTML='';
+  for(const [g,name,col] of GROUPS){
+    if(!byGroup[g]) continue;
+    const row=document.createElement('div'); row.className='row'+(hidden.has(g)?' off':'');
+    row.innerHTML=`<span class="sw" style="background:${col};color:${col}"></span>
+      ${name} <span style="margin-left:auto">${byGroup[g]}</span>`;
+    row.onclick=()=>{hidden.has(g)?hidden.delete(g):hidden.add(g);
+      row.classList.toggle('off'); applyFilter();};
+    el.appendChild(row);
+  }
+}
+
+// ------------------------------- interaction -------------------------------
+function focusNode(n){
+  selected=n;
+  const dist=120, r=Math.hypot(n.x,n.y,n.z)||1;
+  Graph.cameraPosition({x:n.x*(1+dist/r),y:n.y*(1+dist/r),z:n.z*(1+dist/r)},n,900);
+  const i=document.getElementById('info');
+  document.getElementById('iTitle').textContent=n.name;
+  const b=document.getElementById('iBadge'); b.textContent=n.label;
+  b.style.background=hexA(n.color,.18); b.style.color=n.color;
+  document.getElementById('iBody').textContent=n.summary||'—';
+  const rel=DATA.links.filter(l=>idOf(l.source)===n.id||idOf(l.target)===n.id);
+  document.getElementById('iRel').innerHTML = rel.length
+    ? rel.slice(0,6).map(l=>`<div>↳ <b>${esc(l.fact)}</b></div>`).join('')
+    : '';
+  i.classList.add('show');
+}
+function closeInfo(){selected=null;document.getElementById('info').classList.remove('show');}
+document.getElementById('iClose').onclick=closeInfo;
+
+document.getElementById('bParticles').onclick=e=>{
+  showParticles=!showParticles; e.target.classList.toggle('on',showParticles);
+  Graph.linkDirectionalParticles(l=>showParticles?2:0);
+};
+document.getElementById('bLabels').onclick=e=>{
+  showLabels=!showLabels; e.target.classList.toggle('on',showLabels);
+  Graph.nodeThreeObject(Graph.nodeThreeObject());  // force re-gen
+  applyFilter();
+};
+document.getElementById('bReload').onclick=load;
+document.getElementById('bFit').onclick=()=>{Graph.controls().autoRotate=false;Graph.zoomToFit(700,80);};
+
+const search=document.getElementById('search');
+search.oninput=()=>{
+  const q=search.value.trim().toLowerCase();
+  if(!q){applyFilter();return;}
+  const hit=DATA.nodes.find(n=>n.name.toLowerCase().includes(q)
+    ||(n.summary||'').toLowerCase().includes(q));
+  if(hit){const live=Graph.graphData().nodes.find(n=>n.id===hit.id); if(live)focusNode(live);}
+};
+search.onkeydown=e=>{if(e.key==='Enter'&&Graph.graphData().nodes.length){}};
+
+window.addEventListener('resize',()=>{
+  Graph.width(window.innerWidth).height(window.innerHeight);
+});
+
+load();
+</script>
+</body>
+</html>

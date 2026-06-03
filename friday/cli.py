@@ -160,6 +160,16 @@ def voice(
 
 
 @app.command()
+def graph(
+    port: int = typer.Option(8700, "--port", "-p", help="Port to serve the viewer on"),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't auto-open a browser"),
+) -> None:
+    """Open the brain-graph viewer for the memory layer (Graphiti/FalkorDB)."""
+    from friday.memory.graphview import serve
+    serve(port=port, open_browser=not no_open)
+
+
+@app.command()
 def status() -> None:
     """Run a one-shot health check and print results."""
     from friday.core.monitor import print_report, run_health_checks
