@@ -82,16 +82,64 @@ entity-extraction stays bounded.
 
 ---
 
-## Current status (verified 2026-06-03)
+## Current status (updated 2026-06-03 late)
 
 | Check | Result |
 |-------|--------|
 | Tests | **49 passing** (`pytest -q`) |
 | Lint  | new files clean (`ruff`); only pre-existing nits remain |
-| Git   | `4dd99fa` + `720cd7b` pushed, up to date with `origin/main` |
-| Graph | 46 nodes (32 entities + 14 episodes) in FalkorDB |
-| Viewer| `http://127.0.0.1:8700` → HTTP 200 |
-| Daemon| `sutra ambient` running live (10-min flush) |
+| Git   | latest `8d20876`, pushed, up to date with `origin/main` |
+| Graph | ~50 nodes (entities + episodes, incl. orange `ambient:*`) in FalkorDB |
+| Viewer| `sutra graph` → `:8700` → HTTP 200 |
+| Voice | **VERIFIED LIVE** — push-to-talk p50 1221ms (see below) |
+| Daemon| `sutra ambient` built + verified; currently **stopped** |
+
+---
+
+## Voice — verified live (2026-06-03)
+
+First time the voice loop was ever run with a real human voice. 6 push-to-talk
+turns, gemma3:4b local agent. **Every turn under the 1500ms target.**
+
+| Stage | p50 | range |
+|-------|-----|-------|
+| STT (Whisper large-v3) | 490ms | 434–663 |
+| Agent TTFT (gemma3:4b)  | 427ms | 411–475 |
+| TTS first audio (Kokoro)| 721ms | 610–807 |
+| **Total → first audio** | **1221ms** | 1052–1469 |
+
+**Two real bugs the live test exposed (both fixed + committed in `8d20876`):**
+1. **Mic crash** — raw ALSA device rejected 16kHz (`PaErrorCode -9997`); input
+   now routes through `pulse` like output. Would have crashed on the first word.
+2. **3s cold-start** — `prewarm()` didn't warm the LLM; now it does (cold TTFT
+   3016ms → warm ~450ms).
+
+**Still unverified:** VAD voice mode (0 turns logged — only push-to-talk proven).
+
+---
+
+## Gap-closing session — status & pickup (2026-06-03)
+
+Working an ordered gap-closing checklist. **Where we stopped (resume here):**
+
+- **Step 1 — voice fixes committed** ✅ `8d20876` pushed.
+- **Step 2 — SearXNG / web_search** ⏸ BLOCKED ON DECISION. SearXNG was **never
+  provisioned** (no container, not in `docker-compose.yml`, no compose plugin).
+  Making `web_search` work = standing up a new `searxng/searxng` container from
+  scratch + `settings.yml` (enable `json` format, set secret key, relax limiter
+  for localhost). All $0/local, but it's net-new infra → flagged, awaiting go/defer.
+- **Step 3 — Groq (MEDIUM tier)** ⏳ needs free `GROQ_API_KEY` (user to paste).
+- **Step 4 — Gemini (HEAVY tier)** ⏳ needs free `GEMINI_API_KEY` (user to paste).
+- **Step 5 — fallback chain** ⏳ depends on 3 + 4.
+- **Step 6 — VAD live test** ⏳ needs user at mic.
+- **Step 7 — safety-net** ⏳ (a) budget prefix-guard typo test, (b) seeder
+  idempotency test. No keys/mic needed — can do solo next session.
+- **Step 8 — final verification + this doc.**
+
+**Honest real-vs-theoretical:**
+- REAL & verified: local voice loop, memory layer, viewer, ambient daemon, 49 tests.
+- THEORETICAL (never run): Groq/Gemini/Claude cloud tiers (no API keys), the
+  router fallback chain, VAD voice mode, `web_search` (SearXNG never provisioned).
 
 ---
 
