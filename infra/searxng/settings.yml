@@ -1,0 +1,43 @@
+# SearXNG settings for Sutra — self-hosted meta-search, $0, local only.
+# Inherits SearXNG's shipped defaults; we only override what the agent needs.
+#
+# Mounted into the container at /etc/searxng/settings.yml.
+# Two things matter for the `web_search` skill:
+#   1. search.formats includes `json`   -> enables the JSON API the skill calls
+#   2. server.limiter: false            -> don't rate-limit our own localhost calls
+use_default_settings: true
+
+general:
+  instance_name: "Sutra Search"
+  # No external metrics/telemetry.
+  enable_metrics: false
+
+server:
+  # Override with SEARXNG_SECRET env at runtime if you prefer; this is a local,
+  # not-internet-exposed instance, so a baked key is acceptable.
+  secret_key: "change-me-generate-with-openssl-rand-hex-32"
+  limiter: false          # localhost agent calls must not be throttled/blocked
+  image_proxy: false
+  bind_address: "0.0.0.0"
+  port: 8080
+
+search:
+  # `json` is what enables the API the web_search skill hits (/search?format=json).
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+
+ui:
+  static_use_hash: true
+
+# Keep the engine set lean and reliable for general queries.
+engines:
+  - name: wikipedia
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false

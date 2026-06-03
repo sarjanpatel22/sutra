@@ -36,6 +36,15 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
+  searxng:
+    image: searxng/searxng:latest
+    container_name: sutra-searxng
+    ports:
+      - "8080:8080"      # web_search skill hits /search?format=json here
+    volumes:
+      - ./infra/searxng:/etc/searxng:rw   # settings.yml (json API + limiter off)
+    restart: unless-stopped
+
 volumes:
   falkordb_data:
   qdrant_data:

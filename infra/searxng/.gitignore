@@ -1,0 +1,6 @@
+# SearXNG writes uwsgi.ini / limiter.toml / etc. here on first container start.
+# Only our settings.yml (and these docs) belong in git.
+*
+!.gitignore
+!settings.yml
+!README.md
