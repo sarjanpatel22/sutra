@@ -17,8 +17,9 @@ DTYPE = np.int16
 BLOCK_SIZE = 480      # 30ms at 16kHz — webrtcvad frame size
 
 # Set AUDIO_INPUT_DEVICE / AUDIO_OUTPUT_DEVICE in .env to override.
-# "pulse" routes through PipeWire/PulseAudio and respects system defaults.
-_INPUT_DEVICE: str | int | None = os.getenv("AUDIO_INPUT_DEVICE") or None
+# "pulse" routes through PipeWire/PulseAudio, which resamples to/from the device's
+# native rate — raw ALSA devices often reject 16kHz outright (PaErrorCode -9997).
+_INPUT_DEVICE: str | int | None = os.getenv("AUDIO_INPUT_DEVICE", "pulse") or None
 _OUTPUT_DEVICE: str | int | None = os.getenv("AUDIO_OUTPUT_DEVICE", "pulse") or None
 
 # Convert numeric strings to int

@@ -47,7 +47,11 @@ def _get_tts():
 
 
 def prewarm() -> None:
-    """Pre-load STT and TTS models so first voice turn has no cold-start penalty."""
+    """Pre-load STT, TTS, and the local LLM so the first voice turn isn't cold.
+
+    Without the LLM warm-up the first turn pays a ~3s Ollama model-load on top of
+    inference — pre-flight measured cold TTFT 3016ms vs warm ~450ms.
+    """
     import numpy as np
     _log.info("pre-warming STT...")
     stt = _get_stt()
@@ -55,6 +59,20 @@ def prewarm() -> None:
     _log.info("pre-warming TTS...")
     tts = _get_tts()
     tts.synthesize("warm")
+    _log.info("pre-warming local LLM...")
+    try:
+        import asyncio
+
+        from friday.core.agent import voice_stream
+        from friday.core.router import Tier
+
+        async def _warm() -> None:
+            async for _ in voice_stream("hi", history=[], tier=Tier.LOCAL):
+                break  # first token means the model is resident in VRAM
+
+        asyncio.run(_warm())
+    except Exception as e:  # noqa: BLE001 — Ollama down: voice still works, just cold
+        _log.warning("LLM pre-warm skipped (%s)", e)
     _log.info("voice models ready")
 
 
