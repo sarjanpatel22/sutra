@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from friday.core.router import Tier, complete
-from friday.memory.store import get_store
+from friday.memory.store import get_store, looks_like_noise
 from friday.skills import registry
 
 # Who Sutra is talking to. Recalled memory stores facts as "<USER_NAME> is …", so
@@ -55,6 +55,8 @@ def persist_turn_async(user_input: str, reply: str, source: str = "voice") -> No
     """
     if not reply.strip():
         return
+    if looks_like_noise(user_input):
+        return  # don't memorize STT garbage (far-field/echo spell-outs)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

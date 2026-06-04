@@ -32,6 +32,12 @@ class TranscribeResult:
     language: str
     latency_ms: float
     segments: list[dict[str, object]]
+    # Whisper confidence, duration-weighted across segments. avg_logprob ~ -0.1..-0.5
+    # on clean speech, more negative (< ~-1.0) when it's hallucinating quiet/far-field
+    # audio; no_speech_prob is high (> ~0.6) when there's likely no real speech. Used
+    # to keep low-SNR garbage out of long-term memory.
+    avg_logprob: float = 0.0
+    no_speech_prob: float = 0.0
 
 
 class STT:
@@ -91,11 +97,19 @@ class STT:
             {"start": s.start, "end": s.end, "text": s.text.strip()}
             for s in segments
         ]
+        # Duration-weighted confidence so a long clear segment isn't dragged down by
+        # a short uncertain one (and vice versa). Empty audio -> neutral 0.0.
+        durations = [max(s.end - s.start, 1e-3) for s in segments]
+        total = sum(durations) or 1.0
+        avg_logprob = sum(s.avg_logprob * d for s, d in zip(segments, durations)) / total
+        no_speech_prob = sum(s.no_speech_prob * d for s, d in zip(segments, durations)) / total
         return TranscribeResult(
             text=text,
             language=info.language,
             latency_ms=latency_ms,
             segments=seg_dicts,
+            avg_logprob=avg_logprob if segments else 0.0,
+            no_speech_prob=no_speech_prob if segments else 0.0,
         )
 
 

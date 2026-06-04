@@ -262,9 +262,18 @@ async def process_audio(
     history.append({"role": "user", "content": transcript})
     history.append({"role": "assistant", "content": reply})
 
-    # Persist this turn to long-term memory in the background (non-blocking).
-    from friday.core.agent import persist_turn_async
-    persist_turn_async(transcript, reply)
+    # Persist this turn to long-term memory in the background (non-blocking) — but
+    # keep low-confidence far-field/hallucinated transcripts out of the graph.
+    min_logprob = float(os.getenv("STT_MIN_LOGPROB", "-1.0"))
+    max_nospeech = float(os.getenv("STT_MAX_NOSPEECH", "0.6"))
+    if result.avg_logprob >= min_logprob and result.no_speech_prob <= max_nospeech:
+        from friday.core.agent import persist_turn_async
+        persist_turn_async(transcript, reply)
+    else:
+        _log.info(
+            "skip persist — low STT confidence (logprob=%.2f no_speech=%.2f): %r",
+            result.avg_logprob, result.no_speech_prob, transcript[:40],
+        )
 
     _log.info("Turn done — total=%.0fms reply=%r", lat.total_ms, reply[:60])
     return reply, history, lat, interrupted

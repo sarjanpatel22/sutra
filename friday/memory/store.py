@@ -35,6 +35,30 @@ def _keywords(query: str, limit: int = 10) -> list[str]:
     toks = re.findall(r"[a-z0-9]+", query.lower())
     return [t for t in toks if len(t) > 1 and t not in _STOPWORDS][:limit]
 
+
+def looks_like_noise(text: str) -> bool:
+    """True if text reads like STT garbage rather than a real utterance.
+
+    Targets the junk a far-field / echoing mic transcribes — single-letter
+    spell-outs ("M-H-H-H-H"), runs of one repeated character ("Hhhhh"), or strings
+    with no real words — so it never reaches long-term memory. Deliberately
+    conservative: typed text and normal short commands ("yes", "stop it") pass.
+    Plausible-but-wrong words (e.g. "reitutra") are caught upstream by STT
+    confidence, not here.
+    """
+    t = text.strip()
+    if not t:
+        return True
+    words = re.findall(r"[a-z]+", t.lower())
+    if not words:
+        return True  # all punctuation / digits / symbols
+    # One character repeated 4+ times in a row (ignoring spaces/hyphens): "Hhhhh".
+    if re.search(r"(.)\1{3,}", re.sub(r"[\s\-]", "", t)):
+        return True
+    # Single-letter "words" dominate -> spell-out garbage like "M H H H".
+    singles = sum(1 for w in words if len(w) == 1)
+    return singles >= 3 and singles / len(words) >= 0.5
+
 _OLLAMA_BASE = os.getenv("GRAPHITI_LLM_BASE_URL", "http://localhost:11434/v1")
 _LLM_API_KEY = os.getenv("GRAPHITI_LLM_API_KEY", "ollama")  # dummy for Ollama
 # qwen2.5:14b for extraction — gemma3:4b drops relationships, qwen2.5:7b leaks
@@ -244,6 +268,36 @@ class MemoryStore:
                 logger.warning("memory.forget remove_episode %s failed: %s", uid, e)
         result["removed"] = removed
         return result
+
+    def list_episodes(self) -> list[dict[str, str]]:
+        """Every episode (uuid, name, content) via the sync client — for offline tools.
+
+        The graph is namespaced by database=group_id, so no group filter is needed.
+        Returns [] if FalkorDB is unreachable.
+        """
+        try:
+            from falkordb import FalkorDB
+
+            g = FalkorDB(host=_FALKOR_HOST, port=_FALKOR_PORT).select_graph(_GROUP_ID)
+            res = g.query("MATCH (e:Episodic) RETURN e.uuid, e.name, e.content")
+            return [
+                {"uuid": r[0] or "", "name": r[1] or "", "content": r[2] or ""}
+                for r in res.result_set
+            ]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("memory.list_episodes failed: %s", e)
+            return []
+
+    async def remove_episode(self, uuid: str) -> bool:
+        """Delete one episode and the facts derived solely from it. False if unavailable."""
+        if not uuid or not await self.initialize():
+            return False
+        try:
+            await self._graphiti.remove_episode(uuid)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("memory.remove_episode %s failed: %s", uuid, e)
+            return False
 
     def reset(self) -> None:
         """Drop the cached connection so the next initialize() reconnects.
