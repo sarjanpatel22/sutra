@@ -293,8 +293,10 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     try:
         while True:
             console.print("[dim]listening…[/dim]", end="\r")
-            # silence_threshold 0.5s + Silero = waits for a real pause, no mid-sentence cut.
-            audio = record_with_vad(vad_fn=vad, silence_threshold_s=0.5, max_duration_s=30.0)
+            # End-of-turn silence: the single biggest warm-latency knob. 0.5s (LiveKit's
+            # default) waits for a real pause; lower = snappier but risks cutting pauses.
+            silence_s = float(os.getenv("VAD_SILENCE_S", "0.5"))
+            audio = record_with_vad(vad_fn=vad, silence_threshold_s=silence_s, max_duration_s=30.0)
 
             if len(audio) < 8000:
                 await asyncio.sleep(0.1)
