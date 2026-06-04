@@ -9,7 +9,7 @@ import typer
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from friday.core.router import Tier, get_budget
@@ -92,13 +92,30 @@ async def _chat_loop(tier: Tier) -> None:
                 console.print(f"[yellow]Unknown command: /{cmd}[/yellow]")
             continue
 
-        # Agent call
-        with console.status("[cyan]thinking…[/cyan]"):
-            try:
-                reply, history = await run(user, history=history, tier=tier)
-            except Exception as e:  # noqa: BLE001
-                console.print(f"[red]Error: {e}[/red]")
-                continue
+        # Agent call. Irreversible skills (write_file, run_command, forget) pause
+        # the spinner and ask for a y/n before they run.
+        status = console.status("[cyan]thinking…[/cyan]")
+        status.start()
+
+        async def _confirm(skill_name: str, args: dict[str, Any]) -> bool:
+            status.stop()
+            console.print(Panel(
+                f"[bold]{skill_name}[/bold]\n[dim]{args}[/dim]",
+                title="[yellow]Confirm action[/yellow]", border_style="yellow",
+            ))
+            ok = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: Confirm.ask("  Run this?", default=False)
+            )
+            status.start()
+            return ok
+
+        try:
+            reply, history = await run(user, history=history, tier=tier, confirm=_confirm)
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Error: {e}[/red]")
+            continue
+        finally:
+            status.stop()
 
         console.print(Panel(Markdown(reply), border_style="dim", padding=(0, 1)))
 

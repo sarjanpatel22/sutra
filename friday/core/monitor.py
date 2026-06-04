@@ -212,6 +212,37 @@ async def _check_falkordb() -> CheckResult:
     return await _ping_redis_proto("falkordb", host, port)
 
 
+async def _check_ollama() -> CheckResult:
+    """Ollama is THE local LLM dependency — voice + the LOCAL/REASON tiers all need
+    it. If it's down, those break, so this is a real FAIL (unlike Redis/Qdrant)."""
+    base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"{base}/api/tags")
+        latency = (time.monotonic() - t0) * 1000
+        if r.status_code == 200:
+            n = len(r.json().get("models", []))
+            return CheckResult("ollama", Status.OK, f"{n} models loaded", latency)
+        return CheckResult("ollama", Status.FAIL, f"HTTP {r.status_code}", latency)
+    except httpx.ConnectError:
+        return CheckResult("ollama", Status.FAIL, "down — local LLM (voice + text) unavailable")
+    except Exception as e:  # noqa: BLE001
+        return CheckResult("ollama", Status.FAIL, str(e))
+
+
+async def _check_free_keys() -> CheckResult:
+    """The free cloud tiers (Groq/Gemini) are the fallback path. Missing keys just
+    means no cloud fallback — local still works — so this is informational (WARN)."""
+    have = [k.split("_")[0].title() for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+            if os.getenv(k)]
+    if have:
+        return CheckResult("free_keys", Status.OK, f"set: {', '.join(dict.fromkeys(have))}")
+    return CheckResult(
+        "free_keys", Status.WARN, "no Groq/Gemini key — cloud fallback off (local still works)"
+    )
+
+
 async def _check_disk() -> CheckResult:
     import shutil as sh
     usage = sh.disk_usage("/")
@@ -286,6 +317,8 @@ async def run_health_checks() -> HealthReport:
 
     results = await asyncio.gather(
         _safe("anthropic_key", _check_api_key()),
+        _safe("free_keys", _check_free_keys()),
+        _safe("ollama", _check_ollama()),
         _safe("searxng", _check_http("searxng", searxng_url)),
         _safe("redis", _check_redis()),
         _safe("falkordb", _check_falkordb()),

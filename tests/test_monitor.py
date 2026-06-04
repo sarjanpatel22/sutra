@@ -82,6 +82,7 @@ async def test_run_health_checks_returns_report():
     assert "disk" in check_names
     assert "anthropic_key" in check_names
     assert "falkordb" in check_names  # added: memory-layer backend
+    assert "ollama" in check_names    # added: critical local-LLM backend
 
 
 def test_parse_redis_url():
@@ -117,4 +118,30 @@ async def test_watchdog_survives_a_crashing_check(monkeypatch):
     gpu = next(c for c in report.checks if c.name == "gpu")
     assert gpu.status == monitor.Status.FAIL
     assert "exploded" in gpu.detail
-    assert len(report.checks) == 8
+    assert len(report.checks) == 10
+
+
+@pytest.mark.asyncio
+async def test_ollama_down_is_fail(monkeypatch):
+    """Ollama is the critical local-LLM dep — down must be a FAIL, not a quiet OK."""
+    from friday.core.monitor import Status, _check_ollama
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:1")  # nothing listening
+    result = await _check_ollama()
+    assert result.status == Status.FAIL
+
+
+@pytest.mark.asyncio
+async def test_free_keys_present_is_ok(monkeypatch):
+    from friday.core.monitor import Status, _check_free_keys
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    assert (await _check_free_keys()).status == Status.OK
+
+
+@pytest.mark.asyncio
+async def test_free_keys_absent_is_warn(monkeypatch):
+    from friday.core.monitor import Status, _check_free_keys
+    for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    assert (await _check_free_keys()).status == Status.WARN

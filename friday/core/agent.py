@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from friday.core.router import Tier, complete
 from friday.memory.store import get_store, looks_like_noise
 from friday.skills import registry
+
+# Confirmation hook: given (skill_name, args), return True to allow an
+# auto_confirm=False (irreversible) skill to run. None = always decline.
+ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
 
 # Who Sutra is talking to. Recalled memory stores facts as "<USER_NAME> is …", so
 # the prompt must tell the model that name == the person it's speaking with,
@@ -105,8 +109,14 @@ async def run(
     history: list[dict[str, Any]] | None = None,
     tier: Tier = Tier.HEAVY,
     max_tool_rounds: int = 5,
+    confirm: ConfirmFn | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one turn of the agent loop.
+
+    confirm: async (skill_name, args) -> bool, consulted before any
+    auto_confirm=False (irreversible) skill runs. Without it those skills are
+    declined — never silently executed — so the confirmation gate can't be
+    bypassed, but with it they actually run after approval.
 
     Returns (assistant_reply, updated_history).
     """
@@ -145,7 +155,7 @@ async def run(
             return _finish(msg.content or "")
 
         # Execute all tool calls (in parallel where possible)
-        tool_results = await _run_tool_calls(tool_calls)
+        tool_results = await _run_tool_calls(tool_calls, confirm=confirm)
         messages.extend(tool_results)
 
     # Exceeded max rounds — ask model to wrap up without more tools
@@ -263,8 +273,14 @@ async def voice_stream(
             pass
 
 
-async def _run_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
-    """Execute tool calls in parallel and return tool-result messages."""
+async def _run_tool_calls(
+    tool_calls: list[Any], confirm: ConfirmFn | None = None
+) -> list[dict[str, Any]]:
+    """Execute tool calls in parallel and return tool-result messages.
+
+    Irreversible skills (auto_confirm=False) run only if `confirm` approves them;
+    with no confirm hook they are declined rather than executed.
+    """
 
     async def _call_one(tc: Any) -> dict[str, Any]:
         fn_name = tc.function.name
@@ -275,9 +291,12 @@ async def _run_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
 
         try:
             meta = registry.get(fn_name)
-            if not meta.auto_confirm:
-                # In text mode, surface confirmation request
-                result = {"confirmation_required": True, "skill": fn_name, "args": args}
+            if not meta.auto_confirm and not (confirm and await confirm(fn_name, args)):
+                result = {
+                    "declined": True,
+                    "skill": fn_name,
+                    "note": "Not performed — the user did not confirm this action.",
+                }
             else:
                 result = await asyncio.wait_for(
                     registry.call(fn_name, **args),
