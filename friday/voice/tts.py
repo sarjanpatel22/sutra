@@ -33,9 +33,14 @@ class TTS:
     Sample rate: 24 kHz mono float32.
     """
 
-    def __init__(self, voice: str = "af_heart", speed: float = 1.0) -> None:
+    def __init__(self, voice: str | None = None, speed: float | None = None) -> None:
         import os
         from kokoro_onnx import Kokoro  # type: ignore[import-untyped]
+
+        # Read at construction (after load_dotenv) — KOKORO_VOICE was previously
+        # unwired: TTS() always used af_heart and ignored the .env setting.
+        voice = voice or os.getenv("KOKORO_VOICE", "af_heart")
+        speed = speed if speed is not None else float(os.getenv("KOKORO_SPEED", "1.0"))
 
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
         model_path = os.getenv("KOKORO_MODEL_PATH", str(_ONNX_MODEL))
