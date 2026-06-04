@@ -26,6 +26,7 @@ ALERT_THRESHOLD = float(os.getenv("BUDGET_ALERT_THRESHOLD", "0.85"))
 
 class Tier(str, Enum):
     LOCAL = "local"
+    REASON = "reason"  # local reasoning — Gemma 4 with thinking ON, free
     MEDIUM = "medium"
     HEAVY = "heavy"
     MAX = "max"
@@ -34,6 +35,12 @@ class Tier(str, Enum):
 TIER_MODELS: dict[Tier, list[str]] = {
     Tier.LOCAL: [
         os.getenv("ROUTER_LOCAL_MODEL", "ollama/gemma3:4b"),
+    ],
+    # Local reasoning: Gemma 4 (a reasoning model) with thinking left ON — slower
+    # but it works through hard questions. Free/local; falls back to free Gemini.
+    Tier.REASON: [
+        os.getenv("ROUTER_REASON_MODEL", "ollama_chat/gemma4:e4b"),
+        "gemini/gemini-2.5-flash",
     ],
     Tier.MEDIUM: [
         "groq/llama-3.3-70b-versatile",
@@ -60,7 +67,7 @@ _COST_PER_1K: dict[str, tuple[float, float]] = {
 
 # Provider prefixes that are always free (local or free-tier APIs).
 # Guards against silently charging the default rate on a model-name typo.
-_FREE_PREFIXES = ("ollama/", "groq/", "gemini/")
+_FREE_PREFIXES = ("ollama/", "ollama_chat/", "groq/", "gemini/")
 
 # Registered alert callbacks: fn(scope, pct_used) where scope is "daily"|"monthly"
 _alert_callbacks: list[Callable[[str, float], None]] = []

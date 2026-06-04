@@ -132,6 +132,40 @@ async def run(
     return await _finish(msg.content or "")
 
 
+async def reason(
+    user_input: str,
+    history: list[dict[str, Any]] | None = None,
+) -> tuple[str, str]:
+    """Reason through a hard question locally with the REASON tier (Gemma 4, thinking ON).
+
+    Unlike run()/voice, thinking is left enabled, so Gemma 4 works through the problem
+    before answering. Memory is injected so reasoning is grounded. Returns
+    (final_answer, reasoning_trace). Free/local; falls back to Gemini if Gemma 4 is down.
+
+    Does NOT auto-persist: reasoning is mostly ephemeral compute, and persisting would
+    add a ~18s qwen2.5:14b extraction + a VRAM swap against Gemma 4. Ask Sutra to
+    remember anything worth keeping.
+    """
+    system_content = SYSTEM_PROMPT
+    memories = await get_store().recall(user_input, limit=5)
+    if memories:
+        system_content += "\n\nRelevant long-term memory (may be incomplete):\n" + "\n".join(
+            f"- {m}" for m in memories
+        )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_input})
+
+    # No think=False here — we WANT the reasoning. High token budget for think + answer.
+    response = await complete(messages, tier=Tier.REASON, tools=None, max_tokens=2048)
+    msg = response.choices[0].message
+    answer = (msg.content or "").strip()
+    # Ollama exposes the trace as message.thinking; litellm maps it to reasoning_content.
+    thinking = (getattr(msg, "reasoning_content", None) or getattr(msg, "thinking", None) or "").strip()
+    return answer, thinking
+
+
 async def voice_run(
     user_input: str,
     history: list[dict[str, Any]] | None = None,

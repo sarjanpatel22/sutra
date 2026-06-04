@@ -19,7 +19,13 @@ console = Console()
 
 
 def _tier_from_str(s: str) -> Tier:
-    mapping = {"local": Tier.LOCAL, "medium": Tier.MEDIUM, "heavy": Tier.HEAVY, "max": Tier.MAX}
+    mapping = {
+        "local": Tier.LOCAL,
+        "reason": Tier.REASON,
+        "medium": Tier.MEDIUM,
+        "heavy": Tier.HEAVY,
+        "max": Tier.MAX,
+    }
     return mapping.get(s.lower(), Tier.MEDIUM)
 
 
@@ -108,13 +114,31 @@ def chat(
 @app.command()
 def ask(
     query: str = typer.Argument(..., help="Single question to ask"),
-    tier: str = typer.Option("medium", "--tier", "-t"),
+    tier: str = typer.Option("medium", "--tier", "-t", help="local/reason/medium/heavy/max"),
 ) -> None:
     """Ask a single question and exit."""
     from friday.core.agent import run
 
     async def _once() -> None:
         reply, _ = await run(query, tier=_tier_from_str(tier))
+        console.print(Markdown(reply))
+
+    asyncio.run(_once())
+
+
+@app.command()
+def think(
+    query: str = typer.Argument(..., help="A hard question to reason through, locally"),
+    show: bool = typer.Option(False, "--show", help="Also print Gemma 4's reasoning trace"),
+) -> None:
+    """Reason through a hard question locally with Gemma 4 (thinking on). Free."""
+    from friday.core.agent import reason
+
+    async def _once() -> None:
+        with console.status("[dim]Gemma 4 is thinking…[/dim]"):
+            reply, thinking = await reason(query)
+        if show and thinking:
+            console.print(f"[dim]── reasoning ──\n{thinking}\n──────────[/dim]")
         console.print(Markdown(reply))
 
     asyncio.run(_once())
