@@ -245,6 +245,17 @@ class MemoryStore:
         result["removed"] = removed
         return result
 
+    def reset(self) -> None:
+        """Drop the cached connection so the next initialize() reconnects.
+
+        initialize() caches availability for the whole process — fine for the CLI,
+        but a long-running daemon would log-but-never-persist if FalkorDB restarted.
+        Calling reset() after a failed write lets memory recover on the next attempt.
+        """
+        self._initialized = False
+        self._available = False
+        self._graphiti = None
+
     async def close(self) -> None:
         if self._graphiti is not None:
             try:

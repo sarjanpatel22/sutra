@@ -7,6 +7,7 @@ store. Raw events are never persisted — only the rolled-up summary.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from collections import Counter
@@ -122,7 +123,7 @@ class FileActivityCollector(Collector):
             if not root.exists():
                 continue
             names: list[tuple[float, str]] = []
-            for dirpath, dirnames, filenames in __import__("os").walk(root):
+            for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [d for d in dirnames if d not in config.IGNORE_PARTS]
                 for fn in filenames:
                     p = Path(dirpath) / fn

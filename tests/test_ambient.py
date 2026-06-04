@@ -95,3 +95,46 @@ def test_shell_reads_only_new_lines(tmp_path):
     assert out and "git" in out[0]
     assert "old" not in " ".join(out)
     assert c.drain() == []  # nothing new the second time
+
+
+def test_daemon_reconnects_after_memory_recovers(monkeypatch):
+    """If FalkorDB is down then comes back, the daemon must resume persisting —
+    initialize() caches availability, so flush() resets the store on total failure."""
+    import asyncio
+
+    import friday.ambient.daemon as dmod
+
+    class FakeStore:
+        def __init__(self):
+            self.up = False
+            self.reset_called = 0
+            self.wrote = 0
+
+        async def initialize(self):
+            return self.up
+
+        async def remember(self, text, source=None):
+            if not self.up:
+                return False
+            self.wrote += 1
+            return True
+
+        def reset(self):
+            self.reset_called += 1
+            self.up = True  # simulate FalkorDB coming back
+
+    fake = FakeStore()
+    monkeypatch.setattr(dmod, "get_store", lambda: fake)
+
+    class _Col:
+        name = "test"
+        def poll(self, *, idle): ...
+        def drain(self): return ["Sarjan did a thing."]
+
+    daemon = dmod.AmbientDaemon()
+    daemon.collectors = [_Col()]
+
+    n1 = asyncio.run(daemon.flush())   # DB down -> 0 written -> reset()
+    n2 = asyncio.run(daemon.flush())   # reconnected -> writes
+    assert n1 == 0 and fake.reset_called == 1
+    assert n2 == 1  # recovered

@@ -83,8 +83,15 @@ class AmbientDaemon:
             log.info("[%s] %s", name, text)
             if available and await store.remember(text, source=f"ambient:{name}"):
                 wrote += 1
-        if not available:
-            log.warning("memory unavailable — %d episodes logged but not stored", len(episodes))
+        # All writes failed (DB down at start, or the connection broke mid-run while
+        # initialize() still reports the cached True) — drop the cached connection so
+        # the next flush reconnects. Otherwise the daemon would never persist again.
+        if wrote == 0:
+            store.reset()
+            log.warning(
+                "memory unavailable — %d episode(s) logged but not stored; "
+                "will reconnect next flush", len(episodes)
+            )
         return wrote
 
     async def run_once(self) -> int:
