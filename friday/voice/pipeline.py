@@ -68,6 +68,9 @@ def prewarm() -> None:
         from friday.core.router import Tier
 
         async def _warm() -> None:
+            # Also warms the memory embedder (recall now runs each voice turn).
+            from friday.memory.store import get_store
+            await get_store().recall("warmup", limit=1)
             async for _ in voice_stream("hi", history=[], tier=Tier.LOCAL):
                 break  # first token means the model is resident in VRAM
 

@@ -23,6 +23,22 @@ Answer from your own knowledge — do NOT call any tools or functions.
 No markdown, no lists, no code. Just natural spoken sentences."""
 
 
+async def _voice_system_prompt(user_input: str) -> str:
+    """VOICE_SYSTEM_PROMPT plus any relevant recalled memory.
+
+    recall() is fast (~40ms warm; keyword fallback ~2ms) and never raises, so this
+    stays within the voice latency budget. Voice only READS memory here — it does
+    not persist turns (that runs the ~18s extraction LLM; the ambient daemon and
+    explicit remember handle writes).
+    """
+    facts = await get_store().recall(user_input, limit=3)
+    if not facts:
+        return VOICE_SYSTEM_PROMPT
+    return VOICE_SYSTEM_PROMPT + "\n\nWhat you remember (use only if relevant):\n" + "\n".join(
+        f"- {f}" for f in facts
+    )
+
+
 async def run(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
@@ -91,7 +107,7 @@ async def voice_run(
     fallback is unavailable (no keys / offline), the local reply is kept rather
     than raising, so voice degrades instead of crashing.
     """
-    messages: list[dict[str, Any]] = [{"role": "system", "content": VOICE_SYSTEM_PROMPT}]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": await _voice_system_prompt(user_input)}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
@@ -128,7 +144,7 @@ async def voice_stream(
     """
     from friday.core.router import stream_complete
 
-    messages: list[dict[str, Any]] = [{"role": "system", "content": VOICE_SYSTEM_PROMPT}]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": await _voice_system_prompt(user_input)}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
