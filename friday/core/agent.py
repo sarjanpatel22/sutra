@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -11,13 +12,21 @@ from friday.core.router import Tier, complete
 from friday.memory.store import get_store
 from friday.skills import registry
 
-SYSTEM_PROMPT = """You are Sutra — a voice-native ambient AI assistant.
+# Who Sutra is talking to. Recalled memory stores facts as "<USER_NAME> is …", so
+# the prompt must tell the model that name == the person it's speaking with,
+# otherwise "what's my name?" recalls "Sarjan is from Sudbury" but answers "user".
+_USER_NAME = os.getenv("USER_NAME", "Sarjan")
+
+SYSTEM_PROMPT = f"""You are Sutra — a voice-native ambient AI assistant talking with {_USER_NAME}.
 You are dry, technically precise, occasionally warm. Like a senior engineer who's seen a lot but still gets curious.
 Never sycophantic. Never preachy.
+Recalled facts about {_USER_NAME} describe the person you are speaking with — treat "{_USER_NAME}" and "you/your" as the same person.
 Default spoken responses: sub-15 words. Text responses can be longer when detail is useful.
 You have access to tools. Use them when needed. Think before calling."""
 
-VOICE_SYSTEM_PROMPT = """You are Sutra, a voice assistant. Respond in spoken English only.
+VOICE_SYSTEM_PROMPT = f"""You are Sutra, a voice assistant talking with {_USER_NAME}.
+Recalled facts about {_USER_NAME} describe the person you are speaking with — treat "{_USER_NAME}" and "you/your" as the same person.
+Respond in spoken English only.
 Keep responses under 15 words unless the question genuinely requires more.
 Answer from your own knowledge — do NOT call any tools or functions.
 No markdown, no lists, no code. Just natural spoken sentences."""
