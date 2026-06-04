@@ -21,7 +21,13 @@ from typing import Any
 
 import numpy as np
 
-from friday.voice.audio import play_audio, record_with_vad, record_while_held
+from friday.voice.audio import (
+    BargeInDetector,
+    play_audio,
+    play_chunks_interruptible,
+    record_while_held,
+    record_with_vad,
+)
 from friday.voice.vad import SileroVAD
 
 _log = logging.getLogger("sutra.voice")
@@ -29,6 +35,28 @@ _LATENCY_LOG = Path.home() / ".local" / "share" / "friday" / "voice_latency.json
 
 _stt_instance = None
 _tts_instance = None
+_barge_vad_instance = None
+
+
+def _get_barge_vad() -> SileroVAD:
+    """Dedicated Silero VAD for barge-in detection (separate from the capture VAD).
+
+    Kept apart so its rolling LSTM state never collides with the end-of-turn
+    capture VAD. barge-in reads raw .prob(); the detector owns the threshold.
+    """
+    global _barge_vad_instance
+    if _barge_vad_instance is None:
+        _barge_vad_instance = SileroVAD()
+    return _barge_vad_instance
+
+
+def _barge_in_enabled() -> bool:
+    """VAD-mode barge-in toggle. Off by default — see VOICE_BARGE_IN in .env.example.
+
+    Opt-in because on open speakers (no echo cancellation) Sutra's own TTS bleeds
+    into the mic and can self-interrupt. With a headset/close mic it's reliable.
+    """
+    return os.getenv("VOICE_BARGE_IN", "0").strip().lower() not in ("", "0", "false", "no")
 
 
 def _get_stt():
@@ -47,36 +75,46 @@ def _get_tts():
     return _tts_instance
 
 
-def prewarm() -> None:
-    """Pre-load STT, TTS, and the local LLM so the first voice turn isn't cold.
-
-    Without the LLM warm-up the first turn pays a ~3s Ollama model-load on top of
-    inference — pre-flight measured cold TTFT 3016ms vs warm ~450ms.
-    """
+def prewarm_models() -> None:
+    """Load the heavy *sync* models (STT, TTS). Safe to run in an executor thread."""
     import numpy as np
     _log.info("pre-warming STT...")
-    stt = _get_stt()
-    stt.transcribe(np.zeros(16000, dtype=np.int16))
+    _get_stt().transcribe(np.zeros(16000, dtype=np.int16))
     _log.info("pre-warming TTS...")
-    tts = _get_tts()
-    tts.synthesize("warm")
-    _log.info("pre-warming local LLM...")
-    try:
-        import asyncio
+    _get_tts().synthesize("warm")
 
+
+async def prewarm_async() -> None:
+    """Warm the *async* clients (memory store + local LLM) on the CURRENT loop.
+
+    This MUST run on the same event loop the voice turns use. Graphiti's FalkorDB
+    driver and litellm's async HTTP client bind their connection pool to the loop
+    of the first await; warming them on a throwaway loop (e.g. an executor thread's
+    asyncio.run) leaves the real turns hitting a closed loop — recall then dies with
+    "Event loop is closed" and the LLM is effectively cold (TTFT ~3s, not ~450ms).
+    """
+    _log.info("pre-warming memory + local LLM...")
+    try:
         from friday.core.agent import voice_stream
         from friday.core.router import Tier
+        from friday.memory.store import get_store
 
-        async def _warm() -> None:
-            # Also warms the memory embedder (recall now runs each voice turn).
-            from friday.memory.store import get_store
-            await get_store().recall("warmup", limit=1)
-            async for _ in voice_stream("hi", history=[], tier=Tier.LOCAL):
-                break  # first token means the model is resident in VRAM
+        # Also warms the memory embedder (recall runs each voice turn).
+        await get_store().recall("warmup", limit=1)
+        async for _ in voice_stream("hi", history=[], tier=Tier.LOCAL):
+            break  # first token means the model is resident in VRAM
+    except Exception as e:  # noqa: BLE001 — Ollama/FalkorDB down: voice still works, just cold
+        _log.warning("async pre-warm skipped (%s)", e)
 
-        asyncio.run(_warm())
-    except Exception as e:  # noqa: BLE001 — Ollama down: voice still works, just cold
-        _log.warning("LLM pre-warm skipped (%s)", e)
+
+async def prewarm() -> None:
+    """Full pre-warm: heavy sync models off-loop, async clients on this loop.
+
+    Without it the first turn pays a ~3s Ollama model-load on top of inference.
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, prewarm_models)
+    await prewarm_async()
     _log.info("voice models ready")
 
 
@@ -114,11 +152,17 @@ def _log_latency(turn: VoiceTurn) -> None:
 async def process_audio(
     audio: np.ndarray,
     history: list[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]], TurnLatency]:
+    *,
+    barge_in: bool = False,
+) -> tuple[str, list[dict[str, Any]], TurnLatency, bool]:
     """STT → streaming agent → streaming TTS → play.
 
-    Returns (reply_text, updated_history, latency).
+    Returns (reply_text, updated_history, latency, interrupted).
     history is extended in-place and also returned.
+
+    barge_in: listen on the mic during playback and stop speaking the moment the
+    user talks over Sutra (VAD-mode only; the LLM has already finished generating
+    by the time playback starts, so only speech is cut, not the answer).
     """
     from friday.core.agent import voice_stream
     from friday.core.router import Tier
@@ -134,7 +178,7 @@ async def process_audio(
     transcript = result.text.strip()
 
     if not transcript:
-        return "", history, lat
+        return "", history, lat, False
 
     _log.info("STT [%.0fms]: %s", lat.stt_ms, transcript)
 
@@ -175,21 +219,42 @@ async def process_audio(
 
     reply = "".join(reply_tokens).strip()
 
-    # Play audio chunks as they arrive; bail if TTS thread dies
+    # Play audio chunks as they arrive; bail if TTS thread dies.
+    sample_rate = tts.sample_rate
     first_audio = True
-    while True:
+
+    def next_chunk() -> np.ndarray | None:
+        nonlocal first_audio
         try:
             chunk = audio_queue.get(timeout=10.0)
         except q_mod.Empty:
             _log.warning("TTS audio queue timeout — TTS thread may have crashed")
-            break
+            return None
         if chunk is None:
-            break
+            return None
         if first_audio:
             lat.tts_first_ms = (time.monotonic() - t_agent) * 1000
             lat.total_ms = (time.monotonic() - t_total) * 1000
             first_audio = False
-        play_audio(chunk.audio, sample_rate=chunk.sample_rate, blocking=True)
+        return chunk.audio
+
+    interrupted = False
+    if barge_in:
+        # Stop speaking the instant the user talks over Sutra.
+        interrupted = play_chunks_interruptible(
+            next_chunk,
+            vad=_get_barge_vad(),
+            sample_rate=sample_rate,
+            detector=BargeInDetector.from_env(),
+        )
+        if interrupted:
+            _log.info("barge-in — stopped speaking mid-reply")
+    else:
+        while True:
+            audio_chunk = next_chunk()
+            if audio_chunk is None:
+                break
+            play_audio(audio_chunk, sample_rate=sample_rate, blocking=True)
 
     tts_thread.join(timeout=5.0)
 
@@ -202,7 +267,7 @@ async def process_audio(
     persist_turn_async(transcript, reply)
 
     _log.info("Turn done — total=%.0fms reply=%r", lat.total_ms, reply[:60])
-    return reply, history, lat
+    return reply, history, lat, interrupted
 
 
 async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None:
@@ -218,7 +283,7 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
 
     console.print("[bold cyan]Sutra voice[/bold cyan] — hold [bold]SPACE[/bold] to speak  [bold]Ctrl+C[/bold] to exit")
     console.print("[dim]Pre-warming models…[/dim]", end="\r")
-    await asyncio.get_event_loop().run_in_executor(None, prewarm)
+    await prewarm()
     console.print("[dim]Ready.                [/dim]")
 
     stop_event = threading.Event()
@@ -249,7 +314,7 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
                 continue
 
             console.print("[cyan]processing…  [/cyan]", end="\r")
-            reply, history, lat = await process_audio(audio, history)
+            reply, history, lat, _ = await process_audio(audio, history)
 
             if reply:
                 _log_latency(VoiceTurn(
@@ -285,9 +350,13 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     if history is None:
         history = []
 
+    barge_in = _barge_in_enabled()
+
     console.print("[bold cyan]Sutra voice (VAD)[/bold cyan] — listening  [bold]Ctrl+C[/bold] to exit")
+    if barge_in:
+        console.print("[dim]barge-in on — talk over her to interrupt[/dim]")
     console.print("[dim]Pre-warming models…[/dim]", end="\r")
-    await asyncio.get_event_loop().run_in_executor(None, prewarm)
+    await prewarm()
     console.print("[dim]Ready.            [/dim]")
 
     try:
@@ -303,7 +372,11 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
                 continue
 
             console.print("[cyan]heard you…[/cyan]", end="\r")
-            reply, history, lat = await process_audio(audio, history)
+            reply, history, lat, interrupted = await process_audio(
+                audio, history, barge_in=barge_in
+            )
+            if interrupted:
+                console.print("[yellow]⊘ barge-in — stopped speaking[/yellow]")
 
             if reply:
                 _log_latency(VoiceTurn(

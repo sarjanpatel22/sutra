@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
 import time
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import numpy as np
 import sounddevice as sd
+
+_log = logging.getLogger("sutra.voice.audio")
 
 SAMPLE_RATE = 16000   # Hz — Whisper native
 CHANNELS = 1
@@ -102,6 +106,66 @@ def _is_speech_frame(
     that once the speaker goes quiet the silence actually registers.
     """
     return vad_flag and rms > max(min_rms, noise_floor * margin)
+
+
+@dataclass
+class BargeInDetector:
+    """Decide when the user has started talking over Sutra's TTS (barge-in).
+
+    Fed one mic frame at a time *while she is speaking*; returns True the moment
+    it's confident the user is interrupting. Every guard exists to reject the
+    speaker→mic echo path (Sutra hearing her own TTS) without a hardware acoustic
+    echo canceller:
+
+      grace_frames    ignore the mic while the output settles, so the first TTS
+                      chunk can't self-trigger.
+      threshold       Silero speech-prob cutoff, raised above the 0.5 capture
+                      default — echo bleed gives weak/fluctuating prob, a real
+                      interruption is confident.
+      rms_floor       absolute energy gate — open-speaker echo is attenuated;
+                      require real signal.
+      trigger_frames  consecutive qualifying frames before firing — rejects a
+                      lone echoed phoneme, demands sustained speech.
+
+    With headphones or a close mic (no echo path) real speech clears all four
+    trivially; they only earn their keep on open-speaker setups. Frames are
+    BLOCK_SIZE @ SAMPLE_RATE (~32 ms), so the defaults ≈ 256 ms grace / 192 ms
+    sustained speech.
+    """
+
+    threshold: float = 0.7
+    rms_floor: float = 500.0
+    grace_frames: int = 8
+    trigger_frames: int = 6
+    _elapsed: int = field(default=0, init=False, repr=False)
+    _streak: int = field(default=0, init=False, repr=False)
+
+    @classmethod
+    def from_env(cls) -> "BargeInDetector":
+        """Build a detector from VOICE_BARGE_* env knobs (grace/sustain in seconds)."""
+        fps = SAMPLE_RATE / BLOCK_SIZE  # ~31.25 frames/s
+        return cls(
+            threshold=float(os.getenv("VOICE_BARGE_THRESHOLD", "0.7")),
+            rms_floor=float(os.getenv("VOICE_BARGE_RMS_FLOOR", "500")),
+            grace_frames=max(1, round(float(os.getenv("VOICE_BARGE_GRACE_S", "0.25")) * fps)),
+            trigger_frames=max(1, round(float(os.getenv("VOICE_BARGE_SUSTAIN_S", "0.2")) * fps)),
+        )
+
+    def reset(self) -> None:
+        """Clear counters — call at the start of each playback."""
+        self._elapsed = 0
+        self._streak = 0
+
+    def feed(self, speech_prob: float, rms: float) -> bool:
+        """Consume one mic frame; return True once a barge-in is detected."""
+        self._elapsed += 1
+        if self._elapsed <= self.grace_frames:
+            return False
+        if speech_prob >= self.threshold and rms >= self.rms_floor:
+            self._streak += 1
+        else:
+            self._streak = 0
+        return self._streak >= self.trigger_frames
 
 
 def record_with_vad(
@@ -202,3 +266,75 @@ def play_audio_stream(
             if chunk.dtype == np.int16:
                 chunk = chunk.astype(np.float32) / 32768.0
             stream.write(chunk)
+
+
+# Sub-block size for interruptible writes: ~85ms @ 24kHz. Small enough that the
+# barge-in flag is checked often; large enough to keep write overhead negligible.
+_PLAY_SUBBLOCK = 2048
+
+
+def play_chunks_interruptible(
+    next_chunk: "Callable[[], np.ndarray | None]",
+    *,
+    vad: Any,
+    sample_rate: int = 24000,
+    detector: BargeInDetector | None = None,
+    input_sample_rate: int = SAMPLE_RATE,
+) -> bool:
+    """Play TTS chunks while listening for the user to talk over them (barge-in).
+
+    ``next_chunk()`` returns the next float32/int16 audio block, or None when the
+    reply is fully spoken. A side thread reads the mic at ``input_sample_rate``,
+    runs Silero VAD on each frame and feeds ``detector``; the instant it fires,
+    playback is aborted mid-word.
+
+    ``vad`` is a SileroVAD-like object exposing ``.reset()`` and ``.prob(frame)``.
+    Returns True if interrupted, False if playback finished normally. A mic glitch
+    in the monitor is swallowed — it degrades to plain playback, never a crash.
+    """
+    detector = detector or BargeInDetector()
+    interrupted = threading.Event()
+    stop = threading.Event()
+
+    def monitor() -> None:
+        try:
+            vad.reset()
+            detector.reset()
+            with sd.InputStream(
+                device=_INPUT_DEVICE,
+                samplerate=input_sample_rate,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                blocksize=BLOCK_SIZE,
+            ) as mic:
+                while not stop.is_set():
+                    frame, _ = mic.read(BLOCK_SIZE)
+                    mono = frame[:, 0]
+                    if detector.feed(vad.prob(mono.tobytes()), _frame_rms(mono)):
+                        interrupted.set()
+                        return
+        except Exception:  # noqa: BLE001 — a mic hiccup must never crash playback
+            _log.exception("barge-in monitor failed; finishing playback without it")
+
+    mon = threading.Thread(target=monitor, name="barge-in-monitor", daemon=True)
+    mon.start()
+    try:
+        with sd.OutputStream(
+            samplerate=sample_rate, channels=CHANNELS, dtype=np.float32, device=_OUTPUT_DEVICE
+        ) as out:
+            while not interrupted.is_set():
+                chunk = next_chunk()
+                if chunk is None:
+                    break
+                if chunk.dtype == np.int16:
+                    chunk = chunk.astype(np.float32) / 32768.0
+                for i in range(0, len(chunk), _PLAY_SUBBLOCK):
+                    if interrupted.is_set():
+                        break
+                    out.write(chunk[i : i + _PLAY_SUBBLOCK])
+            if interrupted.is_set():
+                out.abort()  # drop buffered audio → stop now, mid-word
+    finally:
+        stop.set()
+        mon.join(timeout=1.0)
+    return interrupted.is_set()

@@ -50,10 +50,27 @@ the verdict, and the recommended move. Ranked by impact at the bottom.
   (Gemma 4, Qwen3, …) works in voice instead of returning empty.
 - **Watch:** **Gemma 3n** (audio-native).
 
-### 4. Text-to-Speech — ✅ GOOD CHOICE (keep)
-- **Now:** `Kokoro-82M` (ONNX, GPU).
-- **SOTA 2026:** Kokoro is *still* the recommended real-time/edge pick (RTF 0.03, runs anywhere). **Chatterbox-Turbo** (350M, <200ms, emotion tags `[laugh]`/`[cough]`, voice cloning, beat ElevenLabs 63% in blind tests) is the quality/expressiveness upgrade (watermarked).
-- **Verdict:** Keep Kokoro for latency. Chatterbox optional if we want expressive/emotional speech.
+### 4. Text-to-Speech — ✅ GOOD CHOICE (keep) · Chatterbox-Turbo evaluated → defer
+- **Now:** `Kokoro-82M` (ONNX, GPU) — warm first-chunk ~74ms, RTF ~0.03, 54 fixed voices, 24kHz.
+- **Chatterbox-Turbo (evaluated 2026-06-04):** 350M, MIT, English-only. `pip install chatterbox-tts`;
+  `ChatterboxTurboTTS.from_pretrained(device="cuda").generate(text, audio_prompt_path=ref, exaggeration=…)`.
+  Real wins over Kokoro: emotion/paralinguistic tags (`[laugh]`/`[cough]`), `exaggeration`/`cfg_weight`
+  prosody control, and **voice cloning from a 10s clip** (Kokoro can't clone). Beat ElevenLabs ~63% blind.
+  Output is watermarked.
+- **Costs that keep it out of the realtime loop:**
+  - **Latency:** first-chunk ~472ms + RTF ~0.5 *on an RTX 4090*; our 3080 Ti Mobile is ~40–50% of that →
+    expect ~0.7–1.0s first-chunk, RTF ~0.8–1.1. Kokoro is ~74ms warm. Swapping it into the voice path adds
+    ~0.5–0.9s onto a ~1.0s round-trip — blowing the <1500ms p50 budget, for terse sub-15-word replies that
+    gain nothing from prosody.
+  - **Runtime/deps:** it's **PyTorch** (`torch`/`torchaudio`), not ONNX — a second heavy GPU runtime beside
+    `onnxruntime-gpu`. The official package has **no streaming** (the 472ms figure is the community
+    `davidbrowne17/chatterbox-streaming` fork). English-only.
+- **Verdict:** **Keep Kokoro as the default/realtime TTS.** Chatterbox-Turbo is worth wiring as an *opt-in
+  expressive backend* (`TTS_BACKEND=chatterbox`) for **non-latency-critical surfaces** only — `sutra think
+  --speak`, the HORIZON morning brief/narration, and the real draw, a **cloned Sutra persona voice**. Revisit
+  at the persona/GUI phase (Month 3+), where a distinct voice + expressive narration earn their keep.
+  *Paper eval: public numbers + this-GPU scaling + API/dependency inspection. A live first-chunk benchmark on
+  the 3080 Ti is a ~30-min spike if/when we pick it up.*
 
 ### 5. Agent Memory — ✅ TOP-TIER CHOICE (keep)
 - **Now:** **Graphiti** + FalkorDB (temporal knowledge graph).
@@ -84,12 +101,13 @@ the verdict, and the recommended move. Ranked by impact at the bottom.
 | 1 | **Streaming STT** (transcribe while speaking) | 🔴 the "instant answer" feel | High |
 | 2 | **Qwen3-Embedding** (recall ranking) | 🟡 sharper memory | Low |
 | ~~3~~ | ~~Voice-LLM trial~~ → ✅ **tested, gemma3:4b validated** | — | done |
-| 3 | **Barge-in/interruption** (or adopt Pipecat/LiveKit) | 🟡 natural turn-taking | High |
-| 4 | Chatterbox-Turbo TTS (expressive/emotion) | 🟢 nicer voice | Med |
+| ~~3~~ | ~~Barge-in/interruption~~ → ✅ **implemented** (opt-in, headset-reliable; Silero monitor cuts TTS mid-word) | 🟡 natural turn-taking | done |
+| ~~4~~ | ~~Chatterbox-Turbo TTS~~ → 🅿️ **evaluated → defer** to persona/GUI phase (expressive/clone backend, not realtime — see §4) | 🟢 nicer voice | Med |
 
 **Already done:** Silero VAD (#1 voice fix), Graphiti config fixes, Gemini model fix,
 voice latency (energy gate + small→distil STT), identity anchor, async persist,
-**voice-LLM benchmark (gemma3:4b validated vs llama3.2/qwen3)**.
+**voice-LLM benchmark (gemma3:4b validated vs llama3.2/qwen3)**,
+**barge-in (interrupt-on-speak, guarded against speaker echo)**.
 
 **Headline:** most of the stack is *well-chosen* (Kokoro, Graphiti, LiteLLM all
 validated as current). The two real gaps are **streaming STT** (architecture, not
