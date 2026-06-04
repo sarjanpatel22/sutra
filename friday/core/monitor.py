@@ -188,7 +188,22 @@ async def _ping_redis_proto(name: str, host: str, port: int) -> CheckResult:
 
 async def _check_redis() -> CheckResult:
     host, port = _parse_redis_url(os.getenv("REDIS_URL", "redis://localhost:6380"))
-    return await _ping_redis_proto("redis", host, port)
+    r = await _ping_redis_proto("redis", host, port)
+    # Redis is provisioned for future session/tool state but not yet wired into the
+    # app — down is not a failure, just unused. Don't drag OVERALL to FAIL.
+    if r.status == Status.FAIL:
+        return CheckResult("redis", Status.WARN, "down — optional (session store, not yet wired)")
+    return r
+
+
+async def _check_qdrant() -> CheckResult:
+    url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    r = await _check_http("qdrant", f"{url}/healthz")
+    # Qdrant is provisioned for future vector memory; memory currently uses FalkorDB's
+    # own vectors. Optional until wired in — WARN, not FAIL.
+    if r.status == Status.FAIL:
+        return CheckResult("qdrant", Status.WARN, "down — optional (vector store, not yet wired)")
+    return r
 
 
 async def _check_falkordb() -> CheckResult:
@@ -268,14 +283,13 @@ async def _safe(name: str, coro: Any) -> CheckResult:
 async def run_health_checks() -> HealthReport:
     """Run all health checks concurrently and return a HealthReport."""
     searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080")
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
 
     results = await asyncio.gather(
         _safe("anthropic_key", _check_api_key()),
         _safe("searxng", _check_http("searxng", searxng_url)),
         _safe("redis", _check_redis()),
         _safe("falkordb", _check_falkordb()),
-        _safe("qdrant", _check_http("qdrant", f"{qdrant_url}/healthz")),
+        _safe("qdrant", _check_qdrant()),
         _safe("disk", _check_disk()),
         _safe("gpu", _check_gpu()),
         _safe("budget", _check_budget()),
