@@ -153,14 +153,14 @@ async def voice_run(
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
 
-    response = await complete(messages, tier=tier, tools=None, max_tokens=128)
+    response = await complete(messages, tier=tier, tools=None, max_tokens=128, think=False)
     msg = response.choices[0].message
     reply = (msg.content or "").strip()
 
     # If Gemma returns empty or garbled (tool-call JSON) output, escalate.
     if not reply or reply.startswith("{"):
         try:
-            response = await complete(messages, tier=fallback_tier, tools=None, max_tokens=128)
+            response = await complete(messages, tier=fallback_tier, tools=None, max_tokens=128, think=False)
             reply = (response.choices[0].message.content or "").strip()
         except Exception:  # noqa: BLE001 — fallback tier unavailable; keep local reply
             pass
@@ -192,14 +192,14 @@ async def voice_stream(
     messages.append({"role": "user", "content": user_input})
 
     full_reply = ""
-    async for token in stream_complete(messages, tier=tier, max_tokens=128):
+    async for token in stream_complete(messages, tier=tier, max_tokens=128, think=False):
         full_reply += token
         yield token
 
     # If Gemma returned garbage (tool-call JSON), escalate to the free fallback.
     if not full_reply.strip() or full_reply.strip().startswith("{"):
         try:
-            async for token in stream_complete(messages, tier=fallback_tier, max_tokens=128):
+            async for token in stream_complete(messages, tier=fallback_tier, max_tokens=128, think=False):
                 yield token
         except Exception:  # noqa: BLE001 — fallback tier unavailable; end stream cleanly
             pass

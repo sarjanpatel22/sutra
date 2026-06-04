@@ -35,11 +35,20 @@ the verdict, and the recommended move. Ranked by impact at the bottom.
     from Sudbury, Ontario"). Good quality + brevity. ✅ **Winner for our memory-centric use.**
   - **llama3.2:3b** — 2× faster (~200ms!) but **failed memory grounding** ("I don't have
     that information... Sarjan"). Kept as a documented *fast* option for non-memory/tool work.
-  - **qwen3:4b** — returned **empty content** in every mode (no_think + thinking) via
-    Ollama/litellm — broken, same as gemma4:e4b. Removed.
+  - **qwen3:4b / gemma4:e4b** — first looked "broken" (empty replies). **Correction:**
+    they're **reasoning models** — they emit 300+ "thinking" tokens before the answer,
+    so our 128-token voice cap consumed the budget before any content. **`think:false`
+    fixes it entirely** (Gemma 4 then streams clean at ~370ms, *matching* gemma3:4b on
+    quality + memory grounding). Not a defect — a config gap on our side.
 - **Verdict:** The earlier "you are user, from Earth" failure was the *missing identity
-  anchor* (fixed), not the model. gemma3:4b validated; switching would regress memory.
-- **Watch:** **Gemma 3n** (audio-native) and a future fixed Gemma 4 / Qwen3 Ollama build.
+  anchor* (fixed), not the model. For **voice**, keep **gemma3:4b** — equal quality to
+  Gemma 4 (think off) at **⅓ the VRAM** (3.3GB vs 9.6GB), which matters in the shared
+  voice loop.
+- **Gemma 4 (`gemma4:e4b`) — kept for a future TEXT/REASONING tier** with thinking *on*:
+  for complex agent queries (not latency/VRAM-bound) its reasoning is a genuine upgrade.
+- **Action item:** make the local-model path pass `think:false` so any reasoning model
+  (Gemma 4, Qwen3, …) works in voice instead of returning empty.
+- **Watch:** **Gemma 3n** (audio-native).
 
 ### 4. Text-to-Speech — ✅ GOOD CHOICE (keep)
 - **Now:** `Kokoro-82M` (ONNX, GPU).
