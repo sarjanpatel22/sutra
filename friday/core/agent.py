@@ -107,7 +107,8 @@ async def voice_run(
     fallback is unavailable (no keys / offline), the local reply is kept rather
     than raising, so voice degrades instead of crashing.
     """
-    messages: list[dict[str, Any]] = [{"role": "system", "content": await _voice_system_prompt(user_input)}]
+    system_content = await _voice_system_prompt(user_input)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
@@ -144,7 +145,8 @@ async def voice_stream(
     """
     from friday.core.router import stream_complete
 
-    messages: list[dict[str, Any]] = [{"role": "system", "content": await _voice_system_prompt(user_input)}]
+    system_content = await _voice_system_prompt(user_input)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
