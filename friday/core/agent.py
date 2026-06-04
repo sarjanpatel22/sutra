@@ -23,6 +23,37 @@ Answer from your own knowledge — do NOT call any tools or functions.
 No markdown, no lists, no code. Just natural spoken sentences."""
 
 
+# Background voice-turn persistence. Voice can't await remember() (it runs the
+# ~18s extraction LLM), so turns are persisted fire-and-forget. The lock serializes
+# them so only one qwen2.5:14b extraction runs at a time — concurrent loads would
+# thrash gemma3:4b out of VRAM and slow the next voice turn.
+_persist_lock = asyncio.Lock()
+_persist_tasks: set[asyncio.Task[None]] = set()
+
+
+def persist_turn_async(user_input: str, reply: str) -> None:
+    """Schedule a voice turn to be saved to memory without blocking the loop."""
+    if not reply.strip():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # no event loop (e.g. sync caller/tests) — skip silently
+
+    async def _persist() -> None:
+        async with _persist_lock:  # one extraction at a time
+            try:
+                await get_store().remember(
+                    f"User: {user_input}\nSutra: {reply}", source="voice"
+                )
+            except Exception:  # noqa: BLE001 — persistence is best-effort
+                pass
+
+    task = loop.create_task(_persist())
+    _persist_tasks.add(task)  # keep a ref so it isn't GC'd mid-flight
+    task.add_done_callback(_persist_tasks.discard)
+
+
 async def _voice_system_prompt(user_input: str) -> str:
     """VOICE_SYSTEM_PROMPT plus any relevant recalled memory.
 

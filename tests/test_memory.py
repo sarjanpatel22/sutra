@@ -1,5 +1,7 @@
 """Memory store + skills tests — focus on graceful degradation when DB is down."""
 
+import asyncio
+
 import pytest
 
 from friday.memory.store import MemoryStore, _keywords
@@ -151,3 +153,39 @@ async def test_forget_skill_defaults_to_preview(monkeypatch):
     assert g.removed == []
     assert out["count"] == 2
     assert "would_remove" in out
+
+
+class _PersistStore:
+    def __init__(self):
+        self.saved: list[tuple[str, str]] = []
+
+    async def remember(self, text, source=None):
+        self.saved.append((text, source))
+        return True
+
+
+@pytest.mark.asyncio
+async def test_persist_turn_async_saves_in_background(monkeypatch):
+    """Voice turns persist fire-and-forget with source='voice', without blocking."""
+    from friday.core import agent
+
+    store = _PersistStore()
+    monkeypatch.setattr(agent, "get_store", lambda: store)
+    agent.persist_turn_async("what's my GPU?", "You have an RTX 3080 Ti.")
+    assert store.saved == []  # not blocking — nothing saved synchronously
+    await asyncio.sleep(0.02)  # let the background task run
+    assert len(store.saved) == 1
+    text, source = store.saved[0]
+    assert source == "voice"
+    assert "RTX 3080 Ti" in text
+
+
+@pytest.mark.asyncio
+async def test_persist_turn_async_skips_empty_reply(monkeypatch):
+    from friday.core import agent
+
+    store = _PersistStore()
+    monkeypatch.setattr(agent, "get_store", lambda: store)
+    agent.persist_turn_async("hi", "   ")
+    await asyncio.sleep(0.02)
+    assert store.saved == []

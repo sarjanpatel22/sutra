@@ -197,6 +197,10 @@ async def process_audio(
     history.append({"role": "user", "content": transcript})
     history.append({"role": "assistant", "content": reply})
 
+    # Persist this turn to long-term memory in the background (non-blocking).
+    from friday.core.agent import persist_turn_async
+    persist_turn_async(transcript, reply)
+
     _log.info("Turn done — total=%.0fms reply=%r", lat.total_ms, reply[:60])
     return reply, history, lat
 
