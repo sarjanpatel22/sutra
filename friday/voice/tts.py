@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections.abc import Iterator
@@ -34,7 +35,6 @@ class TTS:
     """
 
     def __init__(self, voice: str | None = None, speed: float | None = None) -> None:
-        import os
         from kokoro_onnx import Kokoro  # type: ignore[import-untyped]
 
         # Read at construction (after load_dotenv) — KOKORO_VOICE was previously
