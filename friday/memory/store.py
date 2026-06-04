@@ -90,7 +90,11 @@ class MemoryStore:
             config=LLMConfig(api_key=_LLM_API_KEY, model=_LLM_MODEL, base_url=_OLLAMA_BASE),
             client=llm,
         )
-        driver = FalkorDriver(host=_FALKOR_HOST, port=_FALKOR_PORT)
+        # database MUST be the group_id: Graphiti routes WRITES (add_episode) to a
+        # graph named after the group_id, but its search execute_query reads from
+        # driver._database (default "default_db"). Left unset, writes land in
+        # `sarjan` while search reads an empty `default_db` -> recall always 0.
+        driver = FalkorDriver(host=_FALKOR_HOST, port=_FALKOR_PORT, database=_GROUP_ID)
         return Graphiti(
             graph_driver=driver,
             llm_client=llm,
