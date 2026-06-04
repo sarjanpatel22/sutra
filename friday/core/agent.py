@@ -31,6 +31,13 @@ Keep responses under 15 words unless the question genuinely requires more.
 Answer from your own knowledge — do NOT call any tools or functions.
 No markdown, no lists, no code. Just natural spoken sentences."""
 
+# Reasoning mode (`sutra think`): no voice-brevity rule — think it through and
+# answer in full. Same persona + identity anchor.
+REASON_SYSTEM_PROMPT = f"""You are Sutra — reasoning carefully through a hard problem for {_USER_NAME}.
+You are dry, technically precise, occasionally warm — a senior engineer who reasons from first principles and isn't afraid to say "it depends, and here's why".
+Recalled facts about {_USER_NAME} describe the person you are speaking with — treat "{_USER_NAME}" and "you/your" as the same person; use them when relevant.
+Work the problem through, then give a complete, decisive answer — as long as it genuinely needs, no longer. State your conclusion and the key reasoning behind it. No artificial word limit; never truncate the actual answer. For puzzles, commit to a solution rather than asking for more constraints."""
+
 
 # Background voice-turn persistence. Voice can't await remember() (it runs the
 # ~18s extraction LLM), so turns are persisted fire-and-forget. The lock serializes
@@ -146,7 +153,7 @@ async def reason(
     add a ~18s qwen2.5:14b extraction + a VRAM swap against Gemma 4. Ask Sutra to
     remember anything worth keeping.
     """
-    system_content = SYSTEM_PROMPT
+    system_content = REASON_SYSTEM_PROMPT
     memories = await get_store().recall(user_input, limit=5)
     if memories:
         system_content += "\n\nRelevant long-term memory (may be incomplete):\n" + "\n".join(
