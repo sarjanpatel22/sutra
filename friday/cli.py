@@ -30,7 +30,7 @@ def _tier_from_str(s: str) -> Tier:
 
 
 async def _chat_loop(tier: Tier) -> None:
-    from friday.core.agent import run  # late import to avoid circular at startup
+    from friday.core.agent import flush_persist, run  # late import to avoid circular
 
     history: list[dict[str, Any]] = []
 
@@ -102,6 +102,10 @@ async def _chat_loop(tier: Tier) -> None:
 
         console.print(Panel(Markdown(reply), border_style="dim", padding=(0, 1)))
 
+    # Let any background memory writes from the last turns finish before exit.
+    with console.status("[dim]saving memory…[/dim]"):
+        await flush_persist()
+
 
 @app.command()
 def chat(
@@ -117,11 +121,12 @@ def ask(
     tier: str = typer.Option("medium", "--tier", "-t", help="local/reason/medium/heavy/max"),
 ) -> None:
     """Ask a single question and exit."""
-    from friday.core.agent import run
+    from friday.core.agent import flush_persist, run
 
     async def _once() -> None:
         reply, _ = await run(query, tier=_tier_from_str(tier))
-        console.print(Markdown(reply))
+        console.print(Markdown(reply))          # show the answer immediately
+        await flush_persist()                    # then let the background save finish
 
     asyncio.run(_once())
 

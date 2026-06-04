@@ -47,8 +47,12 @@ _persist_lock = asyncio.Lock()
 _persist_tasks: set[asyncio.Task[None]] = set()
 
 
-def persist_turn_async(user_input: str, reply: str) -> None:
-    """Schedule a voice turn to be saved to memory without blocking the loop."""
+def persist_turn_async(user_input: str, reply: str, source: str = "voice") -> None:
+    """Schedule a turn to be saved to memory without blocking the caller.
+
+    Used by both voice and text — remember() runs the ~18s qwen2.5:14b extraction,
+    so awaiting it would stall the reply (it did: `sutra ask` took 27s). Fire-and-forget.
+    """
     if not reply.strip():
         return
     try:
@@ -60,7 +64,7 @@ def persist_turn_async(user_input: str, reply: str) -> None:
         async with _persist_lock:  # one extraction at a time
             try:
                 await get_store().remember(
-                    f"User: {user_input}\nSutra: {reply}", source="voice"
+                    f"User: {user_input}\nSutra: {reply}", source=source
                 )
             except Exception:  # noqa: BLE001 — persistence is best-effort
                 pass
@@ -68,6 +72,14 @@ def persist_turn_async(user_input: str, reply: str) -> None:
     task = loop.create_task(_persist())
     _persist_tasks.add(task)  # keep a ref so it isn't GC'd mid-flight
     task.add_done_callback(_persist_tasks.discard)
+
+
+async def flush_persist() -> None:
+    """Await any in-flight background persists. One-shot CLI commands call this
+    after printing the reply, so the answer shows instantly and the save still
+    completes before the process exits."""
+    if _persist_tasks:
+        await asyncio.gather(*_persist_tasks, return_exceptions=True)
 
 
 async def _voice_system_prompt(user_input: str) -> str:
@@ -97,7 +109,10 @@ async def run(
     Returns (assistant_reply, updated_history).
     """
     registry.autodiscover()
-    tools = registry.all_tools()
+    # Local Ollama models (gemma) emit tool calls as malformed text rather than
+    # proper tool_calls — it leaked raw JSON as the answer. Only the cloud tiers,
+    # which do real function-calling, get tools.
+    tools = None if tier in (Tier.LOCAL, Tier.REASON) else registry.all_tools()
 
     # Pull relevant long-term memory into context (no-op if memory unavailable).
     system_content = SYSTEM_PROMPT
@@ -112,9 +127,9 @@ async def run(
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
 
-    async def _finish(reply: str) -> tuple[str, list[dict[str, Any]]]:
-        # Persist the turn (no-op/instant if memory is unavailable).
-        await get_store().remember(f"User: {user_input}\nSutra: {reply}", source="conversation")
+    def _finish(reply: str) -> tuple[str, list[dict[str, Any]]]:
+        # Persist in the background so the reply returns now (was a ~18s block).
+        persist_turn_async(user_input, reply, source="conversation")
         return reply, messages[1:]  # strip system from returned history
 
     for _ in range(max_tool_rounds):
@@ -125,7 +140,7 @@ async def run(
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
             # No more tool calls — done
-            return await _finish(msg.content or "")
+            return _finish(msg.content or "")
 
         # Execute all tool calls (in parallel where possible)
         tool_results = await _run_tool_calls(tool_calls)
@@ -136,7 +151,7 @@ async def run(
     response = await complete(messages, tier=tier, tools=None)
     msg = response.choices[0].message
     messages.append({"role": "assistant", "content": msg.content})
-    return await _finish(msg.content or "")
+    return _finish(msg.content or "")
 
 
 async def reason(
