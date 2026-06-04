@@ -2,8 +2,22 @@
 
 import pytest
 
-from friday.memory.store import MemoryStore
+from friday.memory.store import MemoryStore, _keywords
 from friday.skills import registry
+
+
+def test_keywords_strips_stopwords_and_punctuation():
+    # "where does Sarjan work" -> content words only, lowercased
+    assert _keywords("Where does Sarjan work?") == ["sarjan", "work"]
+
+
+def test_keywords_splits_on_punctuation():
+    # small.en -> two tokens (RediSearch tokenizes on the dot too)
+    assert _keywords("the small.en Whisper model") == ["small", "en", "whisper", "model"]
+
+
+def test_keywords_empty_for_all_stopwords():
+    assert _keywords("what is it for") == []
 
 
 @pytest.fixture(autouse=True)

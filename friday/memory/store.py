@@ -14,10 +14,26 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Tiny stopword set to keep keyword recall focused on content terms. RediSearch
+# drops its own stopwords too; this just trims obvious query filler.
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "did", "do", "does",
+    "for", "from", "how", "in", "is", "it", "of", "on", "or", "the", "to", "was",
+    "we", "what", "when", "where", "which", "who", "why", "with", "you", "your",
+    "i", "me", "my", "our", "us", "that", "this", "have", "has", "use", "using",
+}
+
+
+def _keywords(query: str, limit: int = 10) -> list[str]:
+    """Content words from a query, lowercased, for a RediSearch OR match."""
+    toks = re.findall(r"[a-z0-9]+", query.lower())
+    return [t for t in toks if len(t) > 1 and t not in _STOPWORDS][:limit]
 
 _OLLAMA_BASE = os.getenv("GRAPHITI_LLM_BASE_URL", "http://localhost:11434/v1")
 _LLM_API_KEY = os.getenv("GRAPHITI_LLM_API_KEY", "ollama")  # dummy for Ollama
@@ -126,7 +142,13 @@ class MemoryStore:
             return False
 
     async def recall(self, query: str, limit: int = 5) -> list[str]:
-        """Return fact strings relevant to query. Empty list if unavailable."""
+        """Return fact strings relevant to query. Empty list if unavailable.
+
+        Tries Graphiti's hybrid (semantic + BM25) search first, then falls back to
+        a direct full-text query on the graph. The fallback exists because
+        Graphiti's .search() returns empty against FalkorDB even when the index
+        holds the data (verified directly) — without it, recall is silently dead.
+        """
         query = query.strip()
         if not query or not await self.initialize():
             return []
@@ -134,9 +156,39 @@ class MemoryStore:
             edges = await self._graphiti.search(
                 query, group_ids=[_GROUP_ID], num_results=limit
             )
-            return [f for f in (getattr(e, "fact", None) for e in edges) if f]
+            facts = [f for f in (getattr(e, "fact", None) for e in edges) if f]
+            if facts:
+                return facts
         except Exception as e:  # noqa: BLE001
-            logger.warning("memory.recall failed: %s", e)
+            logger.warning("memory.recall graphiti search failed: %s", e)
+        return self._fulltext_recall(query, limit)
+
+    def _fulltext_recall(self, query: str, limit: int) -> list[str]:
+        """Deterministic, LLM-free keyword recall straight off the RELATES_TO index."""
+        terms = _keywords(query)
+        if not terms:
+            return []
+        try:
+            from falkordb import FalkorDB
+
+            g = FalkorDB(host=_FALKOR_HOST, port=_FALKOR_PORT).select_graph(_GROUP_ID)
+            res = g.query(
+                "CALL db.idx.fulltext.queryRelationships('RELATES_TO', $q) "
+                "YIELD relationship, score "
+                "WHERE relationship.group_id = $gid "
+                "RETURN relationship.fact AS fact ORDER BY score DESC LIMIT $limit",
+                {"q": " | ".join(terms), "gid": _GROUP_ID, "limit": limit},
+            )
+            seen: set[str] = set()
+            out: list[str] = []
+            for row in res.result_set:
+                fact = row[0]
+                if fact and fact not in seen:
+                    seen.add(fact)
+                    out.append(fact)
+            return out
+        except Exception as e:  # noqa: BLE001
+            logger.warning("memory.recall fulltext fallback failed: %s", e)
             return []
 
     async def forget(self, query: str, limit: int = 10) -> int:
