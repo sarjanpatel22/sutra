@@ -28,14 +28,18 @@ the verdict, and the recommended move. Ranked by impact at the bottom.
 - **Recommend:** Phase 2 = streaming STT (chunked faster-whisper / RealtimeSTT now;
   evaluate Moonshine for native streaming, Parakeet for max accuracy).
 
-### 3. Local LLM (voice handler) — 🟡 UPGRADE CANDIDATE
+### 3. Local LLM (voice handler) — ✅ TESTED → keep gemma3:4b
 - **Now:** `gemma3:4b` (Ollama).
-- **SOTA 2026:**
-  - **Gemma 3n (E2B/E4B)** — *audio-native* (text+image+audio in), built for on-device, 140+ langs. Could eventually enable speech understanding without separate STT.
-  - **Qwen3 (4B/7B)** — strongest agentic/reasoning under 8B.
-  - **Llama 3.2 3B** — widest/most-reliable function-calling + framework support.
-  - **Gemma 4** exists now (we tested `e4b` — Ollama build was broken: slow + empty replies; revisit after an Ollama update).
-- **Recommend:** trial **Qwen3-4B** (reasoning) or **Llama-3.2-3B** (tool reliability) vs gemma3:4b on the voice loop; watch Gemma 3n for audio-native.
+- **Benchmarked (2026-06-04)** on real voice prompts w/ identity anchor + recalled memory:
+  - **gemma3:4b** — ~400ms TTFT, **grounds in memory correctly** ("Your name is Sarjan,
+    from Sudbury, Ontario"). Good quality + brevity. ✅ **Winner for our memory-centric use.**
+  - **llama3.2:3b** — 2× faster (~200ms!) but **failed memory grounding** ("I don't have
+    that information... Sarjan"). Kept as a documented *fast* option for non-memory/tool work.
+  - **qwen3:4b** — returned **empty content** in every mode (no_think + thinking) via
+    Ollama/litellm — broken, same as gemma4:e4b. Removed.
+- **Verdict:** The earlier "you are user, from Earth" failure was the *missing identity
+  anchor* (fixed), not the model. gemma3:4b validated; switching would regress memory.
+- **Watch:** **Gemma 3n** (audio-native) and a future fixed Gemma 4 / Qwen3 Ollama build.
 
 ### 4. Text-to-Speech — ✅ GOOD CHOICE (keep)
 - **Now:** `Kokoro-82M` (ONNX, GPU).
@@ -70,12 +74,13 @@ the verdict, and the recommended move. Ranked by impact at the bottom.
 |---|------|--------|--------|
 | 1 | **Streaming STT** (transcribe while speaking) | 🔴 the "instant answer" feel | High |
 | 2 | **Qwen3-Embedding** (recall ranking) | 🟡 sharper memory | Low |
-| 3 | **Trial Qwen3-4B / Llama-3.2-3B** voice LLM | 🟡 smarter replies | Med |
-| 4 | **Barge-in/interruption** (or adopt Pipecat/LiveKit) | 🟡 natural turn-taking | High |
-| 5 | Chatterbox-Turbo TTS (expressive/emotion) | 🟢 nicer voice | Med |
+| ~~3~~ | ~~Voice-LLM trial~~ → ✅ **tested, gemma3:4b validated** | — | done |
+| 3 | **Barge-in/interruption** (or adopt Pipecat/LiveKit) | 🟡 natural turn-taking | High |
+| 4 | Chatterbox-Turbo TTS (expressive/emotion) | 🟢 nicer voice | Med |
 
 **Already done:** Silero VAD (#1 voice fix), Graphiti config fixes, Gemini model fix,
-voice latency (energy gate + small→distil STT), identity anchor, async persist.
+voice latency (energy gate + small→distil STT), identity anchor, async persist,
+**voice-LLM benchmark (gemma3:4b validated vs llama3.2/qwen3)**.
 
 **Headline:** most of the stack is *well-chosen* (Kokoro, Graphiti, LiteLLM all
 validated as current). The two real gaps are **streaming STT** (architecture, not
