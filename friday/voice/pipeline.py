@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from friday.voice.audio import play_audio, record_with_vad, record_while_held
-from friday.voice.vad import VAD
+from friday.voice.vad import SileroVAD
 
 _log = logging.getLogger("sutra.voice")
 _LATENCY_LOG = Path.home() / ".local" / "share" / "friday" / "voice_latency.jsonl"
@@ -211,7 +211,7 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
     from rich.console import Console
 
     console = Console()
-    vad = VAD(aggressiveness=2)
+    # push-to-talk gates recording by the key, so it needs no VAD.
 
     if history is None:
         history = []
@@ -278,10 +278,9 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     from rich.console import Console
 
     console = Console()
-    # aggressiveness 3 = most aggressive non-speech rejection. At 2, ambient noise
-    # reads as speech so end-of-turn never triggers and the mic stays open ~10-15s.
-    # Override with VAD_AGGRESSIVENESS (0-3) for very quiet rooms.
-    vad = VAD(aggressiveness=int(os.getenv("VAD_AGGRESSIVENESS", "3")))
+    # Silero neural VAD — noise-robust, doesn't fragment speech like webrtcvad did.
+    # VAD_THRESHOLD (0–1) tunes sensitivity; 0.5 is the default.
+    vad = SileroVAD(threshold=float(os.getenv("VAD_THRESHOLD", "0.5")))
 
     if history is None:
         history = []
@@ -294,7 +293,8 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     try:
         while True:
             console.print("[dim]listening…[/dim]", end="\r")
-            audio = record_with_vad(vad_fn=vad, silence_threshold_s=0.25, max_duration_s=30.0)
+            # silence_threshold 0.5s + Silero = waits for a real pause, no mid-sentence cut.
+            audio = record_with_vad(vad_fn=vad, silence_threshold_s=0.5, max_duration_s=30.0)
 
             if len(audio) < 8000:
                 await asyncio.sleep(0.1)

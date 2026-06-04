@@ -14,7 +14,7 @@ import sounddevice as sd
 SAMPLE_RATE = 16000   # Hz — Whisper native
 CHANNELS = 1
 DTYPE = np.int16
-BLOCK_SIZE = 480      # 30ms at 16kHz — webrtcvad frame size
+BLOCK_SIZE = 512      # 32ms at 16kHz — Silero VAD's required chunk size
 
 # Set AUDIO_INPUT_DEVICE / AUDIO_OUTPUT_DEVICE in .env to override.
 # "pulse" routes through PipeWire/PulseAudio, which resamples to/from the device's
@@ -108,15 +108,23 @@ def record_with_vad(
     vad_fn: Callable[[bytes], bool],
     *,
     sample_rate: int = SAMPLE_RATE,
-    silence_threshold_s: float = 0.35,
+    silence_threshold_s: float = 0.5,
     max_duration_s: float = 30.0,
     pre_speech_pad_s: float = 0.3,
+    energy_gate: bool = False,
 ) -> np.ndarray:
     """Record until VAD detects end-of-speech (silence_threshold_s of silence).
 
     Captures from pad_frames before the first detected speech through end-of-speech.
     Returns int16 PCM array ready for Whisper.
+
+    energy_gate: layer an RMS noise-floor gate on top of vad_fn. Needed for the
+    legacy webrtcvad (it flags room noise as speech); leave OFF for SileroVAD,
+    which is already noise-robust — gating it would clip quiet speech. If vad_fn
+    is stateful (SileroVAD), its .reset() is called so state doesn't leak between turns.
     """
+    if hasattr(vad_fn, "reset"):
+        vad_fn.reset()
     silence_frames = int(silence_threshold_s * sample_rate / BLOCK_SIZE)
     max_frames = int(max_duration_s * sample_rate / BLOCK_SIZE)
     pad_frames = int(pre_speech_pad_s * sample_rate / BLOCK_SIZE)
@@ -130,7 +138,7 @@ def record_with_vad(
     consecutive_silence = 0
     speech_started = False
     first_speech_idx: int | None = None
-    # Ambient noise floor, estimated from the quiet lead-in before speech starts.
+    # Ambient noise floor, estimated from the quiet lead-in (energy_gate only).
     noise_samples: list[float] = []
     noise_floor = 0.0
 
@@ -146,15 +154,19 @@ def record_with_vad(
             frame = audio_q.get()
             all_frames.append(frame)
 
-            rms = _frame_rms(frame)
             vad_flag = vad_fn(frame.tobytes())
-            if not speech_started:
-                # Calibrate the room noise floor from pre-speech frames (median is
-                # robust to the odd transient). Frozen once speech begins.
-                noise_samples.append(rms)
-                noise_floor = float(np.median(noise_samples[-30:]))
+            if energy_gate:
+                rms = _frame_rms(frame)
+                if not speech_started:
+                    # Calibrate the room floor from pre-speech frames (median is
+                    # robust to transients). Frozen once speech begins.
+                    noise_samples.append(rms)
+                    noise_floor = float(np.median(noise_samples[-30:]))
+                is_speech = _is_speech_frame(vad_flag, rms, noise_floor)
+            else:
+                is_speech = vad_flag  # trust the neural VAD directly
 
-            if _is_speech_frame(vad_flag, rms, noise_floor):
+            if is_speech:
                 if not speech_started:
                     first_speech_idx = len(all_frames) - 1
                     speech_started = True
