@@ -98,3 +98,23 @@ async def test_missing_anthropic_key_is_warn_not_fail(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     result = await _check_api_key()
     assert result.status == Status.WARN
+
+
+@pytest.mark.asyncio
+async def test_watchdog_survives_a_crashing_check(monkeypatch):
+    """A single check raising must NOT crash run_health_checks — it should
+    surface as a FAIL result so the watchdog keeps running."""
+    from friday.core import monitor
+
+    async def _boom() -> monitor.CheckResult:
+        raise RuntimeError("nvidia-smi exploded")
+
+    # make the GPU check raise unexpectedly (no internal handling for this)
+    monkeypatch.setattr(monitor, "_check_gpu", _boom)
+    report = await monitor.run_health_checks()
+
+    # report still produced; the crashing check is a FAIL, others unaffected
+    gpu = next(c for c in report.checks if c.name == "gpu")
+    assert gpu.status == monitor.Status.FAIL
+    assert "exploded" in gpu.detail
+    assert len(report.checks) == 8

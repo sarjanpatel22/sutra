@@ -256,20 +256,29 @@ async def _check_budget() -> CheckResult:
 
 # ── Full health run ───────────────────────────────────────────────────────────
 
+async def _safe(name: str, coro: Any) -> CheckResult:
+    """Run a check, turning any unexpected error into a FAIL result — one bad
+    check must never crash the whole watchdog (gather would otherwise propagate)."""
+    try:
+        return await coro
+    except Exception as e:  # noqa: BLE001
+        return CheckResult(name, Status.FAIL, f"check error: {e}")
+
+
 async def run_health_checks() -> HealthReport:
     """Run all health checks concurrently and return a HealthReport."""
     searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080")
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
 
     results = await asyncio.gather(
-        _check_api_key(),
-        _check_http("searxng", searxng_url),
-        _check_redis(),
-        _check_falkordb(),
-        _check_http("qdrant", f"{qdrant_url}/healthz"),
-        _check_disk(),
-        _check_gpu(),
-        _check_budget(),
+        _safe("anthropic_key", _check_api_key()),
+        _safe("searxng", _check_http("searxng", searxng_url)),
+        _safe("redis", _check_redis()),
+        _safe("falkordb", _check_falkordb()),
+        _safe("qdrant", _check_http("qdrant", f"{qdrant_url}/healthz")),
+        _safe("disk", _check_disk()),
+        _safe("gpu", _check_gpu()),
+        _safe("budget", _check_budget()),
     )
 
     report = HealthReport(checks=list(results))
