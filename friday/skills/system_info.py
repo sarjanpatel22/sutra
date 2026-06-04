@@ -61,6 +61,25 @@ async def system_info() -> dict[str, object]:
 
 
 @skill(
+    name="battery",
+    description="Get battery charge percentage and whether AC power is connected.",
+    auto_confirm=True,
+    timeout_s=3,
+)
+async def battery() -> dict[str, object]:
+    """Battery status: charge %, plugged-in state, and estimated time left."""
+    bat = psutil.sensors_battery()
+    if bat is None:
+        return {"error": "no battery detected (desktop or unsupported platform)"}
+    secs = bat.secsleft
+    return {
+        "percent": round(bat.percent, 1),
+        "plugged_in": bool(bat.power_plugged),
+        "minutes_left": (secs // 60) if isinstance(secs, int) and secs >= 0 else None,
+    }
+
+
+@skill(
     name="run_command",
     description="Run a shell command and return stdout/stderr. Sandboxed — use for read-only commands.",
     auto_confirm=False,  # requires confirmation — can mutate system state
