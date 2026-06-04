@@ -93,3 +93,61 @@ async def test_recall_formats_facts(monkeypatch):
     store._graphiti = FakeGraphiti()
     facts = await store.recall("sarjan")
     assert facts == ["Sarjan works at Acme Corp", "Sutra is voice-native"]
+
+
+class _ForgetGraphiti:
+    """Fake graphiti: search returns two episodes; track what gets removed."""
+
+    def __init__(self):
+        self.removed: list[str] = []
+
+    async def search(self, query, group_ids=None, num_results=10):
+        class E:
+            def __init__(self, fact, eps):
+                self.fact, self.episodes = fact, eps
+        return [E("fact one", ["ep1"]), E("fact two", ["ep2"])]
+
+    async def remove_episode(self, uid):
+        self.removed.append(uid)
+
+
+def _ready_store(graphiti):
+    s = MemoryStore()
+    s._initialized = True
+    s._available = True
+    s._graphiti = graphiti
+    return s
+
+
+@pytest.mark.asyncio
+async def test_forget_preview_deletes_nothing():
+    """The hardening: apply=False must NEVER delete — it only previews."""
+    g = _ForgetGraphiti()
+    store = _ready_store(g)
+    res = await store.forget("anything that matches", apply=False)
+    assert res["removed"] == 0
+    assert g.removed == []  # nothing deleted
+    assert res["matched"] == ["fact one", "fact two"]
+    assert set(res["episodes"]) == {"ep1", "ep2"}
+
+
+@pytest.mark.asyncio
+async def test_forget_apply_deletes_matched():
+    g = _ForgetGraphiti()
+    store = _ready_store(g)
+    res = await store.forget("anything that matches", apply=True)
+    assert res["removed"] == 2
+    assert set(g.removed) == {"ep1", "ep2"}
+
+
+@pytest.mark.asyncio
+async def test_forget_skill_defaults_to_preview(monkeypatch):
+    """The forget skill must preview (delete nothing) unless confirm=True."""
+    from friday.skills import memory as memory_skill
+
+    g = _ForgetGraphiti()
+    monkeypatch.setattr(memory_skill, "get_store", lambda: _ready_store(g))
+    out = await memory_skill.forget("some topic")  # confirm defaults to False
+    assert g.removed == []
+    assert out["count"] == 2
+    assert "would_remove" in out

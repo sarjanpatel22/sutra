@@ -28,10 +28,22 @@ async def recall(query: str, limit: int = 5) -> dict[str, object]:
     auto_confirm=False,  # destructive — confirm before deleting memories
     timeout_s=20,
 )
-async def forget(query: str) -> dict[str, object]:
+async def forget(query: str, confirm: bool = False) -> dict[str, object]:
     """Forget facts from memory.
 
     query: Describes the facts/episodes to remove.
+    confirm: Must be true to actually delete. Default false previews the exact
+        facts that would be removed without deleting anything — forget matches by
+        meaning, so always review the preview before confirming.
     """
-    removed = await get_store().forget(query)
-    return {"removed_episodes": removed}
+    store = get_store()
+    if not confirm:
+        preview = await store.forget(query, apply=False)
+        return {
+            "would_remove": preview["matched"],
+            "count": len(preview["matched"]),
+            "note": "Nothing was deleted. Review these, then call forget again "
+                    "with confirm=true to remove them.",
+        }
+    result = await store.forget(query, apply=True)
+    return {"removed_episodes": result["removed"], "removed_facts": result["matched"]}

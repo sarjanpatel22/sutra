@@ -195,24 +195,55 @@ class MemoryStore:
             logger.warning("memory.recall fulltext fallback failed: %s", e)
             return []
 
-    async def forget(self, query: str, limit: int = 10) -> int:
-        """Remove episodes that produced facts matching query. Returns count removed."""
+    async def forget(
+        self, query: str, limit: int = 10, *, apply: bool = False
+    ) -> dict[str, Any]:
+        """Find — and only on apply=True, delete — episodes matching query.
+
+        forget is destructive and now matches by *meaning* (semantic search), so a
+        loose query can target unrelated facts. To prevent that, this previews by
+        default: with apply=False it deletes NOTHING and returns the facts that
+        WOULD be removed; the caller must look, then re-call with apply=True.
+        Deleting an episode drops every fact derived from it (preview shows them).
+
+        Returns {"matched": [fact, ...], "episodes": [uuid, ...], "removed": int}.
+        """
+        result: dict[str, Any] = {"matched": [], "episodes": [], "removed": 0}
         query = query.strip()
         if not query or not await self.initialize():
-            return 0
+            return result
         try:
             edges = await self._graphiti.search(
                 query, group_ids=[_GROUP_ID], num_results=limit
             )
-            episode_uuids: set[str] = set()
-            for e in edges:
-                episode_uuids.update(getattr(e, "episodes", None) or [])
-            for uid in episode_uuids:
-                await self._graphiti.remove_episode(uid)
-            return len(episode_uuids)
         except Exception as e:  # noqa: BLE001
-            logger.warning("memory.forget failed: %s", e)
-            return 0
+            logger.warning("memory.forget search failed: %s", e)
+            return result
+
+        episode_uuids: list[str] = []
+        seen: set[str] = set()
+        for e in edges:
+            fact = getattr(e, "fact", None)
+            if fact:
+                result["matched"].append(fact)
+            for uid in getattr(e, "episodes", None) or []:
+                if uid not in seen:
+                    seen.add(uid)
+                    episode_uuids.append(uid)
+        result["episodes"] = episode_uuids
+
+        if not apply:  # preview only — never delete implicitly
+            return result
+
+        removed = 0
+        for uid in episode_uuids:
+            try:
+                await self._graphiti.remove_episode(uid)
+                removed += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning("memory.forget remove_episode %s failed: %s", uid, e)
+        result["removed"] = removed
+        return result
 
     async def close(self) -> None:
         if self._graphiti is not None:
