@@ -41,6 +41,9 @@ _DEFAULT_STYLE = {"color": "#94a3b8", "val": 4, "group": "other"}
 # Episodes the ambient daemon captured (source_description "ambient:*") get a
 # distinct warm colour so OS-observed activity stands out from seeded memory.
 _AMBIENT_STYLE = {"color": "#fb923c", "val": 5, "group": "ambient"}
+# Episodes persisted from spoken voice turns (source_description "voice") get a
+# sky-blue so conversations stand out from seeded facts and OS activity.
+_VOICE_STYLE = {"color": "#38bdf8", "val": 5, "group": "voice"}
 
 
 def fetch_graph(graph_name: str = _GRAPH) -> dict[str, Any]:
@@ -71,6 +74,9 @@ def fetch_graph(graph_name: str = _GRAPH) -> dict[str, Any]:
             if source.startswith("ambient"):  # OS-observed activity → distinct style
                 style = _AMBIENT_STYLE
                 badge = source  # e.g. "ambient:window" — shown in the detail panel
+            elif source == "voice":  # spoken conversation turns → distinct style
+                style = _VOICE_STYLE
+                badge = "voice"
         else:
             name = label or lbl
         nodes[str(nid)] = {
