@@ -217,35 +217,9 @@ async def process_audio(
     reply_tokens: list[str] = []
     t_agent = time.monotonic()
     first_token = True
-
-    if use_tools:
-        # Tool path: cloud function-calling. Not token-streamed (tool calls need the
-        # whole response), so synthesize the finished reply as one unit. Fall back to
-        # the local path if the cloud round-trip fails (offline / key issue).
-        try:
-            reply = await voice_agent_run(transcript, history=history)
-            lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
-            reply_tokens = [reply]
-            token_queue.put(reply)
-            token_queue.put(None)
-        except Exception as e:  # noqa: BLE001
-            _log.warning("voice tool path failed (%s) — falling back to local", e)
-            use_tools = False
-
-    if not use_tools:
-        async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
-            reply_tokens.append(token)
-            if first_token:
-                lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
-                first_token = False
-            token_queue.put(token)
-        token_queue.put(None)  # signal TTS to flush and stop
-
-    reply = "".join(reply_tokens).strip()
-
-    # Play audio chunks as they arrive; bail if TTS thread dies.
     sample_rate = tts.sample_rate
     first_audio = True
+    interrupted = False
 
     def next_chunk() -> np.ndarray | None:
         nonlocal first_audio
@@ -262,24 +236,60 @@ async def process_audio(
             first_audio = False
         return chunk.audio
 
-    interrupted = False
-    if barge_in:
-        # Stop speaking the instant the user talks over Sutra.
-        interrupted = play_chunks_interruptible(
-            next_chunk,
-            vad=_get_barge_vad(),
-            sample_rate=sample_rate,
-            detector=BargeInDetector.from_env(),
-        )
-        if interrupted:
-            _log.info("barge-in — stopped speaking mid-reply")
-    else:
+    def play_blocking() -> None:
         while True:
-            audio_chunk = next_chunk()
-            if audio_chunk is None:
+            ch = next_chunk()
+            if ch is None:
                 break
-            play_audio(audio_chunk, sample_rate=sample_rate, blocking=True)
+            play_audio(ch, sample_rate=sample_rate, blocking=True)
 
+    async def generate_local() -> None:
+        nonlocal first_token
+        async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
+            reply_tokens.append(token)
+            if first_token:
+                lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
+                first_token = False
+            token_queue.put(token)
+        token_queue.put(None)  # signal TTS to flush and stop
+
+    if use_tools:
+        # Cloud function-calling: tool calls need the whole response, so this isn't
+        # token-streamed. Synthesize the finished reply, then speak it. Fall back to
+        # the local path if the cloud round-trip fails (offline / key issue).
+        try:
+            reply_text = await voice_agent_run(transcript, history=history)
+            lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
+            reply_tokens = [reply_text]
+            token_queue.put(reply_text)
+            token_queue.put(None)
+            play_blocking()
+        except Exception as e:  # noqa: BLE001
+            _log.warning("voice tool path failed (%s) — falling back to local", e)
+            use_tools = False
+
+    if not use_tools:
+        if barge_in:
+            # Barge-in's grace window must start at first audio, so generate fully,
+            # then play interruptibly.
+            await generate_local()
+            interrupted = play_chunks_interruptible(
+                next_chunk,
+                vad=_get_barge_vad(),
+                sample_rate=sample_rate,
+                detector=BargeInDetector.from_env(),
+            )
+            if interrupted:
+                _log.info("barge-in — stopped speaking mid-reply")
+        else:
+            # Overlap: speak the first sentence while the rest still generates —
+            # cuts the dead air between answer-ready and audio-out.
+            playback_thread = threading.Thread(target=play_blocking, daemon=True)
+            playback_thread.start()
+            await generate_local()
+            playback_thread.join(timeout=30.0)
+
+    reply = "".join(reply_tokens).strip()
     tts_thread.join(timeout=5.0)
 
     # Update history with this turn
