@@ -42,6 +42,13 @@ You are dry, technically precise, occasionally warm — a senior engineer who re
 Recalled facts about {_USER_NAME} describe the person you are speaking with — treat "{_USER_NAME}" and "you/your" as the same person; use them when relevant.
 Work the problem through, then give a complete, decisive answer — as long as it genuinely needs, no longer. State your conclusion and the key reasoning behind it. No artificial word limit; never truncate the actual answer. For puzzles, commit to a solution rather than asking for more constraints."""
 
+# Voice + tools: spoken turns that need real data/compute/OS access route here
+# (cloud function-calling). Same identity anchor, but tool-aware and still terse.
+VOICE_TOOL_SYSTEM_PROMPT = f"""You are Sutra, a voice assistant talking with {_USER_NAME}.
+Use the provided tools to get real, current information — the time, weather, system stats, calculations, web search, or memory — instead of guessing.
+Recalled facts about {_USER_NAME} describe the person you're speaking with — treat "{_USER_NAME}" and "you/your" as the same person.
+Once the tools return, reply in spoken English, under 20 words, no markdown and no lists — just say the answer naturally."""
+
 
 # Background voice-turn persistence. Voice can't await remember() (it runs the
 # ~18s extraction LLM), so turns are persisted fire-and-forget. The lock serializes
@@ -271,6 +278,80 @@ async def voice_stream(
                 yield token
         except Exception:  # noqa: BLE001 — fallback tier unavailable; end stream cleanly
             pass
+
+
+# Voice turns whose answer needs a real tool (live data, computation, the OS)
+# rather than the model's own knowledge. A curated trigger list keeps chit-chat on
+# the fast local path and only escalates these to cloud function-calling. False
+# positives just cost a cloud round-trip (still answers); false negatives fall back
+# to a guessed local answer — so bias the list toward catching real tool needs.
+_TOOL_TRIGGERS = (
+    "what time", "the time", "what day", "what's the date", "today's date",
+    "weather", "temperature", "forecast", "how hot", "how cold", "is it raining",
+    "how much ram", "how much memory", "cpu", "disk space", "how much storage",
+    "gpu", "battery", "system stat",
+    "calculate", "square root", "percent of", " plus ", " minus ", " times ",
+    "divided by", "multiplied",
+    "search for", "look up", "google", "latest news", "current price", "who won",
+    "clipboard", "what did i copy", "open http", "go to http",
+    "what do you know about", "do you remember", "recall ",
+)
+
+
+def likely_needs_tool(text: str) -> bool:
+    """Heuristic: does this voice turn need a tool (live data/compute/OS) vs a chat reply?"""
+    t = f" {text.lower().strip()} "
+    return any(trigger in t for trigger in _TOOL_TRIGGERS)
+
+
+def cloud_tools_available() -> bool:
+    """True if a free cloud tier with real function-calling is reachable (a key is set)."""
+    return any(os.getenv(k) for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"))
+
+
+async def voice_agent_run(
+    user_input: str,
+    history: list[dict[str, Any]] | None = None,
+    tier: Tier = Tier.MEDIUM,
+    max_tool_rounds: int = 4,
+) -> str:
+    """Voice turn that can call skills — routed to a tool-capable cloud tier.
+
+    Local Gemma emits malformed tool calls, so skill-needing voice turns escalate
+    here (free Groq/Gemini function-calling). Returns a short spoken answer.
+    Irreversible skills are declined (no confirm hook is passed) — voice never
+    silently writes files or runs commands.
+    """
+    registry.autodiscover()
+    system_content = VOICE_TOOL_SYSTEM_PROMPT
+    memories = await get_store().recall(user_input, limit=3)
+    if memories:
+        system_content += "\n\nWhat you remember (use only if relevant):\n" + "\n".join(
+            f"- {m}" for m in memories
+        )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_input})
+
+    tools = registry.all_tools()
+    for _ in range(max_tool_rounds):
+        response = await complete(messages, tier=tier, tools=tools, max_tokens=256)
+        msg = response.choices[0].message
+        messages.append({
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": getattr(msg, "tool_calls", None),
+        })
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            return (msg.content or "").strip()
+        # No confirm hook → irreversible skills are declined, never run unattended.
+        messages.extend(await _run_tool_calls(tool_calls))
+
+    # Out of tool rounds — force a final spoken answer with no more tools.
+    response = await complete(messages, tier=tier, tools=None, max_tokens=128)
+    return (response.choices[0].message.content or "").strip()
 
 
 async def _run_tool_calls(

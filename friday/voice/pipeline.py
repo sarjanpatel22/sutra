@@ -164,7 +164,12 @@ async def process_audio(
     user talks over Sutra (VAD-mode only; the LLM has already finished generating
     by the time playback starts, so only speech is cut, not the answer).
     """
-    from friday.core.agent import voice_stream
+    from friday.core.agent import (
+        cloud_tools_available,
+        likely_needs_tool,
+        voice_agent_run,
+        voice_stream,
+    )
     from friday.core.router import Tier
 
     lat = TurnLatency()
@@ -181,6 +186,10 @@ async def process_audio(
         return "", history, lat, False
 
     _log.info("STT [%.0fms]: %s", lat.stt_ms, transcript)
+
+    # Skill-needing turns ("what's the weather", "how much RAM") go through cloud
+    # function-calling; chit-chat stays on the fast local path.
+    use_tools = likely_needs_tool(transcript) and cloud_tools_available()
 
     # Streaming agent → TTS worker thread → speaker
     tts = _get_tts()
@@ -209,13 +218,28 @@ async def process_audio(
     t_agent = time.monotonic()
     first_token = True
 
-    async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
-        reply_tokens.append(token)
-        if first_token:
+    if use_tools:
+        # Tool path: cloud function-calling. Not token-streamed (tool calls need the
+        # whole response), so synthesize the finished reply as one unit. Fall back to
+        # the local path if the cloud round-trip fails (offline / key issue).
+        try:
+            reply = await voice_agent_run(transcript, history=history)
             lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
-            first_token = False
-        token_queue.put(token)
-    token_queue.put(None)  # signal TTS to flush and stop
+            reply_tokens = [reply]
+            token_queue.put(reply)
+            token_queue.put(None)
+        except Exception as e:  # noqa: BLE001
+            _log.warning("voice tool path failed (%s) — falling back to local", e)
+            use_tools = False
+
+    if not use_tools:
+        async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
+            reply_tokens.append(token)
+            if first_token:
+                lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
+                first_token = False
+            token_queue.put(token)
+        token_queue.put(None)  # signal TTS to flush and stop
 
     reply = "".join(reply_tokens).strip()
 

@@ -82,3 +82,35 @@ async def test_confirm_sees_skill_name_and_args(temp_skills):
 async def test_unknown_skill_reports_error(temp_skills):
     out = await agent._run_tool_calls([_tc("_t_nonexistent", {})])
     assert "error" in _content(out[0])
+
+
+# --- voice tool-routing heuristic --------------------------------------------
+
+@pytest.mark.parametrize("query", [
+    "what time is it",
+    "what's the weather in Toronto",
+    "how much RAM do I have",
+    "calculate 5 times 12",
+    "search for the latest news",
+    "what's on my clipboard",
+])
+def test_likely_needs_tool_true(query):
+    assert agent.likely_needs_tool(query) is True
+
+
+@pytest.mark.parametrize("query", [
+    "how are you",
+    "tell me a joke",
+    "what's your name",
+    "good morning Sutra",
+])
+def test_likely_needs_tool_false(query):
+    assert agent.likely_needs_tool(query) is False
+
+
+def test_cloud_tools_available(monkeypatch):
+    for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    assert agent.cloud_tools_available() is False
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    assert agent.cloud_tools_available() is True
