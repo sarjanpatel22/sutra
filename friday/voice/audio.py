@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -244,6 +245,90 @@ def record_with_vad(
     if start is None:
         return np.array([], dtype=DTYPE)
     return np.concatenate(all_frames[start:])
+
+
+def record_with_vad_streaming(
+    vad_fn: Callable[[bytes], bool],
+    transcribe_fn: Callable[[np.ndarray], Any],
+    *,
+    sample_rate: int = SAMPLE_RATE,
+    silence_threshold_s: float = 0.5,
+    max_duration_s: float = 30.0,
+    pre_speech_pad_s: float = 0.3,
+) -> tuple[np.ndarray, Any]:
+    """Record until end-of-speech, transcribing during the silence-endpoint wait.
+
+    The moment speech pauses, the captured audio is already the whole utterance, so
+    transcribe_fn(audio) is fired in a background thread right then. By the time the
+    silence threshold (~silence_threshold_s) confirms the turn is over, the
+    transcript is usually ready — taking STT off the critical path.
+
+    transcribe_fn returns an opaque STT result (this module stays STT-agnostic).
+    Returns (audio_int16, result); result is None when the turn ends by the
+    max-duration cutoff with no pause — the caller should then transcribe directly.
+    """
+    if hasattr(vad_fn, "reset"):
+        vad_fn.reset()
+    silence_frames = int(silence_threshold_s * sample_rate / BLOCK_SIZE)
+    max_frames = int(max_duration_s * sample_rate / BLOCK_SIZE)
+    pad_frames = int(pre_speech_pad_s * sample_rate / BLOCK_SIZE)
+
+    audio_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def callback(indata: np.ndarray, frames: int, time_info: object, status: object) -> None:
+        audio_q.put(indata[:, 0].copy())
+
+    all_frames: list[np.ndarray] = []
+    consecutive_silence = 0
+    speech_started = False
+    first_speech_idx: int | None = None
+    executor = ThreadPoolExecutor(max_workers=1)
+    pending: Future[Any] | None = None
+
+    try:
+        with sd.InputStream(
+            device=_INPUT_DEVICE,
+            samplerate=sample_rate,
+            channels=CHANNELS,
+            dtype=DTYPE,
+            blocksize=BLOCK_SIZE,
+            callback=callback,
+        ):
+            while len(all_frames) < max_frames:
+                frame = audio_q.get()
+                all_frames.append(frame)
+                if vad_fn(frame.tobytes()):
+                    if not speech_started:
+                        first_speech_idx = len(all_frames) - 1
+                        speech_started = True
+                    consecutive_silence = 0
+                elif speech_started:
+                    consecutive_silence += 1
+                    if consecutive_silence == 1:
+                        # Speech just paused — kick off transcription now so it
+                        # overlaps the silence-confirmation wait. A later resume just
+                        # supersedes this with a fresh submit at the next pause.
+                        if pending is not None:
+                            pending.cancel()
+                        ws = _speech_window_start(first_speech_idx, pad_frames)
+                        clip = np.concatenate(all_frames[ws:] if ws is not None else all_frames)
+                        pending = executor.submit(transcribe_fn, clip)
+                    if consecutive_silence >= silence_frames:
+                        break
+
+        start = _speech_window_start(first_speech_idx, pad_frames)
+        if start is None:
+            return np.array([], dtype=DTYPE), None
+        audio = np.concatenate(all_frames[start:])
+        result: Any = None
+        if pending is not None:
+            try:
+                result = pending.result()  # the last pause covers the full utterance
+            except Exception:  # noqa: BLE001 — caller transcribes synchronously instead
+                result = None
+        return audio, result
+    finally:
+        executor.shutdown(wait=False)
 
 
 def play_audio(audio: np.ndarray, sample_rate: int = 24000, blocking: bool = True) -> None:

@@ -27,6 +27,7 @@ from friday.voice.audio import (
     play_chunks_interruptible,
     record_while_held,
     record_with_vad,
+    record_with_vad_streaming,
 )
 from friday.voice.vad import SileroVAD
 
@@ -154,6 +155,7 @@ async def process_audio(
     history: list[dict[str, Any]],
     *,
     barge_in: bool = False,
+    stt_result: Any = None,
 ) -> tuple[str, list[dict[str, Any]], TurnLatency, bool]:
     """STT → streaming agent → streaming TTS → play.
 
@@ -175,10 +177,11 @@ async def process_audio(
     lat = TurnLatency()
     t_total = time.monotonic()
 
-    # STT
+    # STT — use the streaming pre-computed result if the recorder already produced
+    # one (transcription overlapped the silence wait), else transcribe now.
     stt = _get_stt()
     t0 = time.monotonic()
-    result = stt.transcribe(audio)
+    result = stt_result if stt_result is not None else stt.transcribe(audio)
     lat.stt_ms = (time.monotonic() - t0) * 1000
     transcript = result.text.strip()
 
@@ -394,10 +397,15 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
         history = []
 
     barge_in = _barge_in_enabled()
+    streaming_stt = os.getenv("VOICE_STREAMING_STT", "0").strip().lower() not in (
+        "", "0", "false", "no"
+    )
 
     console.print("[bold cyan]Sutra voice (VAD)[/bold cyan] — listening  [bold]Ctrl+C[/bold] to exit")
     if barge_in:
         console.print("[dim]barge-in on — talk over her to interrupt[/dim]")
+    if streaming_stt:
+        console.print("[dim]streaming STT on — transcribing as you speak[/dim]")
     console.print("[dim]Pre-warming models…[/dim]", end="\r")
     await prewarm()
     console.print("[dim]Ready.            [/dim]")
@@ -408,7 +416,19 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
             # End-of-turn silence: the single biggest warm-latency knob. 0.5s (LiveKit's
             # default) waits for a real pause; lower = snappier but risks cutting pauses.
             silence_s = float(os.getenv("VAD_SILENCE_S", "0.5"))
-            audio = record_with_vad(vad_fn=vad, silence_threshold_s=silence_s, max_duration_s=30.0)
+            if streaming_stt:
+                # Transcribe during the silence wait — STT off the critical path.
+                audio, stt_result = record_with_vad_streaming(
+                    vad,
+                    lambda clip: _get_stt().transcribe(clip),
+                    silence_threshold_s=silence_s,
+                    max_duration_s=30.0,
+                )
+            else:
+                audio = record_with_vad(
+                    vad_fn=vad, silence_threshold_s=silence_s, max_duration_s=30.0
+                )
+                stt_result = None
 
             if len(audio) < 8000:
                 await asyncio.sleep(0.1)
@@ -416,7 +436,7 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
 
             console.print("[cyan]heard you…[/cyan]", end="\r")
             reply, history, lat, interrupted = await process_audio(
-                audio, history, barge_in=barge_in
+                audio, history, barge_in=barge_in, stt_result=stt_result
             )
             if interrupted:
                 console.print("[yellow]⊘ barge-in — stopped speaking[/yellow]")
