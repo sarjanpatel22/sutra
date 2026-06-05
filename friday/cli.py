@@ -18,6 +18,16 @@ app = typer.Typer(name="sutra", help="Sutra — voice-native ambient AI assistan
 console = Console()
 
 
+@app.callback()
+def _bootstrap() -> None:
+    """Runs before any command — load keyring secrets into the environment."""
+    try:
+        from friday.core.secrets import load_into_env
+        load_into_env()
+    except Exception:  # noqa: BLE001 — secret-loading must never block the CLI
+        pass
+
+
 def _tier_from_str(s: str) -> Tier:
     mapping = {
         "local": Tier.LOCAL,
@@ -31,8 +41,10 @@ def _tier_from_str(s: str) -> Tier:
 
 async def _chat_loop(tier: Tier) -> None:
     from friday.core.agent import flush_persist, run  # late import to avoid circular
+    from friday.core.history import History
 
-    history: list[dict[str, Any]] = []
+    hist = History(session="chat")
+    history: list[dict[str, Any]] = hist.load()[-24:]  # resume recent context across restarts
 
     console.print(Panel(
         "[bold cyan]Sutra[/bold cyan] — ready.\n"
@@ -61,6 +73,7 @@ async def _chat_loop(tier: Tier) -> None:
                 break
             elif cmd == "clear":
                 history = []
+                hist.clear()
                 console.print("[dim]History cleared.[/dim]")
             elif cmd == "tier":
                 if len(parts) > 1:
@@ -118,6 +131,7 @@ async def _chat_loop(tier: Tier) -> None:
             status.stop()
 
         console.print(Panel(Markdown(reply), border_style="dim", padding=(0, 1)))
+        hist.append_turn(user, reply)
 
     # Let any background memory writes from the last turns finish before exit.
     with console.status("[dim]saving memory…[/dim]"):
@@ -278,6 +292,28 @@ def budget() -> None:
         f"[{monthly_color}]{b.monthly_pct:.1f}%[/{monthly_color}]",
         f"{b.monthly_tokens:,}",
     )
+    console.print(t)
+
+
+@app.command()
+def secrets(
+    import_env: bool = typer.Option(
+        False, "--import", help="Move .env secrets into the OS keyring"
+    ),
+) -> None:
+    """Show where each secret resolves from (keyring/env/missing), or --import to keyring."""
+    from friday.core.secrets import import_from_env
+    from friday.core.secrets import status as secret_status
+
+    if import_env:
+        moved = import_from_env()
+        console.print(f"[green]Imported into keyring:[/green] {', '.join(moved) or '(none)'}")
+    t = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+    t.add_column("Secret")
+    t.add_column("Source")
+    colors = {"keyring": "green", "env": "yellow", "missing": "red"}
+    for name, src in secret_status().items():
+        t.add_row(name, f"[{colors[src]}]{src}[/{colors[src]}]")
     console.print(t)
 
 
