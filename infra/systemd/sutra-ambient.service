@@ -1,0 +1,40 @@
+# Sutra ambient-memory daemon as a systemd *user* service.
+#
+# Runs `sutra ambient` (friday/ambient/daemon.py) in the background: it watches
+# activity and flushes summaries into the Graphiti/FalkorDB graph every ~20 min.
+# A user unit (not system) so it runs as you, with your session env, and never
+# needs root — matching the "no sudo, free-by-default" stance.
+#
+# The CLI loads ~/friday-os/.env itself via python-dotenv from WorkingDirectory,
+# so no EnvironmentFile is needed (keeps systemd out of .env's quoting rules).
+# Make sure AMBIENT_ENABLED=1 is set in .env, else the daemon exits immediately.
+#
+# Install (once):
+#   mkdir -p ~/.config/systemd/user
+#   ln -sf ~/friday-os/infra/systemd/sutra-ambient.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now sutra-ambient
+#   loginctl enable-linger "$USER"        # keep it running after you log out
+#
+# Inspect:
+#   systemctl --user status sutra-ambient
+#   journalctl --user -u sutra-ambient -f          # systemd's view
+#   tail -f ~/.local/share/friday/ambient.log      # the daemon's own log
+
+[Unit]
+Description=Sutra ambient-memory daemon
+After=network-online.target
+Wants=network-online.target
+# Don't thrash if it crash-loops (e.g. FalkorDB gone for good).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sarjan/friday-os
+ExecStart=/home/sarjan/friday-os/.venv/bin/sutra ambient
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

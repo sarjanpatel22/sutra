@@ -183,10 +183,38 @@ sutra graph
 sutra ambient            # daemon
 sutra ambient --once     # single pass
 tail -f ~/.local/share/friday/ambient.log
+
+# measure recall quality (regression baseline before any embedder change)
+python scripts/eval_recall.py            # hit@1 / hit@3 / hit@5 on the seed set
+
+# tidy the graph (preview-first — both delete nothing without --apply)
+python scripts/clean_memory.py           # noise (garbage transcripts)
+python scripts/clean_memory.py --dupes   # near-duplicate episodes (reseeds, echoes)
 ```
 
 Privacy levers: `AMBIENT_ENABLED=0` (off), `AMBIENT_SOURCES=window,files,git,shell`,
 `AMBIENT_WATCH_DIRS=/path:/path`.
+
+### Run ambient as a background service
+
+So it survives reboots/logout instead of needing a live terminal:
+
+```bash
+mkdir -p ~/.config/systemd/user
+ln -sf ~/friday-os/infra/systemd/sutra-ambient.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now sutra-ambient
+loginctl enable-linger "$USER"           # keep running after logout
+systemctl --user status sutra-ambient
+```
+
+Needs `AMBIENT_ENABLED=1` in `.env` (the CLI loads `.env` from the unit's
+WorkingDirectory). Logs: `journalctl --user -u sutra-ambient -f` (systemd) and
+`~/.local/share/friday/ambient.log` (the daemon's own).
+
+**Recall baseline (2026-06-06, seed set):** hit@1 38% · hit@3 75% · hit@5 88%
+(1 miss: "falkordb"). Re-run `eval_recall.py` after any embedder/reranker change
+to confirm it didn't regress.
 
 ---
 
@@ -195,5 +223,6 @@ Privacy levers: `AMBIENT_ENABLED=0` (off), `AMBIENT_SOURCES=window,files,git,she
 - **GPS / location tracing** — laptop has no GPS chip; this means WiFi/IP
   geolocation. Deferred to a later phase.
 - Ambient polish: window collector needs the live loop to accumulate (≥60s
-  threshold); local-LLM summarization for more fluent episodes; run as a systemd
-  user service; visually distinguish `ambient:*` episodes in the viewer.
+  threshold); local-LLM summarization for more fluent episodes; ~~run as a systemd
+  user service~~ ✅ done (`infra/systemd/sutra-ambient.service`); visually
+  distinguish `ambient:*` episodes in the viewer.
