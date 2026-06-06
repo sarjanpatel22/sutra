@@ -1,0 +1,210 @@
+<!doctype html>
+<!--
+  Sutra — HORIZON orb (first visible slice).
+
+  A standalone presence: deep-navy → peach horizon sky (CSS gradient), a thin
+  horizon line, one warm star, and the "presence" — a Three.js Points particle
+  field sitting above the horizon, breathing in ultra-slow idle drift. Palette and
+  motion are locked by docs/FRIDAY_VISUAL_DIRECTION.md (HORIZON). 70%+ of the
+  canvas stays dark; hierarchy is brightness, not hue.
+
+  It polls /api/state so the voice-reactivity wiring point already exists; in
+  standalone mode the state is "idle" and the orb just drifts.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sutra · HORIZON</title>
+<style>
+  :root {
+    /* HORIZON palette — locked */
+    --sky-top: #030610; --sky-1: #0A0F22; --sky-2: #1A1838;
+    --sky-3: #3A2048; --sky-4: #A05848; --sky-horizon: #FFB890;
+    --star: #FFFFFF; --star-halo: #FFE8D0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--sky-top); }
+  /* The sky: a vertical gradient from deep navy at the top to a peach horizon
+     band low in the frame. CSS gradient is cheaper than a shader (per the spec). */
+  #sky {
+    position: fixed; inset: 0;
+    background: linear-gradient(
+      to bottom,
+      var(--sky-top) 0%, var(--sky-1) 34%, var(--sky-2) 56%,
+      var(--sky-3) 72%, var(--sky-4) 86%, var(--sky-horizon) 100%
+    );
+  }
+  /* Thin glowing horizon line, low in the frame. */
+  #horizon {
+    position: fixed; left: 0; right: 0; bottom: 14%; height: 1px;
+    background: linear-gradient(to right,
+      transparent, rgba(255,232,208,0.55) 50%, transparent);
+    box-shadow: 0 0 24px 2px rgba(255,184,144,0.25);
+  }
+  /* The star: a bright point with a warm halo, sitting above the horizon. */
+  #star {
+    position: fixed; left: 50%; top: 30%; width: 4px; height: 4px;
+    transform: translate(-50%, -50%); border-radius: 50%;
+    background: var(--star);
+    box-shadow:
+      0 0 6px 2px var(--star),
+      0 0 22px 6px var(--star-halo),
+      0 0 60px 18px rgba(255,232,208,0.35);
+  }
+  #orb { position: fixed; inset: 0; }
+  /* Corner telemetry — visible if you look, invisible if you don't (≤9px, low op). */
+  .hud {
+    position: fixed; font-family: "JetBrains Mono", "Inconsolata", monospace;
+    font-size: 9px; letter-spacing: 1px; color: rgba(74,107,120,0.5);
+    user-select: none; pointer-events: none;
+  }
+  #wordmark {
+    left: 24px; top: 22px; font-size: 13px; letter-spacing: 12px;
+    font-weight: 300; color: rgba(234,252,255,0.55);
+  }
+  #status { right: 24px; top: 24px; letter-spacing: 3px; }
+  #fps { left: 24px; bottom: 18px; }
+</style>
+</head>
+<body>
+  <div id="sky"></div>
+  <div id="horizon"></div>
+  <div id="star"></div>
+  <canvas id="orb"></canvas>
+  <div id="wordmark" class="hud">SUTRA</div>
+  <div id="status" class="hud">IDLE</div>
+  <div id="fps" class="hud"></div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+
+const PARTICLES = 14000;          // within the 16GB / 60fps budget
+const canvas = document.getElementById("orb");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+camera.position.z = 3.2;
+
+// ── presence: particles in a spherical shell, brighter toward the core ───────
+const positions = new Float32Array(PARTICLES * 3);
+const seeds = new Float32Array(PARTICLES);       // per-particle phase for twinkle
+const radii = new Float32Array(PARTICLES);       // 0=core … 1=rim → brightness
+for (let i = 0; i < PARTICLES; i++) {
+  // cube-weighted radius → dense, bright core; sparse luminous rim
+  const r = Math.pow(Math.random(), 1.6) * 0.85 + (Math.random() - 0.5) * 0.04;
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  positions[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+  positions[i*3+1] = r * Math.sin(phi) * Math.sin(theta) * 0.92; // slight oblate
+  positions[i*3+2] = r * Math.cos(phi);
+  seeds[i] = Math.random() * Math.PI * 2;
+  radii[i] = Math.min(r / 0.85, 1.0);   // 0 = core … 1 = rim
+}
+const geo = new THREE.BufferGeometry();
+geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+geo.setAttribute("seed", new THREE.BufferAttribute(seeds, 1));
+geo.setAttribute("rad", new THREE.BufferAttribute(radii, 1));
+
+const uniforms = {
+  uTime:      { value: 0 },
+  uBrighten:  { value: 0.0 },              // 0 idle … 1 listening/speaking (future)
+  uSize:      { value: 2.0 * Math.min(devicePixelRatio, 2) },
+  uCore:      { value: new THREE.Color("#FFE8D0") },  // warm core (brightness lead)
+  uMid:       { value: new THREE.Color("#A05848") },  // coral
+  uRim:       { value: new THREE.Color("#1A1838") },  // navy-violet, dim
+};
+
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  vertexShader: `
+    uniform float uTime, uSize, uBrighten;
+    attribute float seed, rad;
+    varying float vBright;
+    void main() {
+      vec3 p = position;
+      // ultra-slow breathing: the whole field swells ~3%
+      float breath = 1.0 + 0.03 * sin(uTime * 0.5);
+      // gentle per-particle drift so the cloud is never frozen
+      p += 0.015 * vec3(sin(uTime*0.3 + seed), cos(uTime*0.27 + seed*1.3), sin(uTime*0.23 + seed*0.7));
+      p *= breath;
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      gl_Position = projectionMatrix * mv;
+      // twinkle + core-weighted brightness; listening/speaking lifts it via uBrighten
+      float twinkle = 0.82 + 0.18 * sin(uTime * 1.3 + seed);
+      float core = pow(1.0 - rad, 1.4);            // tight, bright core
+      vBright = core * twinkle * (1.0 + 0.7 * uBrighten);
+      gl_PointSize = uSize * (1.1 + core * 3.2) / max(-mv.z, 0.1);
+    }
+  `,
+  fragmentShader: `
+    uniform vec3 uCore, uMid, uRim;
+    varying float vBright;
+    void main() {
+      // soft round point
+      vec2 d = gl_PointCoord - vec2(0.5);
+      float a = smoothstep(0.5, 0.0, length(d));
+      if (a <= 0.01) discard;
+      // brightness drives hue from dim navy-violet → coral → warm core
+      vec3 col = mix(uRim, uMid, smoothstep(0.0, 0.5, vBright));
+      col = mix(col, uCore, smoothstep(0.5, 1.0, vBright));
+      gl_FragColor = vec4(col, a * clamp(vBright * 1.6 + 0.18, 0.0, 1.0));
+    }
+  `,
+});
+
+const points = new THREE.Points(geo, material);
+points.position.y = 0.25;          // sit above the horizon
+scene.add(points);
+
+// ── layout / resize ──────────────────────────────────────────────────────────
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+// ── state polling (the voice-reactivity wiring point; idle in standalone) ─────
+let target = { brighten: 0.0 };
+const statusEl = document.getElementById("status");
+async function pollState() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    const s = await r.json();
+    const st = (s.state || "idle").toUpperCase();
+    statusEl.textContent = st;
+    target.brighten = st === "SPEAKING" ? (0.4 + 0.6 * (s.amplitude || 0))
+                    : st === "LISTENING" ? 0.35 : 0.0;
+  } catch { /* standalone / server gone — stay idle */ }
+}
+setInterval(pollState, 250); pollState();
+
+// ── render loop ──────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+const fpsEl = document.getElementById("fps");
+let frames = 0, fpsT = 0;
+function frame() {
+  const t = clock.getElapsedTime();
+  uniforms.uTime.value = t;
+  // ease brightness toward target (smooth, no jumps)
+  uniforms.uBrighten.value += (target.brighten - uniforms.uBrighten.value) * 0.06;
+  points.rotation.y = t * 0.02;     // ultra-slow idle rotation
+  renderer.render(scene, camera);
+
+  frames++; if (t - fpsT > 1) { fpsEl.textContent = frames + " fps"; frames = 0; fpsT = t; }
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>

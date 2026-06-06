@@ -255,6 +255,16 @@ def graph(
 
 
 @app.command()
+def orb(
+    port: int = typer.Option(8710, "--port", "-p", help="Port to serve the orb on"),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't auto-open a browser"),
+) -> None:
+    """Open Sutra's HORIZON presence orb (standalone, idle)."""
+    from friday.gui.server import serve
+    serve(port=port, open_browser=not no_open)
+
+
+@app.command()
 def ambient(
     once: bool = typer.Option(False, "--once", help="Single poll+flush then exit (test)"),
 ) -> None:

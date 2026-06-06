@@ -135,14 +135,22 @@ Default state is silence. Information is summoned.
 ### Build order (within v1 Month 3)
 
 1. **HORIZON static** — gradient + horizon line + star + presence.
-   Easiest. Get the look right first.
+   Easiest. Get the look right first. ✅ **shipped 2026-06-06** —
+   `friday/gui/orb.html` + `server.py`, `sutra orb` (stdlib-served, like
+   `sutra graph`); Three.js `Points`/`ShaderMaterial` warm presence with a
+   subtle idle breath/drift, CSS HORIZON sky, star, corner HUD.
 2. **HORIZON motion** — slow gradient cycle, star twinkle, presence
-   breathe.
+   breathe. *(partial: presence already breathes + drifts; sky cycle TODO)*
 3. **AURORA static** — base + ribbons + particles + presence.
 4. **AURORA motion** — ribbon drift, particle drift, idle behaviors.
 5. **State response** — listening, speaking, error states for both.
+   *(wiring point ready: orb polls `GET /api/state`, any process drives it via
+   `POST /api/state {state, amplitude}` — verified the brighten path; the voice
+   loop POSTing TTS amplitude is the next slice.)*
 6. **Transitions** — AURORA ↔ HORIZON, mode-aware switching.
 7. **Information surface** — voice-triggered panels appearing/dissolving.
+8. **Tauri + Next.js dashboard** — deferred until the orb direction is locked;
+   the orb stays on the zero-dep stdlib-serve path until then.
 
 ### What NOT to do
 
