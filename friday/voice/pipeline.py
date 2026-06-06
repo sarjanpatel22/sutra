@@ -119,6 +119,21 @@ async def prewarm() -> None:
     _log.info("voice models ready")
 
 
+async def _connect_mcp(console: Any) -> None:
+    """Connect configured MCP servers so their tools join the voice agent's skills.
+    No-op when none configured; never raises into the voice loop."""
+    try:
+        from friday.mcp.bridge import get_bridge
+        bridge = await get_bridge()
+        if bridge and bridge.tool_names:
+            console.print(
+                f"[dim]MCP: {len(bridge.tool_names)} tool(s) from "
+                f"{', '.join(bridge.servers)}[/dim]"
+            )
+    except Exception as e:  # noqa: BLE001 — MCP must never block voice
+        console.print(f"[yellow]MCP connect skipped ({e})[/yellow]")
+
+
 @dataclass
 class TurnLatency:
     """Per-stage latency for one voice turn."""
@@ -330,6 +345,7 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
     console.print("[bold cyan]Sutra voice[/bold cyan] — hold [bold]SPACE[/bold] to speak  [bold]Ctrl+C[/bold] to exit")
     console.print("[dim]Pre-warming models…[/dim]", end="\r")
     await prewarm()
+    await _connect_mcp(console)
     console.print("[dim]Ready.                [/dim]")
 
     stop_event = threading.Event()
@@ -381,6 +397,8 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
         pass
     finally:
         listener.stop()
+        from friday.mcp.bridge import close_bridge
+        await close_bridge()
         console.print("\n[dim]Voice mode off.[/dim]")
 
 
@@ -408,6 +426,7 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
         console.print("[dim]streaming STT on — transcribing as you speak[/dim]")
     console.print("[dim]Pre-warming models…[/dim]", end="\r")
     await prewarm()
+    await _connect_mcp(console)
     console.print("[dim]Ready.            [/dim]")
 
     try:
@@ -457,4 +476,8 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
             await asyncio.sleep(0.05)
 
     except KeyboardInterrupt:
+        pass
+    finally:
+        from friday.mcp.bridge import close_bridge
+        await close_bridge()
         console.print("\n[dim]Voice mode off.[/dim]")

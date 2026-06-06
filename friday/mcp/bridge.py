@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -110,6 +111,7 @@ class MCPBridge:
         self._config = config
         self._stack = AsyncExitStack()
         self._sessions: dict[str, Any] = {}
+        self._locks: dict[str, asyncio.Lock] = {}  # one per server — calls are serialized
         self._tool_names: list[str] = []
 
     @property
@@ -157,9 +159,13 @@ class MCPBridge:
         sname = skill_name(server, tool.name)
         schema = to_openai_schema(sname, tool.description or "", tool.inputSchema)
         tool_name = tool.name  # bind for the closure
+        # One lock per server: a ClientSession multiplexes a single stdio stream and
+        # is not safe for concurrent call_tool, but the agent runs tools in parallel.
+        lock = self._locks.setdefault(server, asyncio.Lock())
 
         async def _invoke(**kwargs: Any) -> Any:
-            result = await session.call_tool(tool_name, kwargs or None)
+            async with lock:
+                result = await session.call_tool(tool_name, kwargs or None)
             return extract_result(result)
 
         registry.register_external(
@@ -178,6 +184,7 @@ class MCPBridge:
             registry.unregister(n)
         self._tool_names.clear()
         self._sessions.clear()
+        self._locks.clear()
         await self._stack.aclose()
 
 

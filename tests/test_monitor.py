@@ -118,7 +118,7 @@ async def test_watchdog_survives_a_crashing_check(monkeypatch):
     gpu = next(c for c in report.checks if c.name == "gpu")
     assert gpu.status == monitor.Status.FAIL
     assert "exploded" in gpu.detail
-    assert len(report.checks) == 10
+    assert len(report.checks) == 11
 
 
 @pytest.mark.asyncio
@@ -137,6 +137,24 @@ async def test_free_keys_present_is_ok(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     assert (await _check_free_keys()).status == Status.OK
+
+
+@pytest.mark.asyncio
+async def test_mcp_check_skip_when_unconfigured(monkeypatch):
+    from friday.core.monitor import Status, _check_mcp
+    from friday.mcp import bridge as mcp
+    monkeypatch.setattr(mcp, "load_config", lambda: {})
+    assert (await _check_mcp()).status == Status.SKIP
+
+
+@pytest.mark.asyncio
+async def test_mcp_check_ok_when_configured(monkeypatch):
+    from friday.core.monitor import Status, _check_mcp
+    from friday.mcp import bridge as mcp
+    monkeypatch.setattr(mcp, "load_config", lambda: {"git": {"command": "x"}})
+    monkeypatch.setattr(mcp, "_bridge", None)
+    r = await _check_mcp()
+    assert r.status == Status.OK and "git" in r.detail
 
 
 @pytest.mark.asyncio

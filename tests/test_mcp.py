@@ -158,3 +158,36 @@ async def test_write_tool_is_gated_by_default():
 async def test_get_bridge_none_when_unconfigured(monkeypatch):
     monkeypatch.setattr(bridge, "mcp_configured", lambda: False)
     assert await bridge.get_bridge() is None
+
+
+async def test_calls_to_one_server_are_serialized():
+    """A single ClientSession isn't concurrency-safe; the bridge's per-server lock
+    must serialize parallel tool calls so their streams don't interleave."""
+    import asyncio
+
+    order: list[str] = []
+
+    class SlowSession:
+        async def call_tool(self, name, args=None):
+            order.append(f"enter:{name}")
+            await asyncio.sleep(0.02)
+            order.append(f"exit:{name}")
+            return FakeResult(content=[FakeContent("ok")])
+
+    b = MCPBridge()
+    session = SlowSession()
+    empty = {"type": "object", "properties": {}}
+    b._register("srv", session, FakeTool("a", input_schema=empty))
+    b._register("srv", session, FakeTool("b", input_schema=empty))
+    try:
+        await asyncio.gather(
+            registry.call("mcp__srv__a"),
+            registry.call("mcp__srv__b"),
+        )
+        # Each call fully enters and exits before the other enters — no interleave.
+        assert order in (
+            ["enter:a", "exit:a", "enter:b", "exit:b"],
+            ["enter:b", "exit:b", "enter:a", "exit:a"],
+        ), order
+    finally:
+        await b.aclose()

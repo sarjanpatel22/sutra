@@ -243,6 +243,20 @@ async def _check_free_keys() -> CheckResult:
     )
 
 
+async def _check_mcp() -> CheckResult:
+    """MCP servers are optional. Report how many are configured (no subprocess
+    spawn) and, if a bridge is live in this process, how many tools it exposes."""
+    from friday.mcp import bridge as mcp
+    config = mcp.load_config()
+    enabled = [n for n, s in config.items() if not s.get("disabled")]
+    if not enabled:
+        return CheckResult("mcp", Status.SKIP, "no MCP servers configured")
+    detail = f"{len(enabled)} configured: {', '.join(enabled)}"
+    if mcp._bridge is not None:
+        detail += f" | {len(mcp._bridge.tool_names)} tool(s) live"
+    return CheckResult("mcp", Status.OK, detail)
+
+
 async def _check_disk() -> CheckResult:
     import shutil as sh
     usage = sh.disk_usage("/")
@@ -323,6 +337,7 @@ async def run_health_checks() -> HealthReport:
         _safe("redis", _check_redis()),
         _safe("falkordb", _check_falkordb()),
         _safe("qdrant", _check_qdrant()),
+        _safe("mcp", _check_mcp()),
         _safe("disk", _check_disk()),
         _safe("gpu", _check_gpu()),
         _safe("budget", _check_budget()),

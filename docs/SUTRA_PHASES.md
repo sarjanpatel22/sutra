@@ -174,8 +174,10 @@ mic round-trip measurement logged to voice_latency.jsonl.
 | Claude-Desktop-compatible `mcp_servers.json` config | ✅ spike |
 | Confirmation gating for MCP tools (untrusted by default → `auto_confirm=False`) | ✅ spike |
 | Graceful degradation when a server is down / absent | ✅ spike |
-| Wire bridge startup into the agent/CLI lifecycle | ⬜ |
-| First real server connected (filesystem or git) + smoke test on hardware | ⬜ |
+| Per-server concurrency lock (parallel tool-calls are serialized) | ✅ |
+| Wire bridge startup into chat + voice lifecycle (tools auto-join registry) | ✅ |
+| MCP health check in `sutra status` / watchdog | ✅ |
+| First *off-the-shelf* server (filesystem/git via npx/uvx) on hardware | ⬜ |
 
 **Exit criteria:** `sutra` can call a tool from an off-the-shelf MCP server, gated
 by the same confirmation flow as first-party skills.

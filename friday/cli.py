@@ -46,11 +46,25 @@ async def _chat_loop(tier: Tier) -> None:
     hist = History(session="chat")
     history: list[dict[str, Any]] = hist.load()[-24:]  # resume recent context across restarts
 
+    # Connect any configured MCP servers so their tools join the skill registry for
+    # this session. No-op (returns None) when no server is configured.
+    from friday.mcp.bridge import close_bridge, get_bridge
+    mcp_bridge = None
+    try:
+        mcp_bridge = await get_bridge()
+    except Exception as e:  # noqa: BLE001 — MCP must never block chat
+        console.print(f"[yellow]MCP connect failed: {e}[/yellow]")
+
     console.print(Panel(
         "[bold cyan]Sutra[/bold cyan] — ready.\n"
         f"[dim]tier: {tier.value}  |  /tier <name>  /skills  /budget  /status  /clear  /quit[/dim]",
         border_style="cyan",
     ))
+    if mcp_bridge and mcp_bridge.tool_names:
+        console.print(
+            f"[dim]MCP: {len(mcp_bridge.tool_names)} tool(s) from "
+            f"{', '.join(mcp_bridge.servers)}[/dim]"
+        )
 
     while True:
         try:
@@ -136,6 +150,7 @@ async def _chat_loop(tier: Tier) -> None:
     # Let any background memory writes from the last turns finish before exit.
     with console.status("[dim]saving memory…[/dim]"):
         await flush_persist()
+    await close_bridge()  # tear down MCP server subprocesses (no-op if none)
 
 
 @app.command()
