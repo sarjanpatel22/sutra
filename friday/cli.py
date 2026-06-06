@@ -296,6 +296,38 @@ def budget() -> None:
 
 
 @app.command()
+def delegate(
+    agent: str = typer.Argument(..., help="architect | researcher | watchdog"),
+    task: str = typer.Argument(..., help="The focused sub-task to hand off"),
+) -> None:
+    """Run a specialist sub-agent on a task in isolated context and print its report."""
+    from friday.core.subagents import SUBAGENTS, run_subagent
+
+    if agent.lower() not in SUBAGENTS:
+        console.print(f"[red]Unknown sub-agent '{agent}'.[/red] Try: {', '.join(SUBAGENTS)}")
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        with console.status(f"[cyan]{agent} is working…[/cyan]"):
+            answer = await run_subagent(agent, task)
+        console.print(Panel(Markdown(answer), title=f"[cyan]{agent}[/cyan]", border_style="cyan"))
+
+    asyncio.run(_run())
+
+
+@app.command(name="subagents")
+def show_subagents() -> None:
+    """List the available specialist sub-agents."""
+    from friday.core.subagents import list_subagents
+    t = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+    t.add_column("Agent")
+    t.add_column("Role")
+    for name, role in list_subagents():
+        t.add_row(name, role)
+    console.print(t)
+
+
+@app.command()
 def mcp() -> None:
     """Connect to configured MCP servers and list the tools they expose to Sutra."""
     from friday.mcp import get_bridge, mcp_configured
