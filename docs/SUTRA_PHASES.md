@@ -31,6 +31,28 @@ Stop and honestly assess "should I keep going" at each of these.
 
 ---
 
+## 2026-SOTA Course Corrections
+
+> Folded in 2026-06-05 from `ROADMAP_BRAINSTORM_2026.md` (research pass over this
+> plan vs the 2026 landscape). These are the deltas only — everything not listed
+> here is unchanged. **Validated, do not churn:** Kokoro TTS, Graphiti+FalkorDB,
+> LiteLLM router, Silero VAD, faster-whisper, SearXNG, Tauri+Next.js.
+
+| Δ | Phase | Change | Why | Effort |
+|---|-------|--------|-----|--------|
+| **MCP bridge** | new **1.4b** | Sutra becomes an MCP host/client; keep local `@skill` for first-party/latency-critical, inherit the ecosystem for the rest | The 2026 integration substrate — hundreds of servers off the shelf; additive, not a rewrite | +8–12h (spike done 06-05) |
+| Playwright CLI | 1.5 | Add alongside browser-use for scripted/token-cheap flows | 4–100× fewer tokens than MCP for deterministic navigation | neutral |
+| LiveKit wakeword | 1.8 | Try before openWakeWord | Better accuracy + one-command custom training | neutral |
+| streamUI → watch A2UI | 1.10 / 1.11 / 3.3 | Keep streamUI for v1 desktop; watch A2UI for multi-device | Cross-platform + trust-boundary security beats Next.js-only when phone+desktop+server arrive | defer |
+| Activepieces vs n8n | 2.1 | Re-evaluate at phase start | If the MCP bridge lands, Activepieces (MCP-first, ~400 servers) is the more natural fit | re-eval |
+| Claude Agent SDK | 2.6→pulled early | Don't hand-roll sub-agent orchestration; lean on the SDK pattern | Delegation + isolated context for free; you're already on Claude | −weeks vs 60h budget |
+| HeadTTS avatar | 2.7 | Swap TalkingHead.js base → HeadTTS | TalkingHead lineage **and** Kokoro-native visemes; the hard phoneme-alignment work comes mostly free | −much of 60h |
+
+**The one big idea:** thread **MCP** through the system early — the difference
+between hand-building every integration and inheriting the 2026 ecosystem.
+
+---
+
 ## v1 — The Foundation
 
 **Target:** ~6–7 months at 10 hrs/wk (~245 hrs)
@@ -135,7 +157,34 @@ mic round-trip measurement logged to voice_latency.jsonl.
 
 ---
 
+### Phase 1.4b — MCP Bridge 🆕
+**Inserted 2026-06-05 | 8–12 hrs | spike landed 06-05**
+
+> The highest-leverage roadmap change (see Course Corrections). Sutra becomes an
+> MCP host: it speaks Model Context Protocol to off-the-shelf servers (filesystem,
+> git, browser, search, …) and surfaces their tools through the *existing* skill
+> registry, so the agent tool-loop needs zero changes. Local `@skill` stays for
+> first-party / latency-critical / OS work.
+
+| Work item | Done? |
+|-----------|-------|
+| `mcp` client dependency (stdio transport) | ✅ installed |
+| `MCPBridge` — connect to configured servers, list tools | ✅ spike |
+| Register MCP tools into the `@skill` registry (namespaced `mcp__server__tool`) | ✅ spike |
+| Claude-Desktop-compatible `mcp_servers.json` config | ✅ spike |
+| Confirmation gating for MCP tools (untrusted by default → `auto_confirm=False`) | ✅ spike |
+| Graceful degradation when a server is down / absent | ✅ spike |
+| Wire bridge startup into the agent/CLI lifecycle | ⬜ |
+| First real server connected (filesystem or git) + smoke test on hardware | ⬜ |
+
+**Exit criteria:** `sutra` can call a tool from an off-the-shelf MCP server, gated
+by the same confirmation flow as first-party skills.
+
+---
+
 ### Phase 1.5 — Web + System Actions
+> **2026 update:** keep **browser-use** for autonomous web tasks; **add the
+> Playwright CLI** for deterministic/scripted flows (4–100× fewer tokens than MCP).
 **Weeks 9–10 | 15–20 hrs**
 
 | Work item | Done? |
@@ -190,6 +239,8 @@ mic round-trip measurement logged to voice_latency.jsonl.
 
 ### Phase 1.8 — Wake Word
 **Week 16 | 15 hrs**
+> **2026 update:** try **LiveKit wakeword** first (beats openWakeWord on accuracy,
+> single-command custom training); openWakeWord as the fallback.
 
 | Work item | Done? |
 |-----------|-------|
@@ -284,8 +335,13 @@ mic round-trip measurement logged to voice_latency.jsonl.
 | **2.3** | Bounty Mode — scope checks, recon skills, report templates | 30 |
 | **2.4** | Pattern-Driven Skill Proposal — Level 2 self-extension (suggests skills, you approve + review) | 35 |
 | **2.5** | Personality Polish — PERSONA.md constitution, affect detection, tone matching | 20 |
-| **2.6** | Wireframe Avatar — TalkingHead.js base, Kokoro phoneme alignment, lip sync, emotion engine, idle dissolve | 60+ |
+| **2.6** | Wireframe Avatar — **HeadTTS** base (TalkingHead lineage, Kokoro-native visemes → alignment mostly free), lip sync, emotion engine, idle dissolve | ~30 (was 60+) |
 | **2.7** | Watchdog + Wazuh Symmetry — background monitoring, alert routing, anomaly narration | 25 |
+
+> **2026 updates to v2:** **2.1** — re-evaluate **Activepieces** (MCP-first) vs n8n
+> at phase start. **Sub-agents** (when added) — lean on the **Claude Agent SDK**
+> delegation pattern rather than hand-rolling orchestration. **2.6** — **HeadTTS**
+> over raw TalkingHead.js (Kokoro-native lip-sync cuts the alignment work).
 
 **Gate 4:** Is Sutra a real colleague, not just a tool?
 
