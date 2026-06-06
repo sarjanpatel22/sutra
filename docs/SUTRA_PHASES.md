@@ -177,10 +177,17 @@ mic round-trip measurement logged to voice_latency.jsonl.
 | Per-server concurrency lock (parallel tool-calls are serialized) | ✅ |
 | Wire bridge startup into chat + voice lifecycle (tools auto-join registry) | ✅ |
 | MCP health check in `sutra status` / watchdog | ✅ |
-| First *off-the-shelf* server (filesystem/git via npx/uvx) on hardware | ⬜ |
+| First *off-the-shelf* server (filesystem/git via npx/uvx) on hardware | ✅ filesystem (npx) — 14 tools, 06-06 |
+| One-shot path (`sutra ask`) joins MCP tools too (parity with chat/voice) | ✅ |
 
 **Exit criteria:** `sutra` can call a tool from an off-the-shelf MCP server, gated
-by the same confirmation flow as first-party skills.
+by the same confirmation flow as first-party skills. **✅ Met 2026-06-06** —
+`@modelcontextprotocol/server-filesystem` over npx surfaces 14 `mcp__filesystem__*`
+tools (reads `auto`, writes `confirm`); `sutra ask "…list the docs dir…"` invoked a
+read live and returned correct contents.
+
+**Enable it:** copy `mcp_servers.example.json` → `mcp_servers.json` (gitignored,
+machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tools.
 
 ---
 

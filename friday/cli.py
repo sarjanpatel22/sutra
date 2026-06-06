@@ -168,11 +168,21 @@ def ask(
 ) -> None:
     """Ask a single question and exit."""
     from friday.core.agent import flush_persist, run
+    from friday.mcp.bridge import close_bridge, get_bridge
 
     async def _once() -> None:
-        reply, _ = await run(query, tier=_tier_from_str(tier))
-        console.print(Markdown(reply))          # show the answer immediately
-        await flush_persist()                    # then let the background save finish
+        # Connect any configured MCP servers so their tools are available for this
+        # one-shot too (parity with `sutra chat`). No-op when none configured.
+        try:
+            await get_bridge()
+        except Exception as e:  # noqa: BLE001 — MCP must never block the answer
+            console.print(f"[yellow]MCP connect failed: {e}[/yellow]")
+        try:
+            reply, _ = await run(query, tier=_tier_from_str(tier))
+            console.print(Markdown(reply))      # show the answer immediately
+            await flush_persist()                # then let the background save finish
+        finally:
+            await close_bridge()                 # tear down MCP subprocesses
 
     asyncio.run(_once())
 
