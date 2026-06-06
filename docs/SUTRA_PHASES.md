@@ -148,12 +148,17 @@ mic round-trip measurement logged to voice_latency.jsonl.
 | Latency profiled and p50/p95 logged | ⬜ |
 | Top 3 friction points identified and fixed | ⬜ |
 | Confirmation flow tested on irreversible actions | ⬜ |
-| Memory recall quality assessed | ⬜ |
+| Memory recall quality assessed | ✅ `scripts/eval_recall.py` — hit@1 38% / hit@3 75% / hit@5 88% (06-06) |
 | Budget tracking validated against real API bills | ⬜ |
+| Text + voice latency/cost instrumented (`sutra stats` p50/p95 + spend) | ✅ 06-06 |
 
 **Exit criteria:** Use Sutra for ≥ 30 queries/day for 5 consecutive days without wanting to kill it.
 
 **Gate 2:** Are you actually using it daily? If no — stop, diagnose, fix before Phase 1.5.
+Instrumentation is now in place to judge this with numbers, not feel: every text turn
+logs to `~/.local/share/friday/turn_latency.jsonl` (voice already logs `voice_latency.jsonl`);
+`sutra stats` prints p50/p95 per tier/stage + rolling spend. Run the 5-day shakedown, read
+`sutra stats`, fix the top-3 friction points.
 
 ---
 

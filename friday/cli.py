@@ -321,6 +321,54 @@ def budget() -> None:
 
 
 @app.command()
+def stats() -> None:
+    """Latency p50/p95 (text per-tier, voice per-stage) + today's spend — shakedown dashboard."""
+    from friday.core.stats import gather_stats
+
+    s = gather_stats()
+    if not s["text_turns"] and not s["voice_turns"]:
+        console.print(
+            "[dim]No turns logged yet. Use [cyan]sutra ask[/cyan]/[cyan]chat[/cyan] or "
+            "[cyan]sutra voice[/cyan], then re-run.[/dim]"
+        )
+        return
+
+    if s["text_by_tier"]:
+        tt = Table(title="Text turns", show_header=True, header_style="bold cyan",
+                   box=None, padding=(0, 2))
+        tt.add_column("Tier")
+        tt.add_column("n", justify="right")
+        tt.add_column("p50 ms", justify="right")
+        tt.add_column("p95 ms", justify="right")
+        tt.add_column("avg rounds", justify="right")
+        tt.add_column("tokens", justify="right")
+        for tier, m in s["text_by_tier"].items():
+            tt.add_row(tier, str(m["n"]), f"{m['p50']:.0f}", f"{m['p95']:.0f}",
+                       f"{m['avg_rounds']:.1f}", f"{m['tokens']:,}")
+        console.print(tt)
+
+    if s["voice_turns"]:
+        vt = Table(title=f"Voice turns ({s['voice_turns']})", show_header=True,
+                   header_style="bold cyan", box=None, padding=(0, 2))
+        vt.add_column("Stage")
+        vt.add_column("p50 ms", justify="right")
+        vt.add_column("p95 ms", justify="right")
+        labels = {"stt_ms": "STT", "agent_ttft_ms": "agent TTFT",
+                  "tts_first_ms": "TTS first", "total_ms": "total"}
+        for stage, label in labels.items():
+            m = s["voice_stages"][stage]
+            vt.add_row(label, f"{m['p50']:.0f}", f"{m['p95']:.0f}")
+        console.print(vt)
+
+    b = s["budget"]
+    console.print(
+        f"[dim]Today: ${b['daily_spent']:.4f} / ${b['daily_limit']:.2f}  "
+        f"({b['daily_tokens']:,} tokens)  |  Month: "
+        f"${b['monthly_spent']:.4f} / ${b['monthly_limit']:.2f}[/dim]"
+    )
+
+
+@app.command()
 def delegate(
     agent: str = typer.Argument(..., help="architect | researcher | watchdog"),
     task: str = typer.Argument(..., help="The focused sub-task to hand off"),

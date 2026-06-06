@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from friday.core.router import Tier, complete
+from friday.core.turnlog import log_text_turn
 from friday.memory.store import get_store, looks_like_noise
 from friday.skills import registry
 
@@ -146,13 +148,34 @@ async def run(
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
 
+    # Per-turn instrumentation for `sutra stats` (Gate 2 shakedown). Best-effort.
+    t_start = time.monotonic()
+    stats = {"rounds": 0, "model": "", "in_tokens": 0, "out_tokens": 0}
+
+    def _account(response: Any) -> None:
+        usage = getattr(response, "usage", None)
+        if usage:
+            stats["in_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+            stats["out_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+        stats["model"] = getattr(response, "model", None) or stats["model"]
+
     def _finish(reply: str) -> tuple[str, list[dict[str, Any]]]:
+        log_text_turn(
+            tier=tier.value,
+            model=stats["model"],
+            tool_rounds=stats["rounds"],
+            total_ms=(time.monotonic() - t_start) * 1000,
+            in_tokens=stats["in_tokens"],
+            out_tokens=stats["out_tokens"],
+            preview=user_input,
+        )
         # Persist in the background so the reply returns now (was a ~18s block).
         persist_turn_async(user_input, reply, source="conversation")
         return reply, messages[1:]  # strip system from returned history
 
     for _ in range(max_tool_rounds):
         response = await complete(messages, tier=tier, tools=tools or None)
+        _account(response)
         msg = response.choices[0].message
         messages.append({"role": "assistant", "content": msg.content, "tool_calls": getattr(msg, "tool_calls", None)})
 
@@ -161,6 +184,7 @@ async def run(
             # No more tool calls — done
             return _finish(msg.content or "")
 
+        stats["rounds"] += 1
         # Execute all tool calls (in parallel where possible)
         tool_results = await _run_tool_calls(tool_calls, confirm=confirm)
         messages.extend(tool_results)
@@ -168,6 +192,7 @@ async def run(
     # Exceeded max rounds — ask model to wrap up without more tools
     messages.append({"role": "user", "content": "[System: max tool rounds reached — please give a final answer now]"})
     response = await complete(messages, tier=tier, tools=None)
+    _account(response)
     msg = response.choices[0].message
     messages.append({"role": "assistant", "content": msg.content})
     return _finish(msg.content or "")
