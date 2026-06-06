@@ -296,6 +296,45 @@ def budget() -> None:
 
 
 @app.command()
+def mcp() -> None:
+    """Connect to configured MCP servers and list the tools they expose to Sutra."""
+    from friday.mcp import get_bridge, mcp_configured
+    from friday.mcp.bridge import close_bridge
+    from friday.skills.registry import get as get_skill
+
+    if not mcp_configured():
+        console.print(
+            "[yellow]No MCP servers configured.[/yellow] "
+            "Copy [cyan]mcp_servers.example.json[/cyan] → [cyan]mcp_servers.json[/cyan] "
+            "(or ~/.config/sutra/mcp_servers.json), set [cyan]disabled: false[/cyan], and re-run."
+        )
+        return
+
+    async def _run() -> None:
+        with console.status("[cyan]connecting to MCP servers…[/cyan]"):
+            bridge = await get_bridge()
+        if not bridge or not bridge.servers:
+            console.print("[red]No servers came up.[/red] Check commands in your config.")
+            await close_bridge()
+            return
+        t = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+        t.add_column("Tool (skill name)")
+        t.add_column("Gate")
+        for name in bridge.tool_names:
+            auto = get_skill(name).auto_confirm
+            gated = "[green]auto[/green]" if auto else "[yellow]confirm[/yellow]"
+            t.add_row(name, gated)
+        console.print(
+            f"[green]Connected:[/green] {', '.join(bridge.servers)}  "
+            f"[dim]({len(bridge.tool_names)} tool(s))[/dim]"
+        )
+        console.print(t)
+        await close_bridge()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def secrets(
     import_env: bool = typer.Option(
         False, "--import", help="Move .env secrets into the OS keyring"

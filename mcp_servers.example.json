@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy to mcp_servers.json (or ~/.config/sutra/mcp_servers.json) and edit. Claude-Desktop-compatible. Run `sutra mcp` to connect + list tools. Each server's tools appear to the agent as skills named mcp__<server>__<tool>; they are auto_confirm=False (gated) unless the server marks a tool readOnly.",
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/sarjan/friday-os"],
+      "disabled": true
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "/home/sarjan/friday-os"],
+      "disabled": true
+    }
+  }
+}

@@ -64,6 +64,36 @@ def get(name: str) -> SkillMeta:
         raise KeyError(f"Skill '{name}' not registered") from None
 
 
+def register_external(
+    name: str,
+    description: str,
+    fn: Callable[..., Any],
+    *,
+    schema: dict[str, Any],
+    auto_confirm: bool = False,
+    timeout_s: int = 60,
+) -> None:
+    """Register a non-decorator skill (e.g. an MCP tool) with a pre-built schema.
+
+    The MCP bridge uses this to surface external tools through the same registry
+    the agent loop already reads, so `all_tools()` / `call()` need no changes.
+    Defaults to auto_confirm=False — third-party tools are untrusted until proven.
+    """
+    _registry[name] = SkillMeta(
+        name=name,
+        description=description,
+        fn=fn,
+        auto_confirm=auto_confirm,
+        timeout_s=timeout_s,
+        schema=schema,
+    )
+
+
+def unregister(name: str) -> bool:
+    """Remove a registered skill. Returns True if it was present. Used on MCP teardown."""
+    return _registry.pop(name, None) is not None
+
+
 def all_tools() -> list[dict[str, Any]]:
     """Return all registered skills as LLM tool-call schemas."""
     return [meta.schema for meta in _registry.values()]
