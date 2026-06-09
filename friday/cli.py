@@ -257,11 +257,12 @@ def graph(
 @app.command()
 def orb(
     port: int = typer.Option(8710, "--port", "-p", help="Port to serve the orb on"),
-    no_open: bool = typer.Option(False, "--no-open", help="Don't auto-open a browser"),
+    no_open: bool = typer.Option(False, "--no-open", help="Just serve, don't open a window"),
+    windowed: bool = typer.Option(False, "--windowed", help="Normal browser tab (not full-screen)"),
 ) -> None:
-    """Open Sutra's HORIZON presence orb (standalone, idle)."""
+    """Open Sutra's HORIZON presence orb — full-screen ambient on your desktop."""
     from friday.gui.server import serve
-    serve(port=port, open_browser=not no_open)
+    serve(port=port, open_browser=not no_open, fullscreen=not windowed)
 
 
 @app.command()

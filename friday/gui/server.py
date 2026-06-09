@@ -16,6 +16,8 @@ Run:  sutra orb            # serves on http://localhost:8710 and opens a browser
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -86,14 +88,50 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
 
 
-def serve(host: str = "127.0.0.1", port: int = 8710, open_browser: bool = True) -> None:
-    """Start the orb server (blocking). Ctrl+C to stop."""
+# Chromium/Chrome in --app + --kiosk mode = a borderless, chrome-less, full-screen
+# window: a native-feeling ambient display on the desktop, no browser UI, no Tauri
+# toolchain. Falls back to a normal browser tab if no Chromium-family browser.
+_KIOSK_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser")
+
+
+def _launch_fullscreen(url: str) -> bool:
+    """Open url full-screen kiosk in a Chromium-family browser. False if none found."""
+    exe = next((shutil.which(b) for b in _KIOSK_BROWSERS if shutil.which(b)), None)
+    if not exe:
+        return False
+    subprocess.Popen(
+        [
+            exe, f"--app={url}", "--kiosk", "--start-fullscreen",
+            "--no-first-run", "--noerrdialogs", "--disable-translate",
+            "--disable-infobars", "--enable-unsafe-swiftshader",
+            "--overscroll-history-navigation=0",
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return True
+
+
+def serve(
+    host: str = "127.0.0.1", port: int = 8710,
+    open_browser: bool = True, fullscreen: bool = True,
+) -> None:
+    """Start the orb server (blocking). Ctrl+C to stop.
+
+    fullscreen=True launches a Chromium-family browser in kiosk/app mode (full-screen
+    ambient, no chrome); set it False for a normal browser tab.
+    """
     httpd = ThreadingHTTPServer((host, port), _Handler)
     url = f"http://{host}:{port}/"
-    print(f"\n  ☀  Sutra HORIZON orb → {url}")
-    print("      standalone (state: idle) · Ctrl+C to stop.\n")
+    print(f"\n  ✦  Sutra HORIZON orb → {url}")
     if open_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        def _open() -> None:
+            if not (fullscreen and _launch_fullscreen(url)):
+                webbrowser.open(url)  # no kiosk browser, or windowed requested
+        threading.Timer(0.6, _open).start()
+        print("      full-screen ambient · alt+f4 (or close the window) to exit.\n"
+              if fullscreen else "      windowed · Ctrl+C to stop.\n")
+    else:
+        print("      serving only (no window) · Ctrl+C to stop.\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
