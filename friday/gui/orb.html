@@ -1,193 +1,276 @@
 <!doctype html>
 <!--
-  Sutra — HORIZON orb (first visible slice).
+  Sutra — gold presence (full-screen ambient).
 
-  A standalone presence: deep-navy → peach horizon sky (CSS gradient), a thin
-  horizon line, one warm star, and the "presence" — a Three.js Points particle
-  field sitting above the horizon, breathing in ultra-slow idle drift. Palette and
-  motion are locked by docs/FRIDAY_VISUAL_DIRECTION.md (HORIZON). 70%+ of the
-  canvas stays dark; hierarchy is brightness, not hue.
-
-  It polls /api/state so the voice-reactivity wiring point already exists; in
-  standalone mode the state is "idle" and the orb just drifts.
+  Cold champagne-gold on warm obsidian: a slow, heavy particle presence over a
+  soft drifting gold mist and a voice-frequency waveform, with restrained
+  UnrealBloom glow and a faint warm starfield. Royal, heavy, restrained — slow
+  motion throughout. Audio-reactive: POST /api/state {state, amplitude} → the
+  core swells, the mist warms, and the frequency line spikes with her voice.
+  Hierarchy is brightness; bloom only on the brightest. Built to run full-screen.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sutra · HORIZON</title>
+<title>Sutra</title>
 <style>
-  :root {
-    /* HORIZON palette — locked */
-    --sky-top: #030610; --sky-1: #0A0F22; --sky-2: #1A1838;
-    --sky-3: #3A2048; --sky-4: #A05848; --sky-horizon: #FFB890;
-    --star: #FFFFFF; --star-halo: #FFE8D0;
-  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--sky-top); }
-  /* The sky: a vertical gradient from deep navy at the top to a peach horizon
-     band low in the frame. CSS gradient is cheaper than a shader (per the spec). */
-  #sky {
-    position: fixed; inset: 0;
-    background: linear-gradient(
-      to bottom,
-      var(--sky-top) 0%, var(--sky-1) 34%, var(--sky-2) 56%,
-      var(--sky-3) 72%, var(--sky-4) 86%, var(--sky-horizon) 100%
-    );
-  }
-  /* Thin glowing horizon line, low in the frame. */
-  #horizon {
-    position: fixed; left: 0; right: 0; bottom: 14%; height: 1px;
-    background: linear-gradient(to right,
-      transparent, rgba(255,232,208,0.55) 50%, transparent);
-    box-shadow: 0 0 24px 2px rgba(255,184,144,0.25);
-  }
-  /* The star: a bright point with a warm halo, sitting above the horizon. */
-  #star {
-    position: fixed; left: 50%; top: 30%; width: 4px; height: 4px;
-    transform: translate(-50%, -50%); border-radius: 50%;
-    background: var(--star);
-    box-shadow:
-      0 0 6px 2px var(--star),
-      0 0 22px 6px var(--star-halo),
-      0 0 60px 18px rgba(255,232,208,0.35);
-  }
-  #orb { position: fixed; inset: 0; }
-  /* Corner telemetry — visible if you look, invisible if you don't (≤9px, low op). */
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #070502; cursor: none; }
+  #scene { position: fixed; inset: 0; display: block; }
   .hud {
-    position: fixed; font-family: "JetBrains Mono", "Inconsolata", monospace;
-    font-size: 9px; letter-spacing: 1px; color: rgba(74,107,120,0.5);
-    user-select: none; pointer-events: none;
+    position: fixed; font-family: "JetBrains Mono", monospace; font-size: 10px;
+    letter-spacing: 2px; color: rgba(208,192,140,0.42); user-select: none; pointer-events: none;
   }
-  #wordmark {
-    left: 24px; top: 22px; font-size: 13px; letter-spacing: 12px;
-    font-weight: 300; color: rgba(234,252,255,0.55);
-  }
-  #status { right: 24px; top: 24px; letter-spacing: 3px; }
-  #fps { left: 24px; bottom: 18px; }
+  #wordmark { left: 28px; top: 26px; font-size: 14px; letter-spacing: 14px;
+    font-weight: 300; color: rgba(245,230,195,0.55); }
+  #status { right: 28px; top: 28px; letter-spacing: 4px; }
+  #fps { left: 28px; bottom: 22px; opacity: 0.5; }
+  #hint { right: 28px; bottom: 22px; opacity: 0.35; }
 </style>
 </head>
 <body>
-  <div id="sky"></div>
-  <div id="horizon"></div>
-  <div id="star"></div>
-  <canvas id="orb"></canvas>
+  <canvas id="scene"></canvas>
   <div id="wordmark" class="hud">SUTRA</div>
   <div id="status" class="hud">IDLE</div>
   <div id="fps" class="hud"></div>
+  <div id="hint" class="hud">alt+f4 to exit</div>
 
 <script type="importmap">
-{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
 </script>
 <script type="module">
 import * as THREE from "three";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
-const PARTICLES = 14000;          // within the 16GB / 60fps budget
-const canvas = document.getElementById("orb");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+const canvas = document.getElementById("scene");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x070502, 1);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-camera.position.z = 3.2;
+scene.fog = new THREE.FogExp2(0x070502, 0.008);   // faint depth only — keep space dark
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+camera.position.set(0, 0, 7);
 
-// ── presence: particles in a spherical shell, brighter toward the core ───────
-const positions = new Float32Array(PARTICLES * 3);
-const seeds = new Float32Array(PARTICLES);       // per-particle phase for twinkle
-const radii = new Float32Array(PARTICLES);       // 0=core … 1=rim → brightness
-for (let i = 0; i < PARTICLES; i++) {
-  // cube-weighted radius → dense, bright core; sparse luminous rim
-  const r = Math.pow(Math.random(), 1.6) * 0.85 + (Math.random() - 0.5) * 0.04;
-  const theta = Math.random() * Math.PI * 2;
-  const phi = Math.acos(2 * Math.random() - 1);
-  positions[i*3]   = r * Math.sin(phi) * Math.cos(theta);
-  positions[i*3+1] = r * Math.sin(phi) * Math.sin(theta) * 0.92; // slight oblate
-  positions[i*3+2] = r * Math.cos(phi);
-  seeds[i] = Math.random() * Math.PI * 2;
-  radii[i] = Math.min(r / 0.85, 1.0);   // 0 = core … 1 = rim
+// ── starfield ────────────────────────────────────────────────────────────────
+const STARS = 900;
+{
+  const pos = new Float32Array(STARS * 3), ph = new Float32Array(STARS);
+  for (let i = 0; i < STARS; i++) {
+    pos[i*3]   = (Math.random() - 0.5) * 60;
+    pos[i*3+1] = (Math.random() - 0.5) * 36;
+    pos[i*3+2] = -8 - Math.random() * 30;
+    ph[i] = Math.random() * 6.28;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("ph", new THREE.BufferAttribute(ph, 1));
+  const m = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `uniform float uTime; attribute float ph; varying float v;
+      void main(){ v = 0.5 + 0.5*sin(uTime*0.35 + ph);
+        vec4 mv = modelViewMatrix*vec4(position,1.0);
+        gl_Position = projectionMatrix*mv; gl_PointSize = (1.0 + v*1.6); }`,
+    fragmentShader: `varying float v; void main(){
+      vec2 d = gl_PointCoord-vec2(0.5); if(length(d)>0.5) discard;
+      gl_FragColor = vec4(vec3(0.93,0.90,0.76), v*0.45); }`,
+  });
+  scene.add(new THREE.Points(g, m));
 }
-const geo = new THREE.BufferGeometry();
-geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-geo.setAttribute("seed", new THREE.BufferAttribute(seeds, 1));
-geo.setAttribute("rad", new THREE.BufferAttribute(radii, 1));
 
-const uniforms = {
-  uTime:      { value: 0 },
-  uBrighten:  { value: 0.0 },              // 0 idle … 1 listening/speaking (future)
-  uSize:      { value: 2.0 * Math.min(devicePixelRatio, 2) },
-  uCore:      { value: new THREE.Color("#FFE8D0") },  // warm core (brightness lead)
-  uMid:       { value: new THREE.Color("#A05848") },  // coral
-  uRim:       { value: new THREE.Color("#1A1838") },  // navy-violet, dim
+// ── aurora curtains (vertex-displaced additive planes) ───────────────────────
+const curtainUniforms = [];
+function makeCurtain(z, xoff, hue, speed) {
+  // tall, narrow vertical sheet — an aurora curtain draped *behind* the presence,
+  // drifting sideways. Kept very transparent so deep space dominates (70% dark).
+  const geo = new THREE.PlaneGeometry(16, 15, 120, 30);
+  const u = {
+    uTime: { value: 0 }, uSpeed: { value: speed }, uSurge: { value: 0 },
+    uLo: { value: new THREE.Color("#43401F") },     // greyed dim gold, low
+    uHi: { value: new THREE.Color(hue) },           // accent, high
+  };
+  curtainUniforms.push(u);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: u, transparent: true, depthWrite: false,
+    side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+    vertexShader: `
+      uniform float uTime, uSpeed, uSurge; varying vec2 vUv; varying float vEdge;
+      void main(){
+        vUv = uv; vec3 p = position;
+        float t = uTime * uSpeed;
+        // gentle horizontal sway + vertical ripple → a hanging, flowing curtain
+        p.x += sin(p.y*0.6 + t)*1.1 + sin(p.y*1.4 - t*1.3)*0.4;
+        p.z += sin(p.y*0.5 + t*0.7)*0.6 + uSurge*1.5;
+        vEdge = smoothstep(0.0,0.22,vUv.x)*smoothstep(1.0,0.78,vUv.x); // fade L/R
+        gl_Position = projectionMatrix*modelViewMatrix*vec4(p,1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 uLo, uHi; uniform float uSurge; varying vec2 vUv; varying float vEdge;
+      void main(){
+        float vert = pow(vUv.y, 1.2);                 // bright at base, fades to top
+        vec3 col = mix(uLo, uHi, vUv.y);
+        float a = vEdge * (1.0 - vert) * (0.05 + 0.09*uSurge);  // very translucent
+        gl_FragColor = vec4(col, a);
+      }`,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(xoff, 0.5, z);
+  scene.add(mesh);
+}
+makeCurtain(-5.5, -3.0, "#A8945A", 0.09);   // muted champagne, far left, slow
+makeCurtain(-4.0,  2.4, "#D6C58C", 0.12);   // pale gold, far right
+makeCurtain(-2.6, -1.0, "#B0A066", 0.16);   // greyed gold, mid
+
+// shared uniforms for the mist + frequency line (uSurge wired in the render loop)
+const waveU = {
+  uTime: { value: 0 }, uSurge: { value: 0 },
+  uLo: { value: new THREE.Color("#33301A") },   // dim greyed gold
+  uHi: { value: new THREE.Color("#D8C485") },   // pale gold
 };
 
-const material = new THREE.ShaderMaterial({
-  uniforms,
-  transparent: true,
-  depthWrite: false,
-  blending: THREE.AdditiveBlending,
+// ── gold mist (a soft, drifting haze low behind the presence) ────────────────
+{
+  const geo = new THREE.PlaneGeometry(48, 22, 1, 1);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: waveU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv;
+      gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader: `
+      uniform float uTime, uSurge; uniform vec3 uHi; varying vec2 vUv;
+      float hsh(vec2 p){ return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453); }
+      float vn(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+        return mix(mix(hsh(i),hsh(i+vec2(1,0)),f.x),
+                   mix(hsh(i+vec2(0,1)),hsh(i+vec2(1,1)),f.x), f.y); }
+      void main(){
+        float t = uTime*0.04;                          // very slow drift
+        float m = vn(vUv*vec2(5.0,2.5)+vec2(t,0.0))*0.6
+                + vn(vUv*vec2(11.0,4.5)-vec2(t*0.6,0.0))*0.4;
+        float band = smoothstep(0.0,0.5,vUv.y)*smoothstep(1.0,0.5,vUv.y);
+        gl_FragColor = vec4(uHi, band*m*(0.11 + 0.10*uSurge));   // soft haze
+      }`,
+  });
+  const mist = new THREE.Mesh(geo, mat);
+  mist.position.set(0, -2.0, -3.5);
+  scene.add(mist);
+}
+
+// ── frequency line (a gold voice-waveform across the lower frame) ────────────
+{
+  const FREQ_N = 256;
+  const pos = new Float32Array(FREQ_N*3), xs = new Float32Array(FREQ_N);
+  for (let i = 0; i < FREQ_N; i++) { const x = (i/(FREQ_N-1)-0.5)*18.0;
+    pos[i*3]=x; pos[i*3+1]=0; pos[i*3+2]=0; xs[i]=x; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos,3));
+  g.setAttribute("xs", new THREE.BufferAttribute(xs,1));
+  const m = new THREE.ShaderMaterial({
+    uniforms: waveU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `
+      uniform float uTime, uSurge; attribute float xs; varying float vA;
+      void main(){
+        float t = uTime*0.5;
+        float amp = 0.14 + 1.5*uSurge;                  // gentle idle, spikes when speaking
+        float w = sin(xs*0.7 + t)*0.5 + sin(xs*1.9 - t*1.3)*0.3 + sin(xs*3.3 + t*0.7)*0.2;
+        float env = smoothstep(9.0, 2.0, abs(xs));      // taper at the edges
+        vec3 p = vec3(xs, w*amp*env - 2.1, -1.0);
+        vA = (0.35 + 0.65*abs(w)) * env;
+        vec4 mv = modelViewMatrix*vec4(p,1.0);
+        gl_Position = projectionMatrix*mv;
+        gl_PointSize = 2.4 + 3.5*uSurge;
+      }`,
+    fragmentShader: `
+      uniform vec3 uHi; varying float vA;
+      void main(){ vec2 d=gl_PointCoord-vec2(0.5); float a=smoothstep(0.5,0.0,length(d));
+        gl_FragColor = vec4(uHi, a*vA*0.75); }`,
+  });
+  scene.add(new THREE.Points(g, m));
+}
+
+// ── presence: blazing particle core ──────────────────────────────────────────
+const N = 12000;
+const positions = new Float32Array(N*3), seeds = new Float32Array(N), rad = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  const r = Math.pow(Math.random(), 1.7) * 1.5 + (Math.random()-0.5)*0.05;
+  const th = Math.random()*6.2832, ph = Math.acos(2*Math.random()-1);
+  positions[i*3]   = r*Math.sin(ph)*Math.cos(th);
+  positions[i*3+1] = r*Math.sin(ph)*Math.sin(th);
+  positions[i*3+2] = r*Math.cos(ph);
+  seeds[i] = Math.random()*6.2832; rad[i] = Math.min(r/1.5, 1.0);
+}
+const pgeo = new THREE.BufferGeometry();
+pgeo.setAttribute("position", new THREE.BufferAttribute(positions,3));
+pgeo.setAttribute("seed", new THREE.BufferAttribute(seeds,1));
+pgeo.setAttribute("rad", new THREE.BufferAttribute(rad,1));
+const pUniforms = {
+  uTime: { value: 0 }, uBrighten: { value: 0 }, uSize: { value: 2.9*Math.min(devicePixelRatio,2) },
+  uCore: { value: new THREE.Color("#FBF8EC") },   // pale platinum-gold
+  uMid:  { value: new THREE.Color("#D8C076") },   // cold champagne gold
+  uRim:  { value: new THREE.Color("#5E5430") },   // greyed dim gold
+};
+const pmat = new THREE.ShaderMaterial({
+  uniforms: pUniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   vertexShader: `
-    uniform float uTime, uSize, uBrighten;
-    attribute float seed, rad;
-    varying float vBright;
-    void main() {
+    uniform float uTime,uSize,uBrighten; attribute float seed,rad; varying float vB;
+    void main(){
       vec3 p = position;
-      // ultra-slow breathing: the whole field swells ~3%
-      float breath = 1.0 + 0.03 * sin(uTime * 0.5);
-      // gentle per-particle drift so the cloud is never frozen
-      p += 0.015 * vec3(sin(uTime*0.3 + seed), cos(uTime*0.27 + seed*1.3), sin(uTime*0.23 + seed*0.7));
+      float breath = 1.0 + 0.05*sin(uTime*0.22) + 0.12*uBrighten;   // slow, heavy swell
+      p += 0.02*vec3(sin(uTime*0.16+seed),cos(uTime*0.15+seed*1.3),sin(uTime*0.12+seed*0.7));
       p *= breath;
-      vec4 mv = modelViewMatrix * vec4(p, 1.0);
-      gl_Position = projectionMatrix * mv;
-      // twinkle + core-weighted brightness; listening/speaking lifts it via uBrighten
-      float twinkle = 0.82 + 0.18 * sin(uTime * 1.3 + seed);
-      float core = pow(1.0 - rad, 1.4);            // tight, bright core
-      vBright = core * twinkle * (1.0 + 0.7 * uBrighten);
-      gl_PointSize = uSize * (1.1 + core * 3.2) / max(-mv.z, 0.1);
-    }
-  `,
+      vec4 mv = modelViewMatrix*vec4(p,1.0);
+      gl_Position = projectionMatrix*mv;
+      float tw = 0.8 + 0.2*sin(uTime*0.7+seed);
+      float core = pow(1.0-rad, 1.5);
+      vB = core*tw*(1.0 + 0.9*uBrighten);
+      gl_PointSize = uSize*(1.0 + core*3.4)/max(-mv.z,0.1);
+    }`,
   fragmentShader: `
-    uniform vec3 uCore, uMid, uRim;
-    varying float vBright;
-    void main() {
-      // soft round point
-      vec2 d = gl_PointCoord - vec2(0.5);
-      float a = smoothstep(0.5, 0.0, length(d));
-      if (a <= 0.01) discard;
-      // brightness drives hue from dim navy-violet → coral → warm core
-      vec3 col = mix(uRim, uMid, smoothstep(0.0, 0.5, vBright));
-      col = mix(col, uCore, smoothstep(0.5, 1.0, vBright));
-      gl_FragColor = vec4(col, a * clamp(vBright * 1.6 + 0.18, 0.0, 1.0));
-    }
-  `,
+    uniform vec3 uCore,uMid,uRim; varying float vB;
+    void main(){
+      vec2 d = gl_PointCoord-vec2(0.5); float a = smoothstep(0.5,0.0,length(d));
+      if(a<=0.01) discard;
+      vec3 col = mix(uRim,uMid,smoothstep(0.0,0.5,vB));
+      col = mix(col,uCore,smoothstep(0.55,1.0,vB));
+      gl_FragColor = vec4(col, a*clamp(vB*1.7+0.16,0.0,1.0));
+    }`,
 });
+const presence = new THREE.Points(pgeo, pmat);
+scene.add(presence);
 
-const points = new THREE.Points(geo, material);
-points.position.y = 0.25;          // sit above the horizon
-scene.add(points);
+// ── post: bloom (the jaw-drop) ───────────────────────────────────────────────
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(1,1), 0.5, 0.5, 0.62);  // restrained — only the hottest core blooms, gently
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
 
-// ── layout / resize ──────────────────────────────────────────────────────────
 function resize() {
   const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false); composer.setSize(w, h);
+  camera.aspect = w/h; camera.updateProjectionMatrix();
 }
 addEventListener("resize", resize); resize();
 
-// ── state polling (the voice-reactivity wiring point; idle in standalone) ─────
-let target = { brighten: 0.0 };
+// ── state polling (voice-reactivity wiring point) ────────────────────────────
+let target = { brighten: 0, surge: 0 };
 const statusEl = document.getElementById("status");
-async function pollState() {
+async function poll() {
   try {
-    const r = await fetch("/api/state", { cache: "no-store" });
-    const s = await r.json();
-    const st = (s.state || "idle").toUpperCase();
-    statusEl.textContent = st;
-    target.brighten = st === "SPEAKING" ? (0.4 + 0.6 * (s.amplitude || 0))
-                    : st === "LISTENING" ? 0.35 : 0.0;
-  } catch { /* standalone / server gone — stay idle */ }
+    const s = await (await fetch("/api/state", { cache: "no-store" })).json();
+    const st = (s.state||"idle").toUpperCase(); statusEl.textContent = st;
+    if (st === "SPEAKING") { target.brighten = 0.45 + 0.55*(s.amplitude||0); target.surge = 0.8; }
+    else if (st === "LISTENING") { target.brighten = 0.4; target.surge = 0.45; }
+    else { target.brighten = 0; target.surge = 0; }
+  } catch { /* standalone — stay idle */ }
 }
-setInterval(pollState, 250); pollState();
+setInterval(poll, 200); poll();
 
 // ── render loop ──────────────────────────────────────────────────────────────
 const clock = new THREE.Clock();
@@ -195,13 +278,20 @@ const fpsEl = document.getElementById("fps");
 let frames = 0, fpsT = 0;
 function frame() {
   const t = clock.getElapsedTime();
-  uniforms.uTime.value = t;
-  // ease brightness toward target (smooth, no jumps)
-  uniforms.uBrighten.value += (target.brighten - uniforms.uBrighten.value) * 0.06;
-  points.rotation.y = t * 0.02;     // ultra-slow idle rotation
-  renderer.render(scene, camera);
-
-  frames++; if (t - fpsT > 1) { fpsEl.textContent = frames + " fps"; frames = 0; fpsT = t; }
+  pUniforms.uTime.value = t;
+  pUniforms.uBrighten.value += (target.brighten - pUniforms.uBrighten.value)*0.07;
+  presence.rotation.y = t*0.012;   // glacial, heavy spin
+  for (const u of curtainUniforms) {
+    u.uTime.value = t;
+    u.uSurge.value += (target.surge - u.uSurge.value)*0.05;
+  }
+  scene.children.forEach(c => { if (c.material && c.material.uniforms && c.material.uniforms.uTime && c !== presence) c.material.uniforms.uTime.value = t; });
+  bloom.strength = 0.45 + 0.4*pUniforms.uBrighten.value;   // bloom swells gently when speaking
+  waveU.uSurge.value += (target.surge - waveU.uSurge.value)*0.04;
+  camera.position.x = Math.sin(t*0.022)*0.5;               // glacial parallax drift
+  camera.lookAt(0,0,0);
+  composer.render();
+  frames++; if (t-fpsT>1){ fpsEl.textContent = frames+" fps"; frames=0; fpsT=t; }
   requestAnimationFrame(frame);
 }
 frame();
