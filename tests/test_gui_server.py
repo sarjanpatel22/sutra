@@ -1,5 +1,8 @@
 """Tests for the HORIZON orb server's state contract (no socket needed)."""
 
+import json
+import urllib.request
+
 from friday.gui import server
 
 
@@ -22,3 +25,15 @@ def test_get_state_returns_a_copy():
 def test_orb_html_exists_and_references_state_endpoint():
     html = (server._HTML).read_text()
     assert "THREE" in html and "/api/state" in html  # serves the right page
+
+
+def test_serve_background_serves_without_blocking():
+    # ephemeral port, no window — verifies the daemon-thread server actually serves
+    httpd, proc = server.serve_background(host="127.0.0.1", port=0, open_browser=False)
+    try:
+        assert httpd is not None and proc is None  # open_browser=False → no window
+        port = httpd.server_address[1]
+        body = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=1))
+        assert body["state"] in ("idle", "listening", "speaking")
+    finally:
+        httpd.shutdown()

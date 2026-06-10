@@ -95,8 +95,8 @@ class _Handler(BaseHTTPRequestHandler):
 _KIOSK_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser")
 
 
-def _launch_fullscreen(url: str) -> bool:
-    """Open url full-screen (borderless --app) in a Chromium-family browser. False if none.
+def _launch_fullscreen(url: str) -> subprocess.Popen | None:
+    """Open url full-screen (borderless --app) in a Chromium-family browser. None if none.
 
     Hard-won flags for a *stable* ambient window:
       - isolated --user-data-dir: a second launch against the default profile would
@@ -108,9 +108,9 @@ def _launch_fullscreen(url: str) -> bool:
     """
     exe = next((shutil.which(b) for b in _KIOSK_BROWSERS if shutil.which(b)), None)
     if not exe:
-        return False
+        return None
     profile = Path(tempfile.gettempdir()) / "sutra-orb-profile"
-    subprocess.Popen(
+    return subprocess.Popen(
         [
             exe, f"--app={url}", "--start-fullscreen", "--window-position=0,0",
             f"--user-data-dir={profile}",
@@ -123,7 +123,6 @@ def _launch_fullscreen(url: str) -> bool:
         ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    return True
 
 
 def serve(
@@ -153,3 +152,30 @@ def serve(
         print("\n  Stopped.")
     finally:
         httpd.server_close()
+
+
+def serve_background(
+    host: str = "127.0.0.1", port: int = 8710,
+    open_browser: bool = True, fullscreen: bool = True,
+) -> tuple[ThreadingHTTPServer | None, subprocess.Popen | None]:
+    """Start the orb server in a daemon thread (non-blocking) and open the window.
+
+    Returns (httpd, browser_proc) so the caller can httpd.shutdown() / proc.terminate()
+    on exit. Used by `sutra voice --orb`: the orb runs in the same process as the voice
+    loop (orb_push POSTs to this loopback server). If the port is already served (a
+    standalone `sutra orb`), httpd is None and that existing server is reused.
+    """
+    httpd: ThreadingHTTPServer | None = None
+    try:
+        httpd = ThreadingHTTPServer((host, port), _Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        port = httpd.server_address[1]
+    except OSError:
+        pass  # already serving on this port — reuse it for the window
+    url = f"http://{host}:{port}/"
+    proc: subprocess.Popen | None = None
+    if open_browser:
+        proc = _launch_fullscreen(url) if fullscreen else None
+        if proc is None:
+            webbrowser.open(url)
+    return httpd, proc

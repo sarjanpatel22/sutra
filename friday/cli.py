@@ -235,13 +235,24 @@ def devices() -> None:
 @app.command()
 def voice(
     mode: str = typer.Option("ptt", "--mode", "-m", help="ptt (push-to-talk) or vad (auto-detect)"),
+    orb: bool = typer.Option(False, "--orb", help="Show the presence orb full-screen too"),
 ) -> None:
     """Start voice mode. ptt=hold SPACE, vad=always listening."""
     from friday.voice.pipeline import push_to_talk_loop, vad_listen_loop
-    if mode == "vad":
-        asyncio.run(vad_listen_loop())
-    else:
-        asyncio.run(push_to_talk_loop())
+    httpd = browser = None
+    if orb:
+        from friday.gui.server import serve_background
+        httpd, browser = serve_background()
+    try:
+        if mode == "vad":
+            asyncio.run(vad_listen_loop())
+        else:
+            asyncio.run(push_to_talk_loop())
+    finally:
+        if browser is not None:
+            browser.terminate()
+        if httpd is not None:
+            httpd.shutdown()
 
 
 @app.command()
