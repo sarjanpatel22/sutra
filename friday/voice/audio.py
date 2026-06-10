@@ -6,13 +6,15 @@ import logging
 import os
 import queue
 import threading
-import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import sounddevice as sd
+
+from friday.voice import turn_detector
 
 _log = logging.getLogger("sutra.voice.audio")
 
@@ -142,7 +144,7 @@ class BargeInDetector:
     _streak: int = field(default=0, init=False, repr=False)
 
     @classmethod
-    def from_env(cls) -> "BargeInDetector":
+    def from_env(cls) -> BargeInDetector:
         """Build a detector from VOICE_BARGE_* env knobs (grace/sustain in seconds)."""
         fps = SAMPLE_RATE / BLOCK_SIZE  # ~31.25 frames/s
         return cls(
@@ -247,12 +249,23 @@ def record_with_vad(
     return np.concatenate(all_frames[start:])
 
 
+def _safe_complete(is_complete_fn: Callable[[Any], bool], transcript: Any) -> bool:
+    """Run the completeness check, defaulting to 'complete' on any error — a buggy
+    detector must never hold the mic open forever."""
+    try:
+        return bool(is_complete_fn(transcript))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def record_with_vad_streaming(
     vad_fn: Callable[[bytes], bool],
     transcribe_fn: Callable[[np.ndarray], Any],
     *,
     sample_rate: int = SAMPLE_RATE,
     silence_threshold_s: float = 0.5,
+    max_silence_threshold_s: float | None = None,
+    is_complete_fn: Callable[[Any], bool] | None = None,
     max_duration_s: float = 30.0,
     pre_speech_pad_s: float = 0.3,
 ) -> tuple[np.ndarray, Any]:
@@ -263,6 +276,11 @@ def record_with_vad_streaming(
     silence threshold (~silence_threshold_s) confirms the turn is over, the
     transcript is usually ready — taking STT off the critical path.
 
+    is_complete_fn enables semantic endpointing: at the base silence threshold the
+    transcript-so-far is checked, and if it trails mid-sentence the turn is held open
+    until max_silence_threshold_s of silence (then it gives up). Without it, the first
+    silence_threshold_s pause ends the turn (plain endpointing).
+
     transcribe_fn returns an opaque STT result (this module stays STT-agnostic).
     Returns (audio_int16, result); result is None when the turn ends by the
     max-duration cutoff with no pause — the caller should then transcribe directly.
@@ -270,6 +288,10 @@ def record_with_vad_streaming(
     if hasattr(vad_fn, "reset"):
         vad_fn.reset()
     silence_frames = int(silence_threshold_s * sample_rate / BLOCK_SIZE)
+    max_silence_frames = (
+        int(max_silence_threshold_s * sample_rate / BLOCK_SIZE)
+        if max_silence_threshold_s else silence_frames
+    )
     max_frames = int(max_duration_s * sample_rate / BLOCK_SIZE)
     pad_frames = int(pre_speech_pad_s * sample_rate / BLOCK_SIZE)
 
@@ -314,7 +336,21 @@ def record_with_vad_streaming(
                         clip = np.concatenate(all_frames[ws:] if ws is not None else all_frames)
                         pending = executor.submit(transcribe_fn, clip)
                     if consecutive_silence >= silence_frames:
-                        break
+                        if is_complete_fn is None:
+                            break  # plain endpointing — the first real pause ends it
+                        # Semantic endpointing: end only if the thought looks finished;
+                        # if it trails mid-sentence, keep listening to max_silence_frames.
+                        transcript = (
+                            pending.result() if (pending is not None and pending.done()) else None
+                        )
+                        complete = (
+                            _safe_complete(is_complete_fn, transcript)
+                            if transcript is not None else None
+                        )
+                        if turn_detector.endpoint_should_end(
+                            complete, consecutive_silence, silence_frames, max_silence_frames
+                        ):
+                            break
 
         start = _speech_window_start(first_speech_idx, pad_frames)
         if start is None:
@@ -339,7 +375,7 @@ def play_audio(audio: np.ndarray, sample_rate: int = 24000, blocking: bool = Tru
 
 
 def play_audio_stream(
-    chunk_iter: "Callable[[], np.ndarray | None]",
+    chunk_iter: Callable[[], np.ndarray | None],
     sample_rate: int = 24000,
 ) -> None:
     """Stream audio chunks to speaker as they arrive — for streaming TTS."""
@@ -359,7 +395,7 @@ _PLAY_SUBBLOCK = 2048
 
 
 def play_chunks_interruptible(
-    next_chunk: "Callable[[], np.ndarray | None]",
+    next_chunk: Callable[[], np.ndarray | None],
     *,
     vad: Any,
     sample_rate: int = 24000,

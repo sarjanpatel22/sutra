@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 
 from friday.gui.orb_client import push as orb_push
+from friday.voice import turn_detector
 from friday.voice.audio import (
     BargeInDetector,
     play_audio,
@@ -447,6 +448,11 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
         console.print("\n[dim]Voice mode off.[/dim]")
 
 
+def _utterance_complete(stt_result: Any) -> bool:
+    """Semantic end-of-turn check on an STT result (drives VAD endpointing)."""
+    return turn_detector.is_complete_utterance(getattr(stt_result, "text", "") or "")
+
+
 async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     """Continuous VAD mode — activates when speech is detected."""
     from rich.console import Console
@@ -463,12 +469,18 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     streaming_stt = os.getenv("VOICE_STREAMING_STT", "0").strip().lower() not in (
         "", "0", "false", "no"
     )
+    semantic_turn = os.getenv("VOICE_SEMANTIC_TURN", "1").strip().lower() not in (
+        "", "0", "false", "no"
+    )
+    max_silence_s = float(os.getenv("VAD_MAX_SILENCE_S", "2.0"))
 
     console.print("[bold cyan]Sutra voice (VAD)[/bold cyan] — listening  [bold]Ctrl+C[/bold] to exit")
     if barge_in:
         console.print("[dim]barge-in on — talk over her to interrupt[/dim]")
     if streaming_stt:
         console.print("[dim]streaming STT on — transcribing as you speak[/dim]")
+    if semantic_turn:
+        console.print("[dim]semantic turn-taking on — waits through mid-sentence pauses[/dim]")
     console.print("[dim]Pre-warming models…[/dim]", end="\r")
     await prewarm()
     await _connect_mcp(console)
@@ -483,12 +495,15 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
             # (production turn-taking uses 0.5–0.8s of silence, the rest is semantic).
             # Lower = snappier but risks interrupting; higher = calmer but laggier.
             silence_s = float(os.getenv("VAD_SILENCE_S", "0.8"))
-            if streaming_stt:
-                # Transcribe during the silence wait — STT off the critical path.
+            if streaming_stt or semantic_turn:
+                # Transcribe during the silence wait (STT off the critical path) and,
+                # with semantic_turn, hold the turn open through mid-sentence pauses.
                 audio, stt_result = record_with_vad_streaming(
                     vad,
                     lambda clip: _get_stt().transcribe(clip),
                     silence_threshold_s=silence_s,
+                    max_silence_threshold_s=max_silence_s if semantic_turn else None,
+                    is_complete_fn=_utterance_complete if semantic_turn else None,
                     max_duration_s=30.0,
                 )
             else:
