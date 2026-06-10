@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from friday.core import persona
 from friday.core.router import Tier, complete
 from friday.core.turnlog import log_text_turn
 from friday.memory.store import get_store, looks_like_noise
@@ -98,17 +99,19 @@ async def flush_persist() -> None:
 
 
 async def _voice_system_prompt(user_input: str) -> str:
-    """VOICE_SYSTEM_PROMPT plus any relevant recalled memory.
+    """Persona + situational mood, plus any relevant recalled memory.
 
-    recall() is fast (~40ms warm; keyword fallback ~2ms) and never raises, so this
-    stays within the voice latency budget. Voice only READS memory here — it does
-    not persist turns (that runs the ~18s extraction LLM; the ambient daemon and
-    explicit remember handle writes).
+    The mood (chill/sarcastic/locked_in/warm/fired_up) is picked from this turn's
+    words — see friday.core.persona. recall() is fast (~40ms warm; keyword fallback
+    ~2ms) and never raises, so this stays within the voice latency budget. Voice only
+    READS memory here — it does not persist turns (the ambient daemon handles writes).
     """
+    mood, _ = persona.active_mood_for(user_input)
+    base = persona.voice_system_prompt(mood)
     facts = await get_store().recall(user_input, limit=3)
     if not facts:
-        return VOICE_SYSTEM_PROMPT
-    return VOICE_SYSTEM_PROMPT + "\n\nWhat you remember (use only if relevant):\n" + "\n".join(
+        return base
+    return base + "\n\nWhat you remember (use only if relevant):\n" + "\n".join(
         f"- {f}" for f in facts
     )
 
@@ -348,7 +351,8 @@ async def voice_agent_run(
     silently writes files or runs commands.
     """
     registry.autodiscover()
-    system_content = VOICE_TOOL_SYSTEM_PROMPT
+    mood, _ = persona.active_mood_for(user_input)
+    system_content = persona.voice_tool_system_prompt(mood)
     memories = await get_store().recall(user_input, limit=3)
     if memories:
         system_content += "\n\nWhat you remember (use only if relevant):\n" + "\n".join(
