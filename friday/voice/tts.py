@@ -37,10 +37,11 @@ class TTS:
     def __init__(self, voice: str | None = None, speed: float | None = None) -> None:
         from kokoro_onnx import Kokoro  # type: ignore[import-untyped]
 
-        # Read at construction (after load_dotenv) — KOKORO_VOICE was previously
-        # unwired: TTS() always used af_heart and ignored the .env setting.
-        voice = voice or os.getenv("KOKORO_VOICE", "af_heart")
-        speed = speed if speed is not None else float(os.getenv("KOKORO_SPEED", "1.0"))
+        # Read at construction (after load_dotenv). am_adam is Sarjan's pick — a
+        # warmer, more natural default than the old af_heart; .env can override.
+        voice = voice or os.getenv("KOKORO_VOICE", "am_adam")
+        # 1.0 felt slightly slow/robotic; 1.1 is a more natural conversational pace.
+        speed = speed if speed is not None else float(os.getenv("KOKORO_SPEED", "1.1"))
 
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
         model_path = os.getenv("KOKORO_MODEL_PATH", str(_ONNX_MODEL))

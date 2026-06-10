@@ -478,9 +478,11 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
         while True:
             console.print("[dim]listening…[/dim]", end="\r")
             orb_push("listening")  # orb settles to its calm listening state between turns
-            # End-of-turn silence: the single biggest warm-latency knob. 0.5s (LiveKit's
-            # default) waits for a real pause; lower = snappier but risks cutting pauses.
-            silence_s = float(os.getenv("VAD_SILENCE_S", "0.5"))
+            # End-of-turn silence: the single biggest knob for not cutting Sarjan off.
+            # 0.5s tripped on mid-sentence pauses; 0.8s tolerates a natural breath
+            # (production turn-taking uses 0.5–0.8s of silence, the rest is semantic).
+            # Lower = snappier but risks interrupting; higher = calmer but laggier.
+            silence_s = float(os.getenv("VAD_SILENCE_S", "0.8"))
             if streaming_stt:
                 # Transcribe during the silence wait — STT off the critical path.
                 audio, stt_result = record_with_vad_streaming(
