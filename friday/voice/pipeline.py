@@ -21,6 +21,7 @@ from typing import Any
 
 import numpy as np
 
+from friday.gui.orb_client import push as orb_push
 from friday.voice.audio import (
     BargeInDetector,
     play_audio,
@@ -165,6 +166,20 @@ def _log_latency(turn: VoiceTurn) -> None:
         }) + "\n")
 
 
+def _drive_orb_speaking(chunk: np.ndarray) -> None:
+    """Push 'speaking' + this chunk's RMS loudness (0..1) to the orb, best-effort."""
+    try:
+        if chunk is None or len(chunk) == 0:
+            return
+        a = chunk.astype(np.float64)
+        if np.issubdtype(chunk.dtype, np.integer):
+            a /= 32768.0  # normalise int16 PCM to [-1, 1]
+        rms = float(np.sqrt(np.mean(a * a)))
+        orb_push("speaking", min(1.0, rms * 5.0))  # *5 maps speech RMS to a strong pulse
+    except Exception:  # noqa: BLE001 — orb reactivity must never break playback
+        pass
+
+
 async def process_audio(
     audio: np.ndarray,
     history: list[dict[str, Any]],
@@ -252,6 +267,7 @@ async def process_audio(
             lat.tts_first_ms = (time.monotonic() - t_agent) * 1000
             lat.total_ms = (time.monotonic() - t_total) * 1000
             first_audio = False
+        _drive_orb_speaking(chunk.audio)  # pulse the orb with this chunk's loudness
         return chunk.audio
 
     def play_blocking() -> None:
@@ -432,6 +448,7 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     try:
         while True:
             console.print("[dim]listening…[/dim]", end="\r")
+            orb_push("listening")  # orb settles to its calm listening state between turns
             # End-of-turn silence: the single biggest warm-latency knob. 0.5s (LiveKit's
             # default) waits for a real pause; lower = snappier but risks cutting pauses.
             silence_s = float(os.getenv("VAD_SILENCE_S", "0.5"))
@@ -476,7 +493,7 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
             await asyncio.sleep(0.05)
 
     except KeyboardInterrupt:
-        pass
+        orb_push("idle")  # reset the orb when the voice loop exits
     finally:
         from friday.mcp.bridge import close_bridge
         await close_bridge()
