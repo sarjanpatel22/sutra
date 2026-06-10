@@ -166,16 +166,45 @@ def _log_latency(turn: VoiceTurn) -> None:
         }) + "\n")
 
 
-def _drive_orb_speaking(chunk: np.ndarray) -> None:
-    """Push 'speaking' + this chunk's RMS loudness (0..1) to the orb, best-effort."""
+# Orb voice-reactivity tuning. Kokoro streams coarse (~sentence) chunks, so a
+# single RMS per chunk would flatline the orb; instead we trace a short-time RMS
+# envelope. 40ms window ≈ 25 amplitude updates/sec; *7 maps Kokoro speech RMS to a
+# full 0..1 pulse (calibrated against real TTS: p95→1.0, silences→<0.1).
+_ORB_ENV_WIN_S = 0.04
+_ORB_AMP_SCALE = 7.0
+
+
+def _chunk_envelope(chunk: np.ndarray, sample_rate: int) -> list[float]:
+    """Short-time RMS envelope of a TTS chunk, scaled to 0..1 orb amplitudes."""
+    a = chunk.astype(np.float64)
+    if np.issubdtype(chunk.dtype, np.integer):
+        a /= 32768.0  # normalise int16 PCM to [-1, 1]
+    win = max(1, int(sample_rate * _ORB_ENV_WIN_S))
+    return [
+        min(1.0, float(np.sqrt(np.mean(np.square(a[i:i + win])))) * _ORB_AMP_SCALE)
+        for i in range(0, max(1, len(a) - win), win)
+    ]
+
+
+def _orb_envelope_worker(env: list[float]) -> None:
+    """Walk an amplitude envelope in real time so the orb moves with the speech."""
+    for amp in env:
+        orb_push("speaking", amp)
+        time.sleep(_ORB_ENV_WIN_S)
+
+
+def _drive_orb_speaking(chunk: np.ndarray, sample_rate: int) -> None:
+    """Trace this chunk's loudness envelope onto the orb, paced to its playback.
+
+    Best-effort and decoupled: a daemon thread pushes the envelope while the chunk
+    plays, so the audio path never blocks and nothing breaks if no orb is running.
+    """
     try:
         if chunk is None or len(chunk) == 0:
             return
-        a = chunk.astype(np.float64)
-        if np.issubdtype(chunk.dtype, np.integer):
-            a /= 32768.0  # normalise int16 PCM to [-1, 1]
-        rms = float(np.sqrt(np.mean(a * a)))
-        orb_push("speaking", min(1.0, rms * 5.0))  # *5 maps speech RMS to a strong pulse
+        env = _chunk_envelope(chunk, sample_rate)
+        if env:
+            threading.Thread(target=_orb_envelope_worker, args=(env,), daemon=True).start()
     except Exception:  # noqa: BLE001 — orb reactivity must never break playback
         pass
 
@@ -267,7 +296,7 @@ async def process_audio(
             lat.tts_first_ms = (time.monotonic() - t_agent) * 1000
             lat.total_ms = (time.monotonic() - t_total) * 1000
             first_audio = False
-        _drive_orb_speaking(chunk.audio)  # pulse the orb with this chunk's loudness
+        _drive_orb_speaking(chunk.audio, sample_rate)  # trace loudness onto the orb
         return chunk.audio
 
     def play_blocking() -> None:
