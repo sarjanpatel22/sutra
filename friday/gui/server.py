@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -88,22 +89,36 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
 
 
-# Chromium/Chrome in --app + --kiosk mode = a borderless, chrome-less, full-screen
-# window: a native-feeling ambient display on the desktop, no browser UI, no Tauri
-# toolchain. Falls back to a normal browser tab if no Chromium-family browser.
+# Chromium/Chrome in --app mode = a borderless, chrome-less window: a native-feeling
+# ambient display, no browser UI, no Tauri toolchain. Falls back to a normal browser
+# tab if no Chromium-family browser is found.
 _KIOSK_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser")
 
 
 def _launch_fullscreen(url: str) -> bool:
-    """Open url full-screen kiosk in a Chromium-family browser. False if none found."""
+    """Open url full-screen (borderless --app) in a Chromium-family browser. False if none.
+
+    Hard-won flags for a *stable* ambient window:
+      - isolated --user-data-dir: a second launch against the default profile would
+        hand off to the running instance and immediately exit.
+      - disable OptimizationGuideOnDeviceModel: on a box with no usable GPU adapter,
+        chromium's on-device-model crash-loops the GPU process until the window dies.
+      - --disable-gpu-process-crash-limit: don't bail if the GPU process blips.
+      - no --kiosk: it exits on stray focus/key events; --app is already borderless.
+    """
     exe = next((shutil.which(b) for b in _KIOSK_BROWSERS if shutil.which(b)), None)
     if not exe:
         return False
+    profile = Path(tempfile.gettempdir()) / "sutra-orb-profile"
     subprocess.Popen(
         [
-            exe, f"--app={url}", "--kiosk", "--start-fullscreen",
-            "--no-first-run", "--noerrdialogs", "--disable-translate",
-            "--disable-infobars", "--enable-unsafe-swiftshader",
+            exe, f"--app={url}", "--start-fullscreen", "--window-position=0,0",
+            f"--user-data-dir={profile}",
+            "--no-first-run", "--no-default-browser-check", "--noerrdialogs",
+            "--disable-translate", "--disable-infobars", "--disable-session-crashed-bubble",
+            "--disable-features=Translate,OptimizationGuideOnDeviceModel,"
+            "OptimizationGuideModelDownloading,OptimizationHints",
+            "--disable-gpu-process-crash-limit", "--enable-unsafe-swiftshader",
             "--overscroll-history-navigation=0",
         ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
