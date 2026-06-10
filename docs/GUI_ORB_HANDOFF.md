@@ -41,16 +41,23 @@ sutra orb --no-open       # serve only, http://127.0.0.1:8710/
     --disable-session-crashed-bubble --enable-unsafe-swiftshader >/tmp/sutra-orb-chromium.log 2>&1 & disown
   ```
 
-## Reactivity (already wired, not yet driven)
+## Reactivity (wired + validated ✅)
 `orb.html` polls `GET /api/state` every 200ms and reacts: `state` ∈ idle|listening|speaking + `amplitude`
 → `uBrighten` (core swell + bloom) and `uSurge` (mist warms, frequency line spikes). Server has GET+POST
-`/api/state` (`friday/gui/server.py`). **Next step:** have the voice loop (`pipeline.process_audio`) POST
-`{state, amplitude}` so the frequency line spikes with her real voice instead of the idle ripple.
+`/api/state` (`friday/gui/server.py`). The voice loop drives it: `friday/gui/orb_client.py` `push(state, amplitude)`
+(fire-and-forget HTTP, no-ops when no orb runs) is called from `friday/voice/pipeline.py` — **listening** at the
+top of the VAD loop, **speaking** + a real-time TTS **loudness envelope** per chunk, **idle** on exit.
+Kokoro streams coarse (~sentence) chunks, so a flat per-chunk RMS flatlines the orb; instead `_chunk_envelope()`
+computes a 40ms short-time RMS envelope (~25 updates/sec, amplitude *7 calibrated to real Kokoro: p95→1.0,
+silences→<0.1) walked by a daemon thread paced to playback. Covered by `tests/test_orb_client.py`.
 
 ## Open next steps
-1. Wire voice → `/api/state` amplitude (above) — the main remaining feature.
+1. **Real voice run (the live test):** `sutra voice --mode vad` with the orb up → watch the frequency line trace
+   *your* actual speech. Note the far-field-mic caveat in the main handoff (STT hallucinates from across the room;
+   use push-to-talk / a close mic). This is part of the **Gate 2 daily-driver shakedown** (`docs/SUTRA_PHASES.md`).
 2. Optional aesthetic tuning Sarjan may still want: mist density/height, frequency line height/mirror, presence-vs-mist balance.
-3. Later (deferred, multi-week): the full Tauri + Next.js dashboard (Phase 1.7/1.10) — keep the orb on the stdlib-serve path until then.
+3. Optional UX: auto-launch the orb alongside `sutra voice` (today they're separate processes), or a `sutra-orb` systemd user unit for an always-on ambient presence (mirror `infra/systemd/sutra-ambient.service`).
+4. Later (deferred, multi-week): the full Tauri + Next.js dashboard (Phase 1.7/1.10) — keep the orb on the stdlib-serve path until then.
 
 ## Related
 - `friday/gui/server.py` — stdlib http server + chromium kiosk launcher (`_launch_fullscreen`).
