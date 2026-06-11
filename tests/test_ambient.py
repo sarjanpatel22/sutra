@@ -138,3 +138,80 @@ def test_daemon_reconnects_after_memory_recovers(monkeypatch):
     n2 = asyncio.run(daemon.flush())   # reconnected -> writes
     assert n1 == 0 and fake.reset_called == 1
     assert n2 == 1  # recovered
+
+
+def test_flush_skips_low_value_and_does_not_false_reset(monkeypatch):
+    """Ambient telemetry ('spent 8m in Terminal') is dropped at the source; a real
+    summary still persists, and the partial write is not mistaken for a DB failure."""
+    import asyncio
+
+    import friday.ambient.daemon as dmod
+
+    class FakeStore:
+        def __init__(self):
+            self.remembered: list[str] = []
+            self.reset_called = 0
+
+        async def initialize(self):
+            return True
+
+        async def remember(self, text, source=None):
+            self.remembered.append(text)
+            return True
+
+        def reset(self):
+            self.reset_called += 1
+
+    fake = FakeStore()
+    monkeypatch.setattr(dmod, "get_store", lambda: fake)
+
+    class _Col:
+        name = "test"
+        def poll(self, *, idle): ...
+        def drain(self):
+            return [
+                "Sarjan spent about 8m in Terminal (mostly on Resume previous coding session).",
+                "Sarjan edited store.py in the friday-os project.",
+            ]
+
+    daemon = dmod.AmbientDaemon()
+    daemon.collectors = [_Col()]
+    wrote = asyncio.run(daemon.flush())
+    assert wrote == 1
+    assert fake.remembered == ["Sarjan edited store.py in the friday-os project."]
+    assert fake.reset_called == 0  # a real write succeeded — not a failure
+
+
+def test_flush_all_low_value_skips_without_reset(monkeypatch):
+    """A flush of pure telemetry writes nothing but must NOT reset the connection."""
+    import asyncio
+
+    import friday.ambient.daemon as dmod
+
+    class FakeStore:
+        def __init__(self):
+            self.reset_called = 0
+
+        async def initialize(self):
+            return True
+
+        async def remember(self, text, source=None):
+            return True
+
+        def reset(self):
+            self.reset_called += 1
+
+    fake = FakeStore()
+    monkeypatch.setattr(dmod, "get_store", lambda: fake)
+
+    class _Col:
+        name = "test"
+        def poll(self, *, idle): ...
+        def drain(self):
+            return ["Sarjan spent about 3m in firefox-esr (mostly on YouTube)."]
+
+    daemon = dmod.AmbientDaemon()
+    daemon.collectors = [_Col()]
+    wrote = asyncio.run(daemon.flush())
+    assert wrote == 0
+    assert fake.reset_called == 0  # all-skipped is not a DB failure

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from friday.ambient import config
 from friday.ambient.collectors import build_collectors
-from friday.memory.store import get_store
+from friday.memory.store import get_store, looks_low_value
 
 _STATE_DIR = Path.home() / ".local" / "share" / "friday"
 _STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,19 +78,27 @@ class AmbientDaemon:
 
         store = get_store()
         available = await store.initialize()
-        wrote = 0
+        wrote = skipped = 0
         for name, text in episodes:
+            # Drop activity telemetry / narration at the source so it never pollutes
+            # recall (the cure for the 60%-noise graph; see store.looks_low_value).
+            if looks_low_value(text):
+                skipped += 1
+                continue
             log.info("[%s] %s", name, text)
             if available and await store.remember(text, source=f"ambient:{name}"):
                 wrote += 1
-        # All writes failed (DB down at start, or the connection broke mid-run while
-        # initialize() still reports the cached True) — drop the cached connection so
-        # the next flush reconnects. Otherwise the daemon would never persist again.
-        if wrote == 0:
+        if skipped:
+            log.info("flush: skipped %d low-value episode(s)", skipped)
+        # Reset only on a real write FAILURE (something was attempted but none stored),
+        # not when every episode was skipped as low-value — otherwise initialize()'s
+        # cached True would never get a chance and we'd needlessly reconnect each flush.
+        attempted = len(episodes) - skipped
+        if attempted and wrote == 0:
             store.reset()
             log.warning(
                 "memory unavailable — %d episode(s) logged but not stored; "
-                "will reconnect next flush", len(episodes)
+                "will reconnect next flush", attempted
             )
         return wrote
 
