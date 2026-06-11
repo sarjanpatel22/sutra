@@ -203,7 +203,7 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 
 | Work item | Done? |
 |-----------|-------|
-| Playwright installed + `browse_url` skill | ⬜ |
+| Playwright installed + `browse_url` skill | ✅ 06-11 — Playwright 1.60 + chromium; read-only `browse_url` (JS-rendered pages, content-container extraction, http(s)-only, auto-runs) |
 | browser-use wired for autonomous web actions | ⬜ |
 | Open Interpreter sandboxed with confirmation gate | ⬜ |
 | xdotool skills (X11 confirmed) | ⬜ |
