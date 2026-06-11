@@ -204,7 +204,7 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 | Work item | Done? |
 |-----------|-------|
 | Playwright installed + `browse_url` skill | ✅ 06-11 — Playwright 1.60 + chromium; read-only `browse_url` (JS-rendered pages, content-container extraction, http(s)-only, auto-runs) |
-| browser-use wired for autonomous web actions | ⬜ |
+| browser-use wired for autonomous web actions | ✅ 06-11 — `web_task` = browser-use *pattern* over our Playwright + free router (NOT the heavy pkg/langchain); observe→LLM action→execute loop, **gated**, $0; verified live (scripted click→nav + real-LLM read) |
 | Open Interpreter sandboxed with confirmation gate | ⬜ |
 | xdotool skills (X11 confirmed) | ✅ 06-11 — `active_window` (read) + **gated** type_text/press_key/mouse_click (auto_confirm=False) |
 | `web_extract` skill (scrape structured data) | ✅ 06-11 — CSS-selector matches (text/attr) or headings+links overview, read-only |
