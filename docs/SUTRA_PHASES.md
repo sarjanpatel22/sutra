@@ -207,7 +207,7 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 | browser-use wired for autonomous web actions | ⬜ |
 | Open Interpreter sandboxed with confirmation gate | ⬜ |
 | xdotool skills (X11 confirmed) | ⬜ |
-| `web_extract` skill (scrape structured data) | ⬜ |
+| `web_extract` skill (scrape structured data) | ✅ 06-11 — CSS-selector matches (text/attr) or headings+links overview, read-only |
 | `fill_form` skill (Playwright) | ⬜ |
 | Irreversible web actions always confirmed | ⬜ |
 

@@ -1,21 +1,27 @@
-"""Browse a web page with a headless browser and return its readable text.
+"""Headless-browser web skills: read a page (browse_url) or pull structured data
+(web_extract) with Playwright + Chromium.
 
-Playwright drives a real headless Chromium, so this reads JS-rendered pages a plain
+Playwright drives a real headless browser, so these read JS-rendered pages a plain
 HTTP fetch can't — the deterministic, token-cheap half of Phase 1.5 (no LLM in the
-loop, unlike autonomous browser-use). Read-only: it loads and reads a page you name,
-never clicks or submits, so it auto-runs. Returns the page title plus visible text,
-whitespace-normalized and truncated to keep the model's context cheap.
+loop, unlike autonomous browser-use). Both are read-only: they load and read a page
+you name, never click or submit, so they auto-run. browse_url returns the readable
+article text; web_extract returns CSS-selector matches or a headings+links overview.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from friday.skills.registry import skill
 
 _MAX_CHARS = 6000
 _NAV_TIMEOUT_MS = 30_000
+
+# Prefer a semantic main-content container over the whole body, so returned text is
+# the article rather than nav/sidebar/footer chrome. First with substantial text wins.
+_CONTENT_SELECTORS = ("main", "article", "[role=main]", "#content", "#mw-content-text")
 
 
 def _http_url(url: str) -> bool:
@@ -33,10 +39,28 @@ def _readable(raw: str) -> str:
     return "\n".join(ln for ln in lines if ln)
 
 
-# Prefer a semantic main-content container over the whole body, so the returned text
-# is the article rather than nav/sidebar/footer chrome. Tried in order; first with
-# substantial text wins, else fall back to <body>.
-_CONTENT_SELECTORS = ("main", "article", "[role=main]", "#content", "#mw-content-text")
+async def _render(
+    url: str, extract: Callable[[Any, Any], Awaitable[dict[str, Any]]]
+) -> dict[str, Any]:
+    """Validate the URL, drive headless chromium to it, run extract(page, response),
+    and return its dict — or a clean error dict. Never raises into the agent loop."""
+    if not _http_url(url):
+        return {"error": "only http(s) URLs are allowed", "url": url}
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return {"error": "playwright not installed — run: playwright install chromium", "url": url}
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--disable-dev-shm-usage"])
+            try:
+                page = await browser.new_page()
+                resp = await page.goto(url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
+                return await extract(page, resp)
+            finally:
+                await browser.close()
+    except Exception as e:  # noqa: BLE001 — surface a clean error, never raise into the loop
+        return {"error": f"could not load page: {e}", "url": url}
 
 
 async def _best_text(page: Any) -> str:
@@ -51,6 +75,25 @@ async def _best_text(page: Any) -> str:
             if len(text) >= 200:  # substantial — not just a header stub
                 return text
     return _readable(await page.inner_text("body"))
+
+
+async def _overview_links(page: Any, limit: int) -> list[dict[str, str]]:
+    """Up to `limit` distinct on-page links as {text, href}, hrefs resolved absolute."""
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for el in await page.query_selector_all("a[href]"):
+        href = await el.get_attribute("href") or ""
+        if not href or href.startswith(("javascript:", "#", "mailto:")):
+            continue
+        absu = urljoin(page.url, href)
+        if absu in seen:
+            continue
+        seen.add(absu)
+        text = " ".join((await el.inner_text()).split())[:120]
+        out.append({"text": text, "href": absu})
+        if len(out) >= limit:
+            break
+    return out
 
 
 @skill(
@@ -69,36 +112,80 @@ async def browse_url(url: str, max_chars: int = _MAX_CHARS) -> dict[str, Any]:
     url: An http:// or https:// URL to load.
     max_chars: Truncate the returned text to this many characters (default 6000).
     """
-    if not _http_url(url):
-        return {"error": "only http(s) URLs are allowed", "url": url}
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        return {"error": "playwright not installed — run: playwright install chromium", "url": url}
+    chars = max(200, min(40_000, max_chars))
 
-    max_chars = max(200, min(40_000, max_chars))
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True, args=["--disable-dev-shm-usage"]
-            )
+    async def _extract(page: Any, resp: Any) -> dict[str, Any]:
+        title = await page.title()
+        text = await _best_text(page)
+        return {
+            "url": page.url,
+            "status": resp.status if resp else None,
+            "title": title,
+            "text": text[:chars],
+            "truncated": len(text) > chars,
+            "length": len(text),
+        }
+
+    return await _render(url, _extract)
+
+
+@skill(
+    name="web_extract",
+    description=(
+        "Extract structured data from a web page. With a CSS `selector`, returns the "
+        "text (or a named `attr` like href/src) of each matching element — prices, "
+        "table rows, list items, links. Without a selector, returns the page's "
+        "headings and links as an overview. Read-only: never clicks or submits."
+    ),
+    auto_confirm=True,
+    timeout_s=45,
+)
+async def web_extract(
+    url: str, selector: str = "", attr: str = "", limit: int = 50
+) -> dict[str, Any]:
+    """Extract structured data from a web page.
+
+    url: An http:// or https:// URL to load.
+    selector: CSS selector to match (e.g. "h2", ".price", "table tr"). Empty = overview.
+    attr: Element attribute to return instead of text (e.g. "href", "src"). Empty = text.
+    limit: Maximum number of items to return (1-200, default 50).
+    """
+    sel = selector.strip()
+    at = attr.strip()
+    n = max(1, min(200, limit))
+
+    async def _extract(page: Any, resp: Any) -> dict[str, Any]:
+        if sel:
             try:
-                page = await browser.new_page()
-                resp = await page.goto(url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
-                title = await page.title()
-                text = await _best_text(page)
-                status = resp.status if resp else None
-                final_url = page.url
-            finally:
-                await browser.close()
-    except Exception as e:  # noqa: BLE001 — surface a clean error, never raise into the agent loop
-        return {"error": f"could not load page: {e}", "url": url}
+                els = await page.query_selector_all(sel)
+            except Exception as e:  # noqa: BLE001 — invalid CSS selector
+                return {"error": f"invalid selector: {e}", "url": page.url, "selector": sel}
+            items: list[str] = []
+            for el in els[:n]:
+                if at:
+                    val = await el.get_attribute(at)
+                else:
+                    val = " ".join((await el.inner_text()).split())
+                if val and val.strip():
+                    items.append(val.strip())
+            return {
+                "url": page.url,
+                "selector": sel,
+                "attr": at or "text",
+                "count": len(items),
+                "items": items,
+            }
+        # No selector → structured overview (headings + links).
+        headings: list[str] = []
+        for el in (await page.query_selector_all("h1, h2, h3"))[:n]:
+            t = " ".join((await el.inner_text()).split())
+            if t:
+                headings.append(t)
+        return {
+            "url": page.url,
+            "title": await page.title(),
+            "headings": headings,
+            "links": await _overview_links(page, n),
+        }
 
-    return {
-        "url": final_url,
-        "status": status,
-        "title": title,
-        "text": text[:max_chars],
-        "truncated": len(text) > max_chars,
-        "length": len(text),
-    }
+    return await _render(url, _extract)
