@@ -206,7 +206,7 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 | Playwright installed + `browse_url` skill | ✅ 06-11 — Playwright 1.60 + chromium; read-only `browse_url` (JS-rendered pages, content-container extraction, http(s)-only, auto-runs) |
 | browser-use wired for autonomous web actions | ⬜ |
 | Open Interpreter sandboxed with confirmation gate | ⬜ |
-| xdotool skills (X11 confirmed) | ⬜ |
+| xdotool skills (X11 confirmed) | ✅ 06-11 — `active_window` (read) + **gated** type_text/press_key/mouse_click (auto_confirm=False) |
 | `web_extract` skill (scrape structured data) | ✅ 06-11 — CSS-selector matches (text/attr) or headings+links overview, read-only |
 | `fill_form` skill (Playwright) | ✅ 06-11 — fills CSS-selector fields + optional submit; **gated** (auto_confirm=False), verified live (httpbin POST round-trip) |
 | Irreversible web actions always confirmed | ✅ 06-11 — `fill_form` is auto_confirm=False → routes through the same confirm gate as write_file/run_command (sub-agents decline it) |
