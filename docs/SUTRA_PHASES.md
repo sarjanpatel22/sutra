@@ -205,13 +205,16 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 |-----------|-------|
 | Playwright installed + `browse_url` skill | ✅ 06-11 — Playwright 1.60 + chromium; read-only `browse_url` (JS-rendered pages, content-container extraction, http(s)-only, auto-runs) |
 | browser-use wired for autonomous web actions | ✅ 06-11 — `web_task` = browser-use *pattern* over our Playwright + free router (NOT the heavy pkg/langchain); observe→LLM action→execute loop, **gated**, $0; verified live (scripted click→nav + real-LLM read) |
-| Open Interpreter sandboxed with confirmation gate | ⬜ |
+| Open Interpreter sandboxed with confirmation gate | ✅ 06-11 — gated `run_python` (isolated `python -I` subprocess + timeout), the pattern not the heavy pkg; the agent's LLM writes the code |
 | xdotool skills (X11 confirmed) | ✅ 06-11 — `active_window` (read) + **gated** type_text/press_key/mouse_click (auto_confirm=False) |
 | `web_extract` skill (scrape structured data) | ✅ 06-11 — CSS-selector matches (text/attr) or headings+links overview, read-only |
 | `fill_form` skill (Playwright) | ✅ 06-11 — fills CSS-selector fields + optional submit; **gated** (auto_confirm=False), verified live (httpbin POST round-trip) |
 | Irreversible web actions always confirmed | ✅ 06-11 — `fill_form` is auto_confirm=False → routes through the same confirm gate as write_file/run_command (sub-agents decline it) |
 
-**Exit criteria:** Sutra can browse and act on a site you specify.
+**Exit criteria:** Sutra can browse and act on a site you specify. **✅ Met 2026-06-11** —
+`browse_url`/`web_extract` (read), `fill_form` + xdotool input (gated act), `web_task`
+(autonomous browse-use pattern over the free router), `run_python` (gated code exec).
+All irreversible actions route through the confirm gate; deterministic + autonomous, $0.
 
 ---
 
