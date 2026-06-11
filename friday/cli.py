@@ -234,11 +234,18 @@ def devices() -> None:
 
 @app.command()
 def voice(
-    mode: str = typer.Option("ptt", "--mode", "-m", help="ptt (push-to-talk) or vad (auto-detect)"),
+    mode: str = typer.Option(
+        "ptt", "--mode", "-m",
+        help="ptt (hold SPACE), vad (auto-detect), or text (type, mic-free)",
+    ),
     orb: bool = typer.Option(False, "--orb", help="Show the presence orb full-screen too"),
 ) -> None:
-    """Start voice mode. ptt=hold SPACE, vad=always listening."""
-    from friday.voice.pipeline import push_to_talk_loop, vad_listen_loop
+    """Start voice mode. ptt=hold SPACE, vad=always listening, text=type to her (mic-free)."""
+    from friday.voice.pipeline import (
+        push_to_talk_loop,
+        text_presence_loop,
+        vad_listen_loop,
+    )
     httpd = browser = None
     if orb:
         from friday.gui.server import serve_background
@@ -246,6 +253,8 @@ def voice(
     try:
         if mode == "vad":
             asyncio.run(vad_listen_loop())
+        elif mode == "text":
+            asyncio.run(text_presence_loop())
         else:
             asyncio.run(push_to_talk_loop())
     finally:

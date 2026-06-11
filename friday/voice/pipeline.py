@@ -377,6 +377,96 @@ async def process_audio(
     return reply, history, lat, interrupted
 
 
+async def process_text(text: str, history: list[dict[str, Any]]) -> str:
+    """Typed input → streaming agent → streaming TTS → speak + drive the orb.
+
+    The mic-free twin of process_audio: the same agent/TTS/orb plumbing, minus
+    STT/VAD/barge-in. Powers the text-presence loop (`sutra voice --mode text`) so
+    the full spoken + on-screen presence works before a headset arrives — type and
+    Sutra answers aloud while the orb pulses to her own voice. history is extended
+    in place; returns the reply text.
+    """
+    from friday.core.agent import (
+        cloud_tools_available,
+        likely_needs_tool,
+        persist_turn_async,
+        voice_agent_run,
+        voice_stream,
+    )
+    from friday.core.router import Tier
+
+    text = text.strip()
+    if not text:
+        return ""
+
+    use_tools = likely_needs_tool(text) and cloud_tools_available()
+    tts = _get_tts()
+    sample_rate = tts.sample_rate
+    token_queue: q_mod.Queue[str | None] = q_mod.Queue()
+    audio_queue: q_mod.Queue[Any] = q_mod.Queue()
+
+    def tts_worker() -> None:
+        def _gen():
+            while True:
+                tok = token_queue.get()
+                if tok is None:
+                    return
+                yield tok
+        try:
+            for chunk in tts.stream(_gen()):
+                audio_queue.put(chunk)
+        except Exception as e:  # noqa: BLE001
+            _log.error("TTS error: %s", e)
+        finally:
+            audio_queue.put(None)
+
+    tts_thread = threading.Thread(target=tts_worker, daemon=True)
+    tts_thread.start()
+
+    def play_blocking() -> None:
+        while True:
+            try:
+                chunk = audio_queue.get(timeout=10.0)
+            except q_mod.Empty:
+                _log.warning("TTS audio queue timeout — TTS thread may have crashed")
+                return
+            if chunk is None:
+                return
+            _drive_orb_speaking(chunk.audio, sample_rate)  # trace loudness onto the orb
+            play_audio(chunk.audio, sample_rate=sample_rate, blocking=True)
+
+    reply_tokens: list[str] = []
+    if use_tools:
+        # Cloud function-calling needs the whole reply (not token-streamed); fall back
+        # to the local streaming path if the cloud round-trip fails (offline/key).
+        try:
+            reply_text = await voice_agent_run(text, history=history)
+            reply_tokens = [reply_text]
+            token_queue.put(reply_text)
+            token_queue.put(None)
+            play_blocking()
+        except Exception as e:  # noqa: BLE001
+            _log.warning("text tool path failed (%s) — falling back to local", e)
+            use_tools = False
+
+    if not use_tools:
+        # Overlap: speak the first sentence while the rest still generates.
+        playback_thread = threading.Thread(target=play_blocking, daemon=True)
+        playback_thread.start()
+        async for token in voice_stream(text, history=history, tier=Tier.LOCAL):
+            reply_tokens.append(token)
+            token_queue.put(token)
+        token_queue.put(None)
+        playback_thread.join(timeout=30.0)
+
+    reply = "".join(reply_tokens).strip()
+    tts_thread.join(timeout=5.0)
+    history.append({"role": "user", "content": text})
+    history.append({"role": "assistant", "content": reply})
+    persist_turn_async(text, reply)  # typed input is always high-confidence
+    return reply
+
+
 async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None:
     """Hold SPACE to record, release to get a spoken answer."""
     from pynput import keyboard
@@ -446,6 +536,55 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
         from friday.mcp.bridge import close_bridge
         await close_bridge()
         console.print("\n[dim]Voice mode off.[/dim]")
+
+
+async def text_presence_loop(history: list[dict[str, Any]] | None = None) -> None:
+    """Type to Sutra; she answers aloud while the orb pulses. Mic-free presence.
+
+    The full spoken + visual experience without a headset: read a typed line, run
+    the same agent→TTS→orb path as the voice loops, show the reply, repeat. Pair
+    with `--orb` for the on-screen presence. Ctrl+C, EOF, or 'exit' to leave.
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console()
+    if history is None:
+        history = []
+
+    console.print(
+        "[bold cyan]Sutra presence[/bold cyan] (text) — type to her, she answers "
+        "aloud  [bold]Ctrl+C[/bold] to exit"
+    )
+    console.print("[dim]Pre-warming models…[/dim]", end="\r")
+    await prewarm()
+    await _connect_mcp(console)
+    console.print("[dim]Ready.                [/dim]")
+    orb_push("idle")
+
+    try:
+        while True:
+            orb_push("listening")  # presence settles to its calm listening state
+            try:
+                text = (await asyncio.to_thread(console.input, "[bold]you ›[/bold] ")).strip()
+            except EOFError:
+                break
+            if not text:
+                continue
+            if text.lower() in ("exit", "quit", ":q"):
+                break
+            console.print("[cyan]thinking…[/cyan]", end="\r")
+            reply = await process_text(text, history)
+            if reply:
+                console.print(Panel(reply, title="sutra", border_style="cyan", expand=False))
+            await asyncio.sleep(0.05)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        orb_push("idle")  # reset the orb when the presence loop exits
+        from friday.mcp.bridge import close_bridge
+        await close_bridge()
+        console.print("\n[dim]Presence off.[/dim]")
 
 
 def _utterance_complete(stt_result: Any) -> bool:
