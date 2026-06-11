@@ -59,6 +59,54 @@ def looks_like_noise(text: str) -> bool:
     singles = sum(1 for w in words if len(w) == 1)
     return singles >= 3 and singles / len(words) >= 0.5
 
+
+def looks_low_value(text: str) -> bool:
+    """True if an episode is activity telemetry or dialogue narration, not a fact.
+
+    Ambient capture and the memory extractor emit two kinds of episode that carry
+    no recall value yet flood the graph and out-rank real facts (measured: ~60% of
+    episodes, tanking recall hit@1 — a query for "FalkorDB" returned YouTube
+    titles): activity/usage telemetry ("used xfdesktop", "spent 7m in firefox-esr
+    on <video>") and conversational narration ("The User is talking to Sutra",
+    "Sutra responded to the user"). Deliberately conservative — anything stating a
+    real fact ("Sutra uses Kokoro for TTS", "Sarjan edited store.py") must pass.
+    Pairs with `looks_like_noise` (STT garbage); used by
+    `scripts/clean_memory.py --lowvalue` and, at capture time, to refuse the write.
+    """
+    t = " ".join(text.split()).strip().lower()
+    if not t:
+        return False
+    # A verbatim turn ("User: … Sutra: …") may hold a user-stated fact ("my cat is
+    # named Machai") — never auto-flag those; the extractor mines them for entities.
+    if "user:" in t and "sutra:" in t:
+        return False
+    # Activity / usage telemetry — ambient app time-tracking, never a fact.
+    if re.search(r"\bspent (about|roughly) \d+", t) or re.search(
+        r"\b(used|using)\b.*\b(firefox|chrome|terminal|xfdesktop|browser|"
+        r"mozilla|application)\b",
+        t,
+    ):
+        return True
+    if re.search(r"\bfor about \d+\s*(seconds?|minutes?|hours?)\b", t):
+        return True
+    # Entertainment / web browsing telemetry.
+    if "youtube" in t or "firefox" in t or re.search(r"\(\d{3,}\)\s", t):
+        return True
+    # Third-person dialogue narration the extractor wrote instead of a fact.
+    if re.match(
+        r"(the\s+)?user\s+(mention|attempt|comment|said|say|request|ask|greet|"
+        r"tell|told|talk|want|interact)",
+        t,
+    ) or "talking to sutra" in t:
+        return True
+    if re.search(
+        r"\bsutra\s+(responded|answered|replied|greeted|acknowledged|intends?|"
+        r"is pondering|pondered|provided|mentioned that|is upgrading)\b",
+        t,
+    ):
+        return True
+    return False
+
 _OLLAMA_BASE = os.getenv("GRAPHITI_LLM_BASE_URL", "http://localhost:11434/v1")
 _LLM_API_KEY = os.getenv("GRAPHITI_LLM_API_KEY", "ollama")  # dummy for Ollama
 # qwen2.5:14b for extraction — gemma3:4b drops relationships, qwen2.5:7b leaks

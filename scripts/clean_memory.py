@@ -1,20 +1,28 @@
 """Find — and only with --apply, delete — junk or duplicate episodes.
 
-Two scans, both PREVIEW BY DEFAULT (delete nothing; look, then re-run --apply):
+Three scans, all PREVIEW BY DEFAULT (delete nothing; look, then re-run --apply):
 
   noise  (default)  Far-field / echoing voice turns transcribe as garbage
                     ("M-H-H-H-H", repeated chars) and get persisted. Flags
                     episodes whose user transcript reads like noise.
+
+  --lowvalue        Ambient activity telemetry ("spent 8m in Terminal…") and
+                    dialogue narration ("The User is talking to Sutra") — coherent
+                    but factless episodes that flood the graph and out-rank real
+                    facts (measured: ~60% of episodes, tanking recall hit@1).
+                    Never flags a verbatim "User:/Sutra:" turn (can hold a fact).
 
   --dupes           Near-duplicate episodes: re-seeding writes the same fact as a
                     fresh node, and ambient capture can echo. Clusters episodes by
                     token-set (Jaccard) similarity and keeps one per cluster — no
                     embedder needed, so it runs offline against FalkorDB alone.
 
-    python scripts/clean_memory.py                 # preview noise
-    python scripts/clean_memory.py --apply          # delete noise
-    python scripts/clean_memory.py --dupes          # preview near-duplicates
-    python scripts/clean_memory.py --dupes --apply  # delete extra copies
+    python scripts/clean_memory.py                    # preview noise
+    python scripts/clean_memory.py --apply             # delete noise
+    python scripts/clean_memory.py --lowvalue          # preview ambient/narration
+    python scripts/clean_memory.py --lowvalue --apply  # delete low-value episodes
+    python scripts/clean_memory.py --dupes             # preview near-duplicates
+    python scripts/clean_memory.py --dupes --apply     # delete extra copies
 
 Mirrors `forget`'s preview-first safety: deletion is destructive and irreversible.
 """
@@ -24,7 +32,7 @@ import argparse
 import asyncio
 import re
 
-from friday.memory.store import get_store, looks_like_noise
+from friday.memory.store import get_store, looks_like_noise, looks_low_value
 
 # Conversation episodes are "User: <transcript>\nSutra: <reply>". Judge the user's
 # transcript; for non-conversation episodes (seeded facts, ambient) judge the whole.
@@ -99,6 +107,27 @@ async def _clean_noise(store, episodes: list[dict[str, str]], apply: bool) -> in
     return 0
 
 
+async def _clean_lowvalue(store, episodes: list[dict[str, str]], apply: bool) -> int:
+    junk = [e for e in episodes if looks_low_value(e["content"])]
+    print(
+        f"Scanned {len(episodes)} episodes — {len(junk)} are low-value "
+        f"(activity telemetry / dialogue narration, no recall value):\n"
+    )
+    for e in junk:
+        snippet = " ".join(e["content"].split())[:80]
+        print(f"  [{e['uuid'][:8]}] {snippet!r}")
+    if not junk:
+        print("\nNothing to clean. ✓")
+        return 0
+    if not apply:
+        print(f"\nPreview only — {len(junk)} episode(s) would be removed. Re-run with --apply.")
+        return 0
+    print(f"\nDeleting {len(junk)} episode(s)…")
+    removed = sum([await store.remove_episode(e["uuid"]) for e in junk])
+    print(f"Removed {removed}/{len(junk)}.")
+    return 0
+
+
 async def _clean_dupes(
     store, episodes: list[dict[str, str]], threshold: float, apply: bool
 ) -> int:
@@ -132,6 +161,11 @@ async def main() -> int:
     ap = argparse.ArgumentParser(description="Remove junk or duplicate episodes from memory.")
     ap.add_argument("--apply", action="store_true", help="actually delete (default: preview)")
     ap.add_argument("--dupes", action="store_true", help="scan near-duplicates instead of noise")
+    ap.add_argument(
+        "--lowvalue",
+        action="store_true",
+        help="scan low-value ambient telemetry / dialogue narration instead of noise",
+    )
     ap.add_argument("--threshold", type=float, default=0.9, help="dup similarity cutoff (0–1)")
     args = ap.parse_args()
 
@@ -143,6 +177,8 @@ async def main() -> int:
 
     if args.dupes:
         return await _clean_dupes(store, episodes, args.threshold, args.apply)
+    if args.lowvalue:
+        return await _clean_lowvalue(store, episodes, args.apply)
     return await _clean_noise(store, episodes, args.apply)
 
 
