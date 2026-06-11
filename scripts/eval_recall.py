@@ -26,6 +26,7 @@ from friday.memory.store import get_store
 # returned fact strings. Each targets a distinct seeded fact; keep these phrased
 # the way a user would actually ask, not echoing the stored sentence.
 PROBES: list[tuple[str, str]] = [
+    # Original 8 — kept verbatim so the hit@k baseline stays comparable over time.
     ("Where is Sarjan from?", "sudbury"),
     ("Who does Sarjan work for?", "scale"),
     ("What is Sarjan building?", "sutra"),
@@ -34,6 +35,20 @@ PROBES: list[tuple[str, str]] = [
     ("What does the voice loop use for text to speech?", "kokoro"),
     ("What does the voice loop use for speech to text?", "whisper"),
     ("What operating system does the machine run?", "linux"),
+    # Expanded set — each targets a distinct re-seeded canonical fact. Substrings
+    # are specific ("20-core", "151 gb") so a loose token can't false-match.
+    ("What province does Sarjan live in?", "ontario"),
+    ("What is Sarjan's job?", "engineer"),
+    ("What kind of assistant is Sutra?", "voice-native"),
+    ("What Linux kernel version runs on the machine?", "6.19"),
+    ("What GPU does the machine have?", "3080"),
+    ("How much VRAM does the GPU have?", "16384"),
+    ("How much RAM does the machine have?", "33 gb"),
+    ("How many CPU cores does the machine have?", "20-core"),
+    ("How big is the disk?", "151 gb"),
+    ("What graph framework powers Sutra's memory?", "graphiti"),
+    ("What does the memory layer use to store vectors?", "qdrant"),
+    ("What model runs the voice handler?", "gemma"),
 ]
 
 
