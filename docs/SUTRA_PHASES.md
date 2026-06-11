@@ -147,7 +147,7 @@ mic round-trip measurement logged to voice_latency.jsonl.
 | Use Sutra for real daily tasks for 5 consecutive days | ⬜ |
 | Latency profiled and p50/p95 logged | ⬜ |
 | Top 3 friction points identified and fixed | ⬜ |
-| Confirmation flow tested on irreversible actions | ⬜ |
+| Confirmation flow tested on irreversible actions | ✅ audited + locked 06-11 — enforcement correct (declines unless approved) + classification invariant (`scripts/audit_confirmation.py`, CI guard); 0 false-negatives across skills, MCP, and delegation |
 | Memory recall quality assessed | ✅ `scripts/eval_recall.py` — hit@1 60% / hit@3 85% / hit@5 100% (06-11, after narration-edge purge + atomic reseed; was 38/75/88 on 06-06) |
 | Budget tracking validated against real API bills | ⬜ |
 | Text + voice latency/cost instrumented (`sutra stats` p50/p95 + spend) | ✅ 06-06 |
