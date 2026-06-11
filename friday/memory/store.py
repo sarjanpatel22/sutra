@@ -107,6 +107,51 @@ def looks_low_value(text: str) -> bool:
         return True
     return False
 
+
+def looks_like_narration_fact(fact: str) -> bool:
+    """True if an *extracted fact* (a RELATES_TO edge) is dialogue narration.
+
+    `looks_low_value` gates whole *episodes*, but a verbatim "User:/Sutra:" turn
+    is deliberately allowed through (it may hold a real fact) — and Graphiti's
+    extractor then mines that small-talk into edge-level facts that describe the
+    act of conversing: "Sutra responded to the user", "User asked Sutra what 17
+    times 23 is", "Let's take a moment, Sarjan". Measured at 22% of all edges,
+    they carry no recall value yet out-rank real facts. This flags them for
+    `scripts/clean_memory.py --narration`, which deletes the edge (not the
+    episode). Conservative: a real capability/profile fact must pass —
+    "Sutra uses Kokoro for TTS", "Sutra's memory layer is built on FalkorDB",
+    "Sarjan is a software engineer" all return False (possessive "Sutra's" and
+    non-communication verbs like uses/runs/is-built are not narration).
+    """
+    t = " ".join(fact.split()).strip().lower()
+    if not t:
+        return False
+    # "Sutra <communication verb> …" — narration. NOTE the trailing space in the
+    # anchor: "sutra's …" (possessive, a real fact) has no space so never matches.
+    if re.match(
+        r"sutra (responded?|response|answer(ed|s)?|repl(y|ied|ies)|greeted|"
+        r"acknowledged?|address(es|ed)?|offer(s|ed)?|express(es|ed)?|"
+        r"suggest(s|ed)?|welcomed?|told|tells?|intend(s|ed)?|provided|"
+        r"mention(s|ed)?|ponder(s|ed)?|thank(s|ed)?|ask(s|ed)?|said|says?|"
+        r"is (pondering|helping|responding|addressing))\b",
+        t,
+    ):
+        return True
+    # "(The) User … <communication verb> …" — narration.
+    if re.match(
+        r"(the )?user\b.{0,40}?\b(ask(ed|s)?|said|says?|mention(ed|s)?|"
+        r"attempt(s|ed)?|comment(ed|s)?|request(ed|s)?|greet(ed|s)?|told|tells?|"
+        r"talk(ed|s)?|want(ed|s)?|interact(s|ed)?|express(ed|es)?|thank(ed|s)?|"
+        r"pinpoint)\b",
+        t,
+    ):
+        return True
+    # Conversational filler the extractor wrote as a "fact".
+    if "talking to sutra" in t or "take a moment" in t:
+        return True
+    return False
+
+
 _OLLAMA_BASE = os.getenv("GRAPHITI_LLM_BASE_URL", "http://localhost:11434/v1")
 _LLM_API_KEY = os.getenv("GRAPHITI_LLM_API_KEY", "ollama")  # dummy for Ollama
 # qwen2.5:14b for extraction — gemma3:4b drops relationships, qwen2.5:7b leaks
@@ -346,6 +391,59 @@ class MemoryStore:
         except Exception as e:  # noqa: BLE001
             logger.warning("memory.remove_episode %s failed: %s", uuid, e)
             return False
+
+    def list_facts(self) -> list[dict[str, str]]:
+        """Every RELATES_TO fact edge as (uuid, fact) — for offline cleanup tools.
+
+        Facts are edge-level (what recall returns), distinct from list_episodes'
+        source episodes. Returns [] if FalkorDB is unreachable.
+        """
+        try:
+            from falkordb import FalkorDB
+
+            g = FalkorDB(host=_FALKOR_HOST, port=_FALKOR_PORT).select_graph(_GROUP_ID)
+            res = g.query(
+                "MATCH ()-[r:RELATES_TO]->() WHERE r.group_id = $g "
+                "RETURN r.uuid, r.fact",
+                {"g": _GROUP_ID},
+            )
+            return [{"uuid": r[0] or "", "fact": r[1] or ""} for r in res.result_set if r[1]]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("memory.list_facts failed: %s", e)
+            return []
+
+    def remove_fact(self, uuid: str) -> bool:
+        """Delete one fact edge by uuid (leaves the episode + entities intact).
+
+        Surgical counterpart to remove_episode: drops a single narration/junk
+        RELATES_TO edge without removing the episode it came from (which may hold
+        good facts too). Sync — talks straight to FalkorDB. False if unreachable.
+        """
+        if not uuid:
+            return False
+        try:
+            from falkordb import FalkorDB
+
+            g = FalkorDB(host=_FALKOR_HOST, port=_FALKOR_PORT).select_graph(_GROUP_ID)
+            g.query("MATCH ()-[r:RELATES_TO {uuid: $u}]->() DELETE r", {"u": uuid})
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("memory.remove_fact %s failed: %s", uuid, e)
+            return False
+
+    def sweep_narration(self) -> int:
+        """Delete every edge-level dialogue-narration fact; return the count removed.
+
+        Deterministic and conservative (see looks_like_narration_fact) — only
+        removes proven narration edges, never real facts or episodes — so it is
+        safe to run repeatedly. Backs `scripts/clean_memory.py --narration --apply`
+        and the daemon's opt-in hygiene sweep. Sync: talks straight to FalkorDB.
+        """
+        removed = 0
+        for f in self.list_facts():
+            if looks_like_narration_fact(f["fact"]) and self.remove_fact(f["uuid"]):
+                removed += 1
+        return removed
 
     def reset(self) -> None:
         """Drop the cached connection so the next initialize() reconnects.

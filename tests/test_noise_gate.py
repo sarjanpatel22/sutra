@@ -6,7 +6,11 @@ deliberately conservative backstop; plausible-but-wrong single words are caught
 upstream by STT confidence, not here.
 """
 
-from friday.memory.store import looks_like_noise, looks_low_value
+from friday.memory.store import (
+    looks_like_narration_fact,
+    looks_like_noise,
+    looks_low_value,
+)
 
 
 def test_empty_and_whitespace_are_noise():
@@ -92,3 +96,41 @@ def test_verbatim_turns_are_never_low_value():
 
 def test_low_value_empty_is_false():
     assert looks_low_value("") is False  # nothing to flag; not a deletable episode
+
+
+# ── looks_like_narration_fact: edge-level dialogue narration, not knowledge ──────
+def test_narration_facts_are_flagged():
+    # Real edges purged from the graph (recall had no use for them, out-ranked facts).
+    for junk in (
+        "Sutra responded to the user.",
+        "Sutra offers to assist User with their order.",
+        "Sutra addresses Sarjan.",
+        "Sutra expressed pleasure at speaking with the user.",
+        "Sutra told User that 17 times 23 is 391.",
+        "Sutra intends to scan for Hedra as per the user's request.",
+        "User asked Sutra what 17 times 23 is.",
+        "The user said hello to Sutra.",
+        "User commented on the Reitutra system.",
+        "The User is talking to Sutra.",
+        "Let's take a moment, Sarjan.",
+    ):
+        assert looks_like_narration_fact(junk) is True, junk
+
+
+def test_real_facts_are_not_narration():
+    # Capability / profile / spec facts share the "Sutra"/"Sarjan" subject but are
+    # NOT communication verbs — and the atomic descriptor we seed must survive.
+    for fact in (
+        "Sutra is a voice-native ambient AI assistant.",
+        "Sutra's memory layer is built on Graphiti and FalkorDB, with Qdrant for vectors.",
+        "Sutra uses qwen2.5:14b for memory extraction.",
+        "Sutra runs Ollama locally for the fast voice path.",
+        "Sarjan is a software engineer at Acme Corp.",
+        "Sarjan's GPU has 16 GB of VRAM (16384 MB).",
+        "Sarjan is from Sudbury, Ontario, Canada.",
+    ):
+        assert looks_like_narration_fact(fact) is False, fact
+
+
+def test_narration_empty_is_false():
+    assert looks_like_narration_fact("") is False

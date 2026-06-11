@@ -102,10 +102,30 @@ class AmbientDaemon:
             )
         return wrote
 
+    async def _sweep_if_enabled(self) -> int:
+        """Opt-in graph hygiene: purge edge-level narration facts (off by default).
+
+        Conversation/voice turns get extracted into narration edges that out-rank
+        real facts in recall; this sweeps them on the flush cadence when
+        AMBIENT_SWEEP_NARRATION=1. No-op (and no DB touch) when disabled.
+        """
+        if not config.SWEEP_NARRATION:
+            return 0
+        try:
+            n = await asyncio.to_thread(get_store().sweep_narration)
+            if n:
+                log.info("swept %d narration fact(s)", n)
+            return n
+        except Exception as e:  # noqa: BLE001
+            log.warning("narration sweep failed: %s", e)
+            return 0
+
     async def run_once(self) -> int:
         """One poll + flush — handy for testing (window needs the loop to accumulate)."""
         self._poll()
-        return await self.flush()
+        n = await self.flush()
+        await self._sweep_if_enabled()
+        return n
 
     async def run(self) -> None:
         if not config.ENABLED:
@@ -125,8 +145,12 @@ class AmbientDaemon:
                 self._poll()
                 if time.monotonic() - last_flush >= config.FLUSH_INTERVAL_S:
                     n = await self.flush()
+                    swept = await self._sweep_if_enabled()
                     last_flush = time.monotonic()
-                    print(f"  · flushed {n} episode(s) to memory")
+                    msg = f"  · flushed {n} episode(s) to memory"
+                    if swept:
+                        msg += f"  ·  swept {swept} narration fact(s)"
+                    print(msg)
                 await asyncio.sleep(config.POLL_INTERVAL_S)
         except (KeyboardInterrupt, asyncio.CancelledError):
             print("\n  flushing before exit…")

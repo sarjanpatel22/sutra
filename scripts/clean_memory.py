@@ -1,6 +1,6 @@
 """Find — and only with --apply, delete — junk or duplicate episodes.
 
-Three scans, all PREVIEW BY DEFAULT (delete nothing; look, then re-run --apply):
+Four scans, all PREVIEW BY DEFAULT (delete nothing; look, then re-run --apply):
 
   noise  (default)  Far-field / echoing voice turns transcribe as garbage
                     ("M-H-H-H-H", repeated chars) and get persisted. Flags
@@ -12,15 +12,23 @@ Three scans, all PREVIEW BY DEFAULT (delete nothing; look, then re-run --apply):
                     facts (measured: ~60% of episodes, tanking recall hit@1).
                     Never flags a verbatim "User:/Sutra:" turn (can hold a fact).
 
+  --narration       Edge-level dialogue-narration *facts* the extractor mined from
+                    those allowed "User:/Sutra:" turns ("Sutra responded to the
+                    user", "User asked Sutra what 17 times 23 is", "Let's take a
+                    moment, Sarjan") — 22% of edges, out-ranking real facts.
+                    Deletes the fact edge, leaving the source episode intact.
+
   --dupes           Near-duplicate episodes: re-seeding writes the same fact as a
                     fresh node, and ambient capture can echo. Clusters episodes by
                     token-set (Jaccard) similarity and keeps one per cluster — no
                     embedder needed, so it runs offline against FalkorDB alone.
 
-    python scripts/clean_memory.py                    # preview noise
+    python scripts/clean_memory.py                     # preview noise
     python scripts/clean_memory.py --apply             # delete noise
     python scripts/clean_memory.py --lowvalue          # preview ambient/narration
     python scripts/clean_memory.py --lowvalue --apply  # delete low-value episodes
+    python scripts/clean_memory.py --narration         # preview narration facts
+    python scripts/clean_memory.py --narration --apply # delete narration facts
     python scripts/clean_memory.py --dupes             # preview near-duplicates
     python scripts/clean_memory.py --dupes --apply     # delete extra copies
 
@@ -32,7 +40,12 @@ import argparse
 import asyncio
 import re
 
-from friday.memory.store import get_store, looks_like_noise, looks_low_value
+from friday.memory.store import (
+    get_store,
+    looks_like_narration_fact,
+    looks_like_noise,
+    looks_low_value,
+)
 
 # Conversation episodes are "User: <transcript>\nSutra: <reply>". Judge the user's
 # transcript; for non-conversation episodes (seeded facts, ambient) judge the whole.
@@ -128,6 +141,34 @@ async def _clean_lowvalue(store, episodes: list[dict[str, str]], apply: bool) ->
     return 0
 
 
+async def _clean_narration(store, apply: bool) -> int:
+    """Purge edge-level dialogue-narration facts that out-rank real ones in recall.
+
+    Operates on facts (RELATES_TO edges), not episodes: the small-talk turns that
+    spawn this junk are verbatim "User:/Sutra:" episodes that the episode gate
+    deliberately keeps. We delete just the junk edge, leaving the episode intact.
+    """
+    facts = store.list_facts()
+    junk = [f for f in facts if looks_like_narration_fact(f["fact"])]
+    pct = 100 * len(junk) // max(len(facts), 1)
+    print(
+        f"Scanned {len(facts)} facts — {len(junk)} are dialogue narration "
+        f"({pct}%, no recall value, out-rank real facts):\n"
+    )
+    for f in junk:
+        print(f"  [{f['uuid'][:8]}] {f['fact']!r}")
+    if not junk:
+        print("\nNothing to clean. ✓")
+        return 0
+    if not apply:
+        print(f"\nPreview only — {len(junk)} fact(s) would be removed. Re-run with --apply.")
+        return 0
+    print(f"\nDeleting {len(junk)} narration fact(s)…")
+    removed = sum(store.remove_fact(f["uuid"]) for f in junk)
+    print(f"Removed {removed}/{len(junk)}.")
+    return 0
+
+
 async def _clean_dupes(
     store, episodes: list[dict[str, str]], threshold: float, apply: bool
 ) -> int:
@@ -166,10 +207,19 @@ async def main() -> int:
         action="store_true",
         help="scan low-value ambient telemetry / dialogue narration instead of noise",
     )
+    ap.add_argument(
+        "--narration",
+        action="store_true",
+        help="scan edge-level dialogue-narration facts (deletes the fact, not the episode)",
+    )
     ap.add_argument("--threshold", type=float, default=0.9, help="dup similarity cutoff (0–1)")
     args = ap.parse_args()
 
     store = get_store()
+
+    if args.narration:  # operates on facts (edges), not episodes
+        return await _clean_narration(store, args.apply)
+
     episodes = store.list_episodes()
     if not episodes:
         print("No episodes found (FalkorDB down, or empty graph).")
