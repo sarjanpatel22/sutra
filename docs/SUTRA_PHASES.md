@@ -208,8 +208,8 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 | Open Interpreter sandboxed with confirmation gate | ⬜ |
 | xdotool skills (X11 confirmed) | ⬜ |
 | `web_extract` skill (scrape structured data) | ✅ 06-11 — CSS-selector matches (text/attr) or headings+links overview, read-only |
-| `fill_form` skill (Playwright) | ⬜ |
-| Irreversible web actions always confirmed | ⬜ |
+| `fill_form` skill (Playwright) | ✅ 06-11 — fills CSS-selector fields + optional submit; **gated** (auto_confirm=False), verified live (httpbin POST round-trip) |
+| Irreversible web actions always confirmed | ✅ 06-11 — `fill_form` is auto_confirm=False → routes through the same confirm gate as write_file/run_command (sub-agents decline it) |
 
 **Exit criteria:** Sutra can browse and act on a site you specify.
 
