@@ -99,30 +99,38 @@ async def close_session() -> None:
     name="browser_open",
     description=(
         "Open a URL in Sutra's own persistent, visible browser — the same browser "
-        "`web_task` drives. Use it to show the user a page, or so they can log into a "
-        "site ONCE by hand in that window; the login is then reused by later web tasks "
-        "(never ask the user for a password). Reversible — just navigates."
+        "`web_task` drives. Reuses your Firefox login for the site by default, so she's "
+        "already signed in. Use it to show the user a page, or to land on a site before a "
+        "web_task. Reversible — just navigates."
     ),
     auto_confirm=True,
     timeout_s=45,
 )
-async def browser_open(url: str) -> dict[str, Any]:
+async def browser_open(url: str, use_my_login: bool = True) -> dict[str, Any]:
     """Open a page in Sutra's browser.
 
     url: An http:// or https:// URL to open.
+    use_my_login: Reuse your Firefox login for this site (default true).
     """
     if not _http_url(url):
         return {"error": "only http(s) URLs are allowed", "url": url}
     try:
         page = await get_page()
+        if use_my_login:
+            try:
+                from friday.skills.firefox_login import apply_firefox_login, domain_of
+
+                await apply_firefox_login(page.context, domain_of(url))
+            except Exception:  # noqa: BLE001 — login reuse is best-effort
+                pass
         await page.goto(url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
         return {
             "status": "ok",
             "url": page.url,
             "title": await page.title(),
             "note": (
-                "Opened in Sutra's browser. If the site needs a login, sign in here "
-                "once — web_task will reuse this session."
+                "Opened in Sutra's browser, reusing your Firefox login where available. "
+                "If it still shows logged-out, sign in here once and it'll stick."
             ),
         }
     except Exception as e:  # noqa: BLE001 — surface a clean error

@@ -114,12 +114,16 @@ async def _step(page: Any, handles: list[Any], action: dict[str, Any]) -> str | 
     auto_confirm=False,
     timeout_s=240,
 )
-async def web_task(goal: str, start_url: str, max_steps: int = 12) -> dict[str, Any]:
+async def web_task(
+    goal: str, start_url: str, max_steps: int = 12, use_my_login: bool = True
+) -> dict[str, Any]:
     """Drive Sutra's browser autonomously toward a goal.
 
     goal: What to accomplish or find (e.g. "open the first room and start it").
     start_url: The http(s) page to start from.
     max_steps: Maximum autonomous steps before giving up (1-25, default 12).
+    use_my_login: Reuse your Firefox login for this site (default true) so she's
+        signed in without a second login.
     """
     goal = goal.strip()
     if not goal:
@@ -130,6 +134,13 @@ async def web_task(goal: str, start_url: str, max_steps: int = 12) -> dict[str, 
 
     try:
         page = await get_page()
+        if use_my_login:  # share your Firefox session before loading the site
+            try:
+                from friday.skills.firefox_login import apply_firefox_login, domain_of
+
+                await apply_firefox_login(page.context, domain_of(start_url))
+            except Exception:  # noqa: BLE001 — login reuse is best-effort, never blocks
+                pass
         await page.goto(start_url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001 — browser launch / first nav failed
         return {"error": f"could not start Sutra's browser at {start_url}: {e}"}
