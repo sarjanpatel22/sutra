@@ -65,6 +65,44 @@ async def write_file(path: str, content: str) -> dict[str, str]:
 
 
 @skill(
+    name="edit_file",
+    description=(
+        "Edit a file by replacing an exact text snippet with new text — targeted, "
+        "not a whole-file overwrite. The snippet must match exactly once (or pass "
+        "replace_all). IRREVERSIBLE — requires confirmation."
+    ),
+    auto_confirm=False,  # mutates a file in place — always confirm
+    timeout_s=5,
+)
+async def edit_file(
+    path: str, old_text: str, new_text: str, replace_all: bool = False
+) -> dict[str, str | int]:
+    """Replace an exact snippet inside an existing file (the Cline/Continue pattern:
+    precise diff-sized edits the user can eyeball, instead of rewriting the file).
+
+    path: Absolute or ~ -relative path to the file.
+    old_text: Exact existing text to replace (must match exactly once unless replace_all).
+    new_text: Replacement text.
+    replace_all: Replace every occurrence instead of requiring a unique match.
+    """
+    p = _safe_path(path)
+    if not p.is_file():
+        return {"error": f"File not found: {p}"}
+    if not old_text:
+        return {"error": "old_text is empty — for new content use write_file"}
+    if old_text == new_text:
+        return {"error": "old_text and new_text are identical"}
+    content = p.read_text(errors="replace")
+    n = content.count(old_text)
+    if n == 0:
+        return {"error": "old_text not found in file — it must match exactly"}
+    if n > 1 and not replace_all:
+        return {"error": f"old_text matches {n} times — make it unique or set replace_all"}
+    p.write_text(content.replace(old_text, new_text))
+    return {"status": "ok", "path": str(p), "replacements": n if replace_all else 1}
+
+
+@skill(
     name="list_directory",
     description="List files and directories at a given path.",
     auto_confirm=True,
