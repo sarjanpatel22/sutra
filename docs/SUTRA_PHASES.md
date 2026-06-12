@@ -204,7 +204,7 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 | Work item | Done? |
 |-----------|-------|
 | Playwright installed + `browse_url` skill | ✅ 06-11 — Playwright 1.60 + chromium; read-only `browse_url` (JS-rendered pages, content-container extraction, http(s)-only, auto-runs) |
-| browser-use wired for autonomous web actions | ✅ 06-11 — `web_task` = browser-use *pattern* over our Playwright + free router (NOT the heavy pkg/langchain); observe→LLM action→execute loop, **gated**, $0; verified live (scripted click→nav + real-LLM read) |
+| browser-use wired for autonomous web actions | ✅ 06-11, **upgraded 06-12** — `web_task` = browser-use *pattern* over Playwright + free router (NOT the heavy pkg/langchain); observe→LLM action→execute loop, **gated**, $0. 06-12: now drives **Sutra's own persistent, visible browser** (`browser_session.py`, on-disk profile) instead of a hidden headless tab — log in once by hand, it reuses the session; added scroll + login-wall handling + main-content observation. Live-verified headed on the GPU: autonomous type→scroll→click→navigate→answer (Wikipedia search→article→correct year), $0 |
 | Open Interpreter sandboxed with confirmation gate | ✅ 06-11 — gated `run_python` (isolated `python -I` subprocess + timeout), the pattern not the heavy pkg; the agent's LLM writes the code |
 | xdotool skills (X11 confirmed) | ✅ 06-11 — `active_window` (read) + **gated** type_text/press_key/mouse_click (auto_confirm=False) |
 | `web_extract` skill (scrape structured data) | ✅ 06-11 — CSS-selector matches (text/attr) or headings+links overview, read-only |

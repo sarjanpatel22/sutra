@@ -1,14 +1,15 @@
-"""Autonomous web agent: the browser-use *pattern* over our Playwright + free router.
+"""Autonomous web agent: Sutra drives her own visible browser toward a goal.
 
-Like the sub-agent layer takes the Claude-Agent-SDK pattern over our own router
-(not the SDK), this takes browser-use's idea — show the LLM the page's interactive
-elements, let it pick one action, execute, repeat — without the heavy browser-use +
-langchain dependency or its paid-OpenAI default. The action LLM is our free MEDIUM
-tier (Groq/Gemini), so the whole loop stays $0.
+browser-use's *pattern* — show the model the page's interactive elements, let it
+pick one action, execute, repeat — over our Playwright + free MEDIUM router, with no
+heavy browser-use/langchain dependency and no paid-OpenAI default ($0). Unlike the
+first version it acts in Sutra's **persistent, visible** browser
+(`friday.skills.browser_session`), so it's already logged in (you signed in once by
+hand) and you watch it work on screen instead of in a hidden headless tab.
 
-It can click and submit anything over several autonomous steps, so `web_task` is
-auto_confirm=False — the user confirms the whole run up front (and a sub-agent
-declines it), exactly like fill_form / run_command. Reuses browse.py's render helper.
+It clicks, types, and submits over several autonomous steps, so `web_task` is
+auto_confirm=False — you approve the run up front (and a sub-agent declines it),
+exactly like fill_form / run_command.
 """
 
 from __future__ import annotations
@@ -18,23 +19,27 @@ import re
 from typing import Any
 
 from friday.core.router import Tier, complete
-from friday.skills.browse import _NAV_TIMEOUT_MS, _http_url, _readable, _render
+from friday.skills.browse import _NAV_TIMEOUT_MS, _best_text, _http_url
+from friday.skills.browser_session import get_page
 from friday.skills.registry import skill
 
-_AGENT_PROMPT = """You are a web automation agent controlling a real browser. Each turn \
-you see the current page (URL, title, visible text) and a numbered list of its \
+_AGENT_PROMPT = """You are Sutra, driving a real web browser to accomplish a goal. \
+Each turn you see the page (URL, title, visible text) and a numbered list of its \
 interactive elements. Reply with ONLY one JSON object — no prose:
   {"action":"click","index":N}             click element N
   {"action":"type","index":N,"text":"…"}   type text into element N
+  {"action":"scroll","amount":700}         scroll down (negative = up) to reveal more
   {"action":"goto","url":"https://…"}      navigate to a URL
   {"action":"done","answer":"…"}           finish and answer the goal
-Use the fewest steps. The instant the page text already answers the goal, use "done". \
-Indices refer ONLY to the current list."""
+Rules: take the fewest steps. Prefer clicking the listed elements over guessing URLs. \
+The instant the page text already answers the goal, use "done". If you hit a \
+login/sign-in wall with no way through, use "done" and say the user must log in to \
+Sutra's browser first. Indices refer ONLY to the current list."""
 
-_OBSERVE_SELECTOR = "a[href], button, input, textarea, select, [role=button]"
+_OBSERVE_SELECTOR = "a[href], button, input, textarea, select, [role=button], [onclick]"
 
 
-async def _observe(page: Any, cap: int = 35) -> tuple[list[Any], list[str]]:
+async def _observe(page: Any, cap: int = 40) -> tuple[list[Any], list[str]]:
     """Indexed list of the page's visible interactive elements: (handles, lines)."""
     handles: list[Any] = []
     lines: list[str] = []
@@ -70,81 +75,98 @@ def _parse_action(text: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) and "action" in obj else None
 
 
+async def _step(page: Any, handles: list[Any], action: dict[str, Any]) -> str | None:
+    """Execute one parsed action against the page. Returns an error string or None."""
+    kind = action.get("action")
+    try:
+        if kind == "click":
+            await handles[int(action["index"])].click(timeout=8000)
+        elif kind == "type":
+            await handles[int(action["index"])].fill(str(action.get("text", "")))
+        elif kind == "scroll":
+            await page.mouse.wheel(0, int(action.get("amount", 700)))
+        elif kind == "goto" and _http_url(action.get("url", "")):
+            await page.goto(
+                action["url"], wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS
+            )
+        else:
+            return f"unsupported or malformed action: {kind}"
+    except Exception as e:  # noqa: BLE001 — bad index / element gone; let the loop retry
+        return str(e)
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=8000)
+    except Exception:  # noqa: BLE001 — AJAX / no navigation
+        pass
+    return None
+
+
 @skill(
     name="web_task",
     description=(
-        "Autonomously complete a goal on the web: starting from a URL, an agent reads "
-        "each page and clicks/types/navigates over several steps to achieve the goal, "
-        "then reports what it found or did. IRREVERSIBLE (it may click/submit) — "
+        "Autonomously DO a multi-step task on the web in Sutra's own visible browser: "
+        "from a starting URL, she reads each page and clicks/types/scrolls/navigates "
+        "over several steps to achieve the goal, then reports what she found or did. "
+        "Use this for anything beyond opening a page — searching, navigating a site, "
+        "filling things in, completing a flow. Works on logged-in sites if the user "
+        "signed in once via Sutra's browser. IRREVERSIBLE (it may click/submit) — "
         "requires confirmation."
     ),
     auto_confirm=False,
-    timeout_s=150,
+    timeout_s=240,
 )
-async def web_task(goal: str, start_url: str, max_steps: int = 8) -> dict[str, Any]:
-    """Drive a browser autonomously toward a goal.
+async def web_task(goal: str, start_url: str, max_steps: int = 12) -> dict[str, Any]:
+    """Drive Sutra's browser autonomously toward a goal.
 
-    goal: What to accomplish or find (e.g. "find the price of the first listing").
+    goal: What to accomplish or find (e.g. "open the first room and start it").
     start_url: The http(s) page to start from.
-    max_steps: Maximum autonomous steps before giving up (1-15, default 8).
+    max_steps: Maximum autonomous steps before giving up (1-25, default 12).
     """
     goal = goal.strip()
     if not goal:
         return {"error": "no goal given"}
     if not _http_url(start_url):
         return {"error": "start_url must be an http(s) URL", "start_url": start_url}
-    steps_cap = max(1, min(15, max_steps))
+    steps_cap = max(1, min(25, max_steps))
 
-    async def _drive(page: Any, _resp: Any) -> dict[str, Any]:
-        trace: list[dict[str, Any]] = []
-        for _ in range(steps_cap):
-            handles, lines = await _observe(page)
-            text = _readable(await page.inner_text("body"))[:1500]
-            obs = (
-                f"URL: {page.url}\nTITLE: {await page.title()}\n\n"
-                f"PAGE TEXT (truncated):\n{text}\n\nINTERACTIVE ELEMENTS:\n" + "\n".join(lines)
+    try:
+        page = await get_page()
+        await page.goto(start_url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
+    except Exception as e:  # noqa: BLE001 — browser launch / first nav failed
+        return {"error": f"could not start Sutra's browser at {start_url}: {e}"}
+
+    trace: list[dict[str, Any]] = []
+    for _ in range(steps_cap):
+        handles, lines = await _observe(page)
+        # main-content text (not raw body) so the model sees the article, not nav chrome
+        text = (await _best_text(page))[:1800]
+        obs = (
+            f"URL: {page.url}\nTITLE: {await page.title()}\n\n"
+            f"PAGE TEXT (truncated):\n{text}\n\nINTERACTIVE ELEMENTS:\n" + "\n".join(lines)
+        )
+        messages = [
+            {"role": "system", "content": _AGENT_PROMPT},
+            {"role": "user", "content": f"GOAL: {goal}\n\n{obs}\n\nNext action as JSON:"},
+        ]
+        try:
+            r = await complete(
+                messages, tier=Tier.MEDIUM, tools=None, max_tokens=250, think=False
             )
-            messages = [
-                {"role": "system", "content": _AGENT_PROMPT},
-                {"role": "user", "content": f"GOAL: {goal}\n\n{obs}\n\nNext action as JSON:"},
-            ]
-            try:
-                r = await complete(
-                    messages, tier=Tier.MEDIUM, tools=None, max_tokens=220, think=False
-                )
-            except Exception as e:  # noqa: BLE001 — no free key / provider down
-                return {"error": f"web agent LLM unavailable: {e}", "trace": trace, "url": page.url}
+        except Exception as e:  # noqa: BLE001 — no free key / provider down
+            return {"error": f"web agent LLM unavailable: {e}", "trace": trace, "url": page.url}
 
-            action = _parse_action(r.choices[0].message.content or "")
-            if not action:
-                trace.append({"error": "unparseable action"})
-                break
-            trace.append({"action": action})
-            kind = action.get("action")
-            if kind == "done":
-                return {
-                    "goal": goal, "answer": action.get("answer", ""),
-                    "url": page.url, "steps": len(trace), "trace": trace,
-                }
-            try:
-                if kind == "click":
-                    await handles[int(action["index"])].click(timeout=8000)
-                elif kind == "type":
-                    await handles[int(action["index"])].fill(str(action.get("text", "")))
-                elif kind == "goto" and _http_url(action.get("url", "")):
-                    await page.goto(
-                        action["url"], wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS
-                    )
-                else:
-                    trace[-1]["error"] = f"unsupported or malformed action: {kind}"
-                    continue
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=8000)
-                except Exception:  # noqa: BLE001 — AJAX / no navigation
-                    pass
-            except Exception as e:  # noqa: BLE001 — bad index / element gone; let it retry
-                trace[-1]["error"] = str(e)
-        return {"goal": goal, "answer": "(max steps reached)", "url": page.url,
-                "steps": len(trace), "trace": trace}
+        action = _parse_action(r.choices[0].message.content or "")
+        if not action:
+            trace.append({"error": "unparseable action"})
+            break
+        trace.append({"action": action})
+        if action.get("action") == "done":
+            return {
+                "goal": goal, "answer": action.get("answer", ""),
+                "url": page.url, "steps": len(trace), "trace": trace,
+            }
+        err = await _step(page, handles, action)
+        if err:
+            trace[-1]["error"] = err
 
-    return await _render(start_url, _drive)
+    return {"goal": goal, "answer": "(max steps reached)", "url": page.url,
+            "steps": len(trace), "trace": trace}

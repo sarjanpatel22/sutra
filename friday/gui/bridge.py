@@ -90,6 +90,12 @@ class Bridge:
     def stop(self) -> None:
         if self._loop:
             loop = self._loop
+            try:  # close Sutra's browser if a web task opened it (best-effort)
+                from friday.skills.browser_session import close_session
+
+                asyncio.run_coroutine_threadsafe(close_session(), loop).result(timeout=8)
+            except Exception:  # noqa: BLE001 — never block shutdown on browser teardown
+                pass
 
             def _cancel_all() -> None:
                 for task in asyncio.all_tasks(loop):

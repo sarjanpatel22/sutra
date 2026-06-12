@@ -37,6 +37,7 @@ REVIEWED_AUTO_EXCEPTIONS: dict[str, str] = {
     "clipboard_set": "overwrites clipboard text only — trivially reversible",
     "set_preference": "writes a reversible local config value, no external effect",
     "open_url": "opens a scheme-validated http(s) URL — reversible (close the tab)",
+    "browser_open": "navigates Sutra's browser to an http(s) URL — reversible, sends no data",
 }
 
 # Must exist and must be gated: a regression lock on the known irreversible surface
