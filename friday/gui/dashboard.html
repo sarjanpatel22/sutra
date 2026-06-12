@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sutra — Dashboard</title>
+<style>
+  /* ── Sutra dashboard: smoked-glass panels over the living orb.
+        Palette is the orb's: warm obsidian, cold champagne golds. Slow, royal. ── */
+  :root {
+    --obsidian: #070502;
+    --platinum: #FBF8EC;
+    --champagne: #D8C076;
+    --gold-soft: rgba(216,196,133,0.55);
+    --gold-dim: rgba(208,192,140,0.42);
+    --gold-faint: rgba(216,196,133,0.13);
+    --ink: rgba(245,238,220,0.86);
+    --ink-dim: rgba(214,200,165,0.58);
+    --glass: rgba(10,7,3,0.52);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--obsidian); }
+  body { font-family: "JetBrains Mono", monospace; color: var(--ink); }
+
+  /* the orb, alive underneath everything */
+  #orb-frame {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    border: 0; pointer-events: none;
+  }
+
+  .panel {
+    position: fixed; display: flex; flex-direction: column;
+    background: var(--glass);
+    backdrop-filter: blur(18px) saturate(1.05);
+    -webkit-backdrop-filter: blur(18px) saturate(1.05);
+    border: 1px solid var(--gold-faint); border-radius: 10px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 18px 50px rgba(0,0,0,0.45);
+    overflow: hidden;
+  }
+  .panel-title {
+    padding: 12px 16px 10px; font-size: 9px; letter-spacing: 4px;
+    color: var(--gold-dim); border-bottom: 1px solid rgba(216,196,133,0.08);
+    user-select: none; flex: 0 0 auto;
+  }
+
+  /* ── conversation ── */
+  #chat { left: 24px; top: 72px; bottom: 24px; width: 396px; }
+  #transcript { flex: 1 1 auto; overflow-y: auto; padding: 14px 14px 6px; scrollbar-width: none; }
+  #transcript::-webkit-scrollbar { display: none; }
+  .msg { margin-bottom: 14px; max-width: 92%; animation: rise 0.5s ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+  .msg .meta { font-size: 8px; letter-spacing: 2px; color: var(--gold-dim); margin-bottom: 4px; }
+  .msg .body { font-size: 12px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { margin-left: auto; text-align: right; }
+  .msg.user .body { color: var(--ink-dim); }
+  .msg.sutra .body { color: var(--ink); }
+  .msg.system .body { color: rgba(168,148,90,0.7); font-style: italic; font-size: 11px; }
+
+  #thinking { display: none; padding: 0 16px 10px; flex: 0 0 auto; }
+  #thinking.on { display: block; }
+  #thinking span {
+    display: inline-block; width: 4px; height: 4px; margin-right: 6px; border-radius: 50%;
+    background: var(--gold-soft); animation: breathe 1.8s ease-in-out infinite;
+  }
+  #thinking span:nth-child(2) { animation-delay: 0.3s; }
+  #thinking span:nth-child(3) { animation-delay: 0.6s; }
+  @keyframes breathe { 0%,100% { opacity: 0.15; } 50% { opacity: 0.9; } }
+
+  #composer {
+    flex: 0 0 auto; display: flex; gap: 8px; align-items: center;
+    padding: 12px; border-top: 1px solid rgba(216,196,133,0.08);
+  }
+  #input {
+    flex: 1; background: rgba(216,196,133,0.05); border: 1px solid var(--gold-faint);
+    border-radius: 6px; padding: 10px 12px; color: var(--ink);
+    font: inherit; font-size: 12px; outline: none; transition: border-color 0.4s ease;
+  }
+  #input:focus { border-color: rgba(216,196,133,0.35); }
+  #input::placeholder { color: rgba(208,192,140,0.30); }
+  #input:disabled { opacity: 0.45; }
+  #tier {
+    background: rgba(216,196,133,0.05); color: var(--gold-soft);
+    border: 1px solid var(--gold-faint); border-radius: 6px;
+    font: inherit; font-size: 10px; letter-spacing: 1px; padding: 10px 6px; outline: none;
+  }
+  #tier option { background: #14100a; }
+
+  /* ── right column ── */
+  #stats { right: 24px; top: 72px; width: 324px; }
+  #stats-body { padding: 12px 16px 14px; font-size: 10px; letter-spacing: 1px; }
+  .stat-row { display: flex; justify-content: space-between; padding: 4px 0; color: var(--ink-dim); }
+  .stat-row b { color: var(--gold-soft); font-weight: 400; }
+  .stat-head { margin: 8px 0 2px; font-size: 8px; letter-spacing: 3px; color: var(--gold-dim); }
+
+  #actions { right: 24px; top: 318px; bottom: 24px; width: 324px; }
+  #feed { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px; scrollbar-width: none; }
+  #feed::-webkit-scrollbar { display: none; }
+  .act {
+    display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+    padding: 6px 4px; font-size: 10px; letter-spacing: 1px; color: var(--ink-dim);
+    border-bottom: 1px solid rgba(216,196,133,0.05); animation: rise 0.5s ease both;
+  }
+  .act .skill { color: var(--gold-soft); }
+  .act .chip { font-size: 8px; letter-spacing: 2px; color: var(--gold-dim); }
+  .act .chip.ok { color: rgba(216,196,133,0.8); }
+  .act .chip.declined, .act .chip.error { color: rgba(150,120,70,0.9); }
+
+  .confirm-card {
+    margin: 10px 2px; padding: 12px; border: 1px solid rgba(216,192,118,0.45);
+    border-radius: 8px; background: rgba(216,196,133,0.06); animation: rise 0.5s ease both;
+  }
+  .confirm-card .ask { font-size: 8px; letter-spacing: 3px; color: var(--gold-soft); margin-bottom: 6px; }
+  .confirm-card .what { font-size: 12px; color: var(--platinum); margin-bottom: 6px; }
+  .confirm-card .args {
+    font-size: 9px; color: var(--ink-dim); white-space: pre-wrap; word-break: break-all;
+    max-height: 90px; overflow-y: auto; margin-bottom: 10px;
+  }
+  .confirm-card .btns { display: flex; gap: 8px; }
+  .confirm-card button {
+    flex: 1; padding: 8px 0; font: inherit; font-size: 9px; letter-spacing: 3px;
+    border-radius: 6px; cursor: pointer; transition: all 0.3s ease;
+  }
+  .confirm-card .yes {
+    background: rgba(216,192,118,0.18); border: 1px solid rgba(216,192,118,0.6);
+    color: var(--platinum);
+  }
+  .confirm-card .yes:hover { background: rgba(216,192,118,0.3); }
+  .confirm-card .no {
+    background: transparent; border: 1px solid var(--gold-faint); color: var(--ink-dim);
+  }
+  .confirm-card .no:hover { border-color: rgba(216,196,133,0.35); }
+  .confirm-card.resolved { opacity: 0.45; }
+  .confirm-card.resolved button { pointer-events: none; opacity: 0.4; }
+  .confirm-card .verdict { font-size: 8px; letter-spacing: 3px; color: var(--gold-soft); margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<iframe id="orb-frame" src="/orb" title="presence"></iframe>
+
+<section id="chat" class="panel">
+  <div class="panel-title">CONVERSATION</div>
+  <div id="transcript"></div>
+  <div id="thinking"><span></span><span></span><span></span></div>
+  <div id="composer">
+    <input id="input" type="text" placeholder="speak to her…" autocomplete="off">
+    <select id="tier" title="model tier">
+      <option value="medium" selected>medium</option>
+      <option value="local">local</option>
+      <option value="code">code</option>
+      <option value="heavy">heavy</option>
+      <option value="max">max</option>
+    </select>
+  </div>
+</section>
+
+<section id="stats" class="panel">
+  <div class="panel-title">TELEMETRY</div>
+  <div id="stats-body">loading…</div>
+</section>
+
+<section id="actions" class="panel">
+  <div class="panel-title">ACTIONS &nbsp;·&nbsp; <span id="gate-note">confirmation gate live</span></div>
+  <div id="feed"></div>
+</section>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const transcript = $("transcript"), feed = $("feed"), input = $("input"), tier = $("tier");
+let lastId = 0, busy = false;
+
+const hhmm = (ts) => new Date(ts * 1000).toTimeString().slice(0, 5);
+const scroll = (el) => { el.scrollTop = el.scrollHeight; };
+
+function msg(cls, who, text, ts) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.innerHTML = `<div class="meta">${who} · ${hhmm(ts)}</div><div class="body"></div>`;
+  d.querySelector(".body").textContent = text;
+  transcript.appendChild(d); scroll(transcript);
+}
+
+function setBusy(b) {
+  busy = b;
+  $("thinking").classList.toggle("on", b);
+  input.disabled = b;
+  if (!b) input.focus();
+}
+
+/* ── action feed ── */
+function actRow(e) {
+  const d = document.createElement("div");
+  d.className = "act"; d.dataset.skill = e.skill;
+  d.innerHTML = `<span class="skill">✦ ${e.skill}${e.gated ? " ⛨" : ""}</span>
+                 <span class="chip">running</span>`;
+  feed.appendChild(d); scroll(feed);
+}
+function actEnd(e) {
+  const rows = [...feed.querySelectorAll(`.act[data-skill="${e.skill}"] .chip`)];
+  const chip = rows.reverse().find((c) => c.textContent === "running");
+  if (chip) { chip.textContent = e.status.toUpperCase(); chip.className = "chip " + e.status; }
+}
+
+/* ── confirmation cards: the gate, on screen ── */
+function confirmCard(e) {
+  const d = document.createElement("div");
+  d.className = "confirm-card"; d.dataset.cid = e.confirm_id;
+  d.innerHTML = `
+    <div class="ask">SUTRA ASKS PERMISSION</div>
+    <div class="what"></div>
+    <div class="args"></div>
+    <div class="btns">
+      <button class="yes">APPROVE</button>
+      <button class="no">DECLINE</button>
+    </div>`;
+  d.querySelector(".what").textContent = e.skill;
+  d.querySelector(".args").textContent = JSON.stringify(e.args, null, 1);
+  d.querySelector(".yes").onclick = () => resolve(e.confirm_id, true);
+  d.querySelector(".no").onclick = () => resolve(e.confirm_id, false);
+  feed.appendChild(d); scroll(feed);
+}
+function confirmDone(e) {
+  const card = feed.querySelector(`.confirm-card[data-cid="${e.confirm_id}"]`);
+  if (!card || card.classList.contains("resolved")) return;
+  card.classList.add("resolved");
+  const v = document.createElement("div");
+  v.className = "verdict";
+  v.textContent = e.timeout ? "TIMED OUT — DECLINED" : (e.approved ? "APPROVED" : "DECLINED");
+  card.appendChild(v); scroll(feed);
+}
+async function resolve(cid, approve) {
+  await fetch("/api/confirm", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm_id: cid, approve }),
+  }).catch(() => {});
+}
+
+/* ── event stream ── */
+const handlers = {
+  user:            (e) => { msg("user", "YOU", e.text, e.ts); setBusy(true); },
+  status:          (e) => setBusy(true),
+  reply:           (e) => { msg("sutra", "SUTRA", e.text, e.ts); setBusy(false); },
+  error:           (e) => { msg("system", "SYSTEM", e.text, e.ts); setBusy(false); },
+  tool_start:      actRow,
+  tool_end:        actEnd,
+  confirm_request: confirmCard,
+  confirm_result:  confirmDone,
+};
+const es = new EventSource("/api/events");
+es.onmessage = (m) => {
+  const e = JSON.parse(m.data);
+  if (e.id <= lastId) return;          // reconnect replay guard
+  lastId = e.id;
+  (handlers[e.type] || (() => {}))(e);
+};
+
+/* ── composer ── */
+input.addEventListener("keydown", async (ev) => {
+  if (ev.key !== "Enter" || busy) return;
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  const r = await fetch("/api/chat", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, tier: tier.value }),
+  }).then((r) => r.json()).catch((e) => ({ error: String(e) }));
+  if (r.error) msg("system", "SYSTEM", r.error, Date.now() / 1000);
+});
+
+/* ── telemetry (shape: friday/core/stats.gather_stats) ── */
+function fmt(ms) { return ms >= 1000 ? (ms / 1000).toFixed(2) + "s" : Math.round(ms) + "ms"; }
+function line(label, m) {
+  if (!m || !m.n) return "";
+  return `<div class="stat-row"><span>${label}</span>
+          <b>${fmt(m.p50)} / ${fmt(m.p95)} · ${m.n}</b></div>`;
+}
+async function refreshStats() {
+  try {
+    const s = await fetch("/api/stats").then((r) => r.json());
+    let html = "";
+    const tiers = Object.entries(s.text_by_tier || {}).filter(([, m]) => m.n);
+    if (tiers.length)
+      html += `<div class="stat-head">TEXT · p50 / p95 · turns</div>` +
+              tiers.map(([t, m]) => line(t, m)).join("");
+    const vs = s.voice_stages || {};
+    if (vs.total_ms && vs.total_ms.n)
+      html += `<div class="stat-head">VOICE · p50 / p95 · turns</div>` +
+              line("total", vs.total_ms) + line("stt", vs.stt_ms) +
+              line("tts first", vs.tts_first_ms);
+    const b = s.budget;
+    if (b) {
+      html += `<div class="stat-head">SPEND</div>
+        <div class="stat-row"><span>today</span><b>$${(b.daily_spent ?? 0).toFixed(4)}</b></div>
+        <div class="stat-row"><span>month</span><b>$${(b.monthly_spent ?? 0).toFixed(4)}</b></div>`;
+    }
+    html += skillsLine;
+    $("stats-body").innerHTML = html || "no turns logged yet";
+  } catch { /* server going down — leave the last numbers up */ }
+}
+let skillsLine = "";
+fetch("/api/skills").then((r) => r.json()).then((sk) => {
+  const gated = sk.filter((s) => s.gated).length;
+  skillsLine = `<div class="stat-head">SKILLS</div>
+    <div class="stat-row"><span>registered</span><b>${sk.length}</b></div>
+    <div class="stat-row"><span>gated ⛨</span><b>${gated}</b></div>`;
+  refreshStats();
+}).catch(() => {});
+refreshStats();
+setInterval(refreshStats, 12000);
+input.focus();
+</script>
+</body>
+</html>
