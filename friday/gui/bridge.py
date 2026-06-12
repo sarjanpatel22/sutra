@@ -130,8 +130,12 @@ class Bridge:
             self._loop, self._thread = None, None
 
     # -- chat ------------------------------------------------------------
-    def submit_chat(self, text: str, tier: str = "medium") -> dict[str, Any]:
-        """Queue one agent turn. Called from HTTP handler threads."""
+    def submit_chat(self, text: str, tier: str = "auto") -> dict[str, Any]:
+        """Queue one agent turn. Called from HTTP handler threads.
+
+        tier="auto" (the default) lets Sutra pick free-medium vs Claude-heavy by the
+        weight of the task; an explicit tier overrides that.
+        """
         text = text.strip()
         if not text:
             return {"error": "empty message"}
@@ -139,12 +143,18 @@ class Bridge:
             return {"error": "bridge not started"}
         if self._inflight.is_set():
             return {"error": "busy — a turn is already running"}
-        try:
-            t = Tier(tier)
-        except ValueError:
-            return {"error": f"unknown tier: {tier}"}
+        if tier == "auto":
+            from friday.core.autoroute import route
+
+            t, reason = route(text)
+        else:
+            try:
+                t = Tier(tier)
+            except ValueError:
+                return {"error": f"unknown tier: {tier}"}
+            reason = "you chose this tier"
         self._inflight.set()
-        self.bus.publish("user", text=text, tier=t.value)
+        self.bus.publish("user", text=text, tier=t.value, auto=(tier == "auto"), reason=reason)
         asyncio.run_coroutine_threadsafe(self._turn(text, t), self._loop)
         return {"accepted": True, "tier": t.value}
 

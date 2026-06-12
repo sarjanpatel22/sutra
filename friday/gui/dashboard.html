@@ -54,6 +54,9 @@
   .msg.user .body { color: var(--ink-dim); }
   .msg.sutra .body { color: var(--ink); }
   .msg.system .body { color: rgba(168,148,90,0.7); font-style: italic; font-size: 11px; }
+  .route { font-size: 8px; letter-spacing: 2px; color: rgba(216,196,133,0.42);
+    margin: -8px 0 13px; text-align: right; }
+  .route b { color: rgba(245,230,195,0.7); font-weight: 400; }
 
   #thinking { display: none; padding: 0 16px 10px; flex: 0 0 auto; }
   #thinking.on { display: block; }
@@ -143,8 +146,9 @@
   <div id="thinking"><span></span><span></span><span></span></div>
   <div id="composer">
     <input id="input" type="text" placeholder="speak to her…" autocomplete="off">
-    <select id="tier" title="model tier">
-      <option value="medium" selected>medium</option>
+    <select id="tier" title="model tier — auto lets her choose by task weight">
+      <option value="auto" selected>auto</option>
+      <option value="medium">medium</option>
       <option value="local">local</option>
       <option value="code">code</option>
       <option value="heavy">heavy</option>
@@ -237,7 +241,16 @@ async function resolve(cid, approve) {
 
 /* ── event stream ── */
 const handlers = {
-  user:            (e) => { msg("user", "YOU", e.text, e.ts); setBusy(true); },
+  user:            (e) => {
+    msg("user", "YOU", e.text, e.ts);
+    if (e.auto) {  // show what she routed to and why
+      const d = document.createElement("div");
+      d.className = "route";
+      d.innerHTML = `&#8627; <b>${e.tier}</b> &middot; ${e.reason || ""}`;
+      transcript.appendChild(d); scroll(transcript);
+    }
+    setBusy(true);
+  },
   status:          (e) => setBusy(true),
   reply:           (e) => { msg("sutra", "SUTRA", e.text, e.ts); setBusy(false); },
   error:           (e) => { msg("system", "SYSTEM", e.text, e.ts); setBusy(false); },
