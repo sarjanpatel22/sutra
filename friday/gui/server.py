@@ -92,7 +92,9 @@ class _Handler(BaseHTTPRequestHandler):
 # Chromium/Chrome in --app mode = a borderless, chrome-less window: a native-feeling
 # ambient display, no browser UI, no Tauri toolchain. Falls back to a normal browser
 # tab if no Chromium-family browser is found.
-_KIOSK_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser")
+_KIOSK_BROWSERS = (
+    "chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser"
+)
 
 
 def _launch_fullscreen(url: str) -> subprocess.Popen | None:

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import pytest
 
-from friday.core.router import BudgetTracker, _fire_alerts, register_alert
+from friday.core.router import BudgetTracker
 
 
 def test_budget_persists_daily_spend(tmp_path, monkeypatch):

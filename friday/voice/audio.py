@@ -379,7 +379,9 @@ def play_audio_stream(
     sample_rate: int = 24000,
 ) -> None:
     """Stream audio chunks to speaker as they arrive — for streaming TTS."""
-    with sd.OutputStream(samplerate=sample_rate, channels=1, dtype=np.float32, device=_OUTPUT_DEVICE) as stream:
+    with sd.OutputStream(
+        samplerate=sample_rate, channels=1, dtype=np.float32, device=_OUTPUT_DEVICE
+    ) as stream:
         while True:
             chunk = chunk_iter()
             if chunk is None:

@@ -1,6 +1,7 @@
 """Skill registry unit tests."""
 
 import pytest
+
 from friday.skills.registry import _registry, all_tools, call, skill
 
 

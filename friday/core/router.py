@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import litellm
 from dotenv import load_dotenv
@@ -24,7 +24,7 @@ _BUDGET_FILE = _STATE_DIR / "budget.json"
 ALERT_THRESHOLD = float(os.getenv("BUDGET_ALERT_THRESHOLD", "0.85"))
 
 
-class Tier(str, Enum):
+class Tier(StrEnum):
     LOCAL = "local"
     REASON = "reason"  # local reasoning — Gemma 4 with thinking ON, free
     MEDIUM = "medium"

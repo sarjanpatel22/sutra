@@ -106,8 +106,10 @@ async def _chat_loop(tier: Tier) -> None:
             elif cmd == "budget":
                 b = get_budget()
                 console.print(
-                    f"[dim]Daily: ${b.daily_spent:.4f} / ${b.daily_limit:.2f} ({b.daily_pct:.1f}%)  "
-                    f"Monthly: ${b.monthly_spent:.4f} / ${b.monthly_limit:.2f} ({b.monthly_pct:.1f}%)  "
+                    f"[dim]Daily: ${b.daily_spent:.4f} / ${b.daily_limit:.2f} "
+                    f"({b.daily_pct:.1f}%)  "
+                    f"Monthly: ${b.monthly_spent:.4f} / ${b.monthly_limit:.2f} "
+                    f"({b.monthly_pct:.1f}%)  "
                     f"| Tokens: {b.daily_tokens:,} daily / {b.monthly_tokens:,} monthly[/dim]"
                 )
             elif cmd == "status":

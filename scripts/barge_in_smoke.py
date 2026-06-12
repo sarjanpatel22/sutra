@@ -58,7 +58,10 @@ def run(name: str, *, vad_prob: float, detector: BargeInDetector, expect: bool) 
     )
     dt = (time.monotonic() - t0) * 1000
     ok = got is expect
-    print(f"  {name}: interrupted={got} (expected {expect})  {dt:.0f}ms  -> {'PASS' if ok else 'FAIL'}")
+    print(
+        f"  {name}: interrupted={got} (expected {expect})  {dt:.0f}ms"
+        f"  -> {'PASS' if ok else 'FAIL'}"
+    )
     return ok
 
 

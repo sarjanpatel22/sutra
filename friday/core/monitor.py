@@ -21,7 +21,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +47,7 @@ logging.basicConfig(
 log = logging.getLogger("sutra.monitor")
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     OK = "ok"
     WARN = "warn"
     FAIL = "fail"
@@ -81,7 +81,8 @@ class HealthReport:
             "timestamp": self.timestamp,
             "overall": self.overall.value,
             "checks": [
-                {"name": c.name, "status": c.status.value, "detail": c.detail, "latency_ms": c.latency_ms}
+                {"name": c.name, "status": c.status.value,
+                 "detail": c.detail, "latency_ms": c.latency_ms}
                 for c in self.checks
             ],
         }
@@ -180,7 +181,7 @@ async def _ping_redis_proto(name: str, host: str, port: int) -> CheckResult:
         return CheckResult(name, Status.WARN, f"unexpected response: {response[:20]!r}", latency)
     except (ConnectionRefusedError, OSError):
         return CheckResult(name, Status.FAIL, f"connection refused — {name} not running")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return CheckResult(name, Status.WARN, "timeout")
     except Exception as e:  # noqa: BLE001
         return CheckResult(name, Status.FAIL, str(e))
@@ -290,7 +291,7 @@ async def _check_gpu() -> CheckResult:
                 status = Status.WARN if vram_pct > 90 else Status.OK
                 return CheckResult("gpu", status, detail)
         return CheckResult("gpu", Status.WARN, "nvidia-smi returned non-zero")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return CheckResult("gpu", Status.WARN, "nvidia-smi timeout")
     except Exception as e:  # noqa: BLE001
         return CheckResult("gpu", Status.FAIL, str(e))
@@ -303,8 +304,14 @@ async def _check_budget() -> CheckResult:
     daily_pct = b.daily_pct
     monthly_pct = b.monthly_pct
 
-    lines.append(f"daily ${b.daily_spent:.4f}/${b.daily_limit:.2f} ({daily_pct:.1f}%) | {b.daily_tokens:,} tok")
-    lines.append(f"monthly ${b.monthly_spent:.4f}/${b.monthly_limit:.2f} ({monthly_pct:.1f}%) | {b.monthly_tokens:,} tok")
+    lines.append(
+        f"daily ${b.daily_spent:.4f}/${b.daily_limit:.2f} "
+        f"({daily_pct:.1f}%) | {b.daily_tokens:,} tok"
+    )
+    lines.append(
+        f"monthly ${b.monthly_spent:.4f}/${b.monthly_limit:.2f} "
+        f"({monthly_pct:.1f}%) | {b.monthly_tokens:,} tok"
+    )
 
     if daily_pct >= ALERT_THRESHOLD * 100 or monthly_pct >= ALERT_THRESHOLD * 100:
         status = Status.WARN
@@ -383,7 +390,10 @@ def print_report(report: HealthReport) -> None:
     overall_color = _STATUS_COLOR[report.overall]
     console.print(Panel(
         t,
-        title=f"[{overall_color}]Sutra Health — {report.overall.value.upper()}[/{overall_color}]  [dim]{report.timestamp}[/dim]",
+        title=(
+            f"[{overall_color}]Sutra Health — {report.overall.value.upper()}"
+            f"[/{overall_color}]  [dim]{report.timestamp}[/dim]"
+        ),
         border_style=overall_color,
     ))
 

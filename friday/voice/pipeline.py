@@ -478,7 +478,10 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
     if history is None:
         history = []
 
-    console.print("[bold cyan]Sutra voice[/bold cyan] — hold [bold]SPACE[/bold] to speak  [bold]Ctrl+C[/bold] to exit")
+    console.print(
+        "[bold cyan]Sutra voice[/bold cyan] — hold [bold]SPACE[/bold] to speak  "
+        "[bold]Ctrl+C[/bold] to exit"
+    )
     console.print("[dim]Pre-warming models…[/dim]", end="\r")
     await prewarm()
     await _connect_mcp(console)
@@ -613,7 +616,9 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
     )
     max_silence_s = float(os.getenv("VAD_MAX_SILENCE_S", "2.0"))
 
-    console.print("[bold cyan]Sutra voice (VAD)[/bold cyan] — listening  [bold]Ctrl+C[/bold] to exit")
+    console.print(
+        "[bold cyan]Sutra voice (VAD)[/bold cyan] — listening  [bold]Ctrl+C[/bold] to exit"
+    )
     if barge_in:
         console.print("[dim]barge-in on — talk over her to interrupt[/dim]")
     if streaming_stt:

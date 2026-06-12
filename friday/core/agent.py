@@ -25,14 +25,17 @@ ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
 _USER_NAME = os.getenv("USER_NAME", "Sarjan")
 
 SYSTEM_PROMPT = f"""You are Sutra — a voice-native ambient AI assistant talking with {_USER_NAME}.
-You are dry, technically precise, occasionally warm. Like a senior engineer who's seen a lot but still gets curious.
+You are dry, technically precise, occasionally warm. Like a senior engineer who's seen a lot \
+but still gets curious.
 Never sycophantic. Never preachy.
-Recalled facts about {_USER_NAME} describe the person you are speaking with — treat "{_USER_NAME}" and "you/your" as the same person.
+Recalled facts about {_USER_NAME} describe the person you are speaking with — treat \
+"{_USER_NAME}" and "you/your" as the same person.
 Default spoken responses: sub-15 words. Text responses can be longer when detail is useful.
 You have access to tools. Use them when needed. Think before calling."""
 
 VOICE_SYSTEM_PROMPT = f"""You are Sutra, a voice assistant talking with {_USER_NAME}.
-Recalled facts about {_USER_NAME} describe the person you are speaking with — treat "{_USER_NAME}" and "you/your" as the same person.
+Recalled facts about {_USER_NAME} describe the person you are speaking with — treat \
+"{_USER_NAME}" and "you/your" as the same person.
 Respond in spoken English only.
 Keep responses under 15 words unless the question genuinely requires more.
 Answer from your own knowledge — do NOT call any tools or functions.
@@ -40,17 +43,26 @@ No markdown, no lists, no code. Just natural spoken sentences."""
 
 # Reasoning mode (`sutra think`): no voice-brevity rule — think it through and
 # answer in full. Same persona + identity anchor.
-REASON_SYSTEM_PROMPT = f"""You are Sutra — reasoning carefully through a hard problem for {_USER_NAME}.
-You are dry, technically precise, occasionally warm — a senior engineer who reasons from first principles and isn't afraid to say "it depends, and here's why".
-Recalled facts about {_USER_NAME} describe the person you are speaking with — treat "{_USER_NAME}" and "you/your" as the same person; use them when relevant.
-Work the problem through, then give a complete, decisive answer — as long as it genuinely needs, no longer. State your conclusion and the key reasoning behind it. No artificial word limit; never truncate the actual answer. For puzzles, commit to a solution rather than asking for more constraints."""
+REASON_SYSTEM_PROMPT = f"""You are Sutra — reasoning carefully through a hard problem for \
+{_USER_NAME}.
+You are dry, technically precise, occasionally warm — a senior engineer who reasons from \
+first principles and isn't afraid to say "it depends, and here's why".
+Recalled facts about {_USER_NAME} describe the person you are speaking with — treat \
+"{_USER_NAME}" and "you/your" as the same person; use them when relevant.
+Work the problem through, then give a complete, decisive answer — as long as it genuinely \
+needs, no longer. State your conclusion and the key reasoning behind it. No artificial \
+word limit; never truncate the actual answer. For puzzles, commit to a solution rather \
+than asking for more constraints."""
 
 # Voice + tools: spoken turns that need real data/compute/OS access route here
 # (cloud function-calling). Same identity anchor, but tool-aware and still terse.
 VOICE_TOOL_SYSTEM_PROMPT = f"""You are Sutra, a voice assistant talking with {_USER_NAME}.
-Use the provided tools to get real, current information — the time, weather, system stats, calculations, web search, or memory — instead of guessing.
-Recalled facts about {_USER_NAME} describe the person you're speaking with — treat "{_USER_NAME}" and "you/your" as the same person.
-Once the tools return, reply in spoken English, under 20 words, no markdown and no lists — just say the answer naturally."""
+Use the provided tools to get real, current information — the time, weather, system stats, \
+calculations, web search, or memory — instead of guessing.
+Recalled facts about {_USER_NAME} describe the person you're speaking with — treat \
+"{_USER_NAME}" and "you/your" as the same person.
+Once the tools return, reply in spoken English, under 20 words, no markdown and no lists — \
+just say the answer naturally."""
 
 
 # Background voice-turn persistence. Voice can't await remember() (it runs the
@@ -180,7 +192,10 @@ async def run(
         response = await complete(messages, tier=tier, tools=tools or None)
         _account(response)
         msg = response.choices[0].message
-        messages.append({"role": "assistant", "content": msg.content, "tool_calls": getattr(msg, "tool_calls", None)})
+        messages.append(
+            {"role": "assistant", "content": msg.content,
+             "tool_calls": getattr(msg, "tool_calls", None)}
+        )
 
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
@@ -193,7 +208,10 @@ async def run(
         messages.extend(tool_results)
 
     # Exceeded max rounds — ask model to wrap up without more tools
-    messages.append({"role": "user", "content": "[System: max tool rounds reached — please give a final answer now]"})
+    messages.append(
+        {"role": "user",
+         "content": "[System: max tool rounds reached — please give a final answer now]"}
+    )
     response = await complete(messages, tier=tier, tools=None)
     _account(response)
     msg = response.choices[0].message
@@ -231,7 +249,9 @@ async def reason(
     msg = response.choices[0].message
     answer = (msg.content or "").strip()
     # Ollama exposes the trace as message.thinking; litellm maps it to reasoning_content.
-    thinking = (getattr(msg, "reasoning_content", None) or getattr(msg, "thinking", None) or "").strip()
+    thinking = (
+        getattr(msg, "reasoning_content", None) or getattr(msg, "thinking", None) or ""
+    ).strip()
     return answer, thinking
 
 
@@ -263,7 +283,9 @@ async def voice_run(
     # If Gemma returns empty or garbled (tool-call JSON) output, escalate.
     if not reply or reply.startswith("{"):
         try:
-            response = await complete(messages, tier=fallback_tier, tools=None, max_tokens=128, think=False)
+            response = await complete(
+                messages, tier=fallback_tier, tools=None, max_tokens=128, think=False
+            )
             reply = (response.choices[0].message.content or "").strip()
         except Exception:  # noqa: BLE001 — fallback tier unavailable; keep local reply
             pass
@@ -302,7 +324,9 @@ async def voice_stream(
     # If Gemma returned garbage (tool-call JSON), escalate to the free fallback.
     if not full_reply.strip() or full_reply.strip().startswith("{"):
         try:
-            async for token in stream_complete(messages, tier=fallback_tier, max_tokens=128, think=False):
+            async for token in stream_complete(
+                messages, tier=fallback_tier, max_tokens=128, think=False
+            ):
                 yield token
         except Exception:  # noqa: BLE001 — fallback tier unavailable; end stream cleanly
             pass
@@ -414,7 +438,7 @@ async def _run_tool_calls(
                 )
         except KeyError:
             result = {"error": f"Unknown skill: {fn_name}"}
-        except asyncio.TimeoutError:
+        except TimeoutError:
             result = {"error": f"Skill '{fn_name}' timed out"}
         except Exception as e:  # noqa: BLE001
             result = {"error": str(e)}

@@ -81,7 +81,9 @@ async def battery() -> dict[str, object]:
 
 @skill(
     name="run_command",
-    description="Run a shell command and return stdout/stderr. Sandboxed — use for read-only commands.",
+    description=(
+        "Run a shell command and return stdout/stderr. Sandboxed — use for read-only commands."
+    ),
     auto_confirm=False,  # requires confirmation — can mutate system state
     timeout_s=30,
 )
@@ -97,7 +99,7 @@ async def run_command(command: str) -> dict[str, str | int]:
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         return {"stdout": "", "stderr": "command timed out after 30s", "returncode": 124}
