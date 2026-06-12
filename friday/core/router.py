@@ -51,9 +51,13 @@ TIER_MODELS: dict[Tier, list[str]] = {
         "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
     ],
+    # Free tier with headroom: distinct model buckets so one provider's rate limit
+    # doesn't take the whole tier down (70b best → gemini → fast 8b → gemini-2.0).
     Tier.MEDIUM: [
         "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
+        "groq/llama-3.1-8b-instant",
+        "gemini/gemini-2.0-flash",
     ],
     Tier.HEAVY: [
         os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),
@@ -248,6 +252,19 @@ async def _tracked_stream(response: Any, model: str) -> AsyncIterator[Any]:
         yield chunk
 
 
+# When every model in a tier fails (e.g. the free cloud tiers are rate-limited),
+# fall through to these tiers in order so a turn degrades instead of hard-failing.
+# Local Ollama is the universal last resort: free and never rate-limited.
+_FALLBACK_TIERS: dict[Tier, list[Tier]] = {
+    Tier.LOCAL: [],
+    Tier.REASON: [Tier.MEDIUM, Tier.LOCAL],
+    Tier.CODE: [Tier.MEDIUM, Tier.LOCAL],
+    Tier.MEDIUM: [Tier.LOCAL],
+    Tier.HEAVY: [Tier.MEDIUM, Tier.LOCAL],
+    Tier.MAX: [Tier.HEAVY, Tier.MEDIUM, Tier.LOCAL],
+}
+
+
 async def complete(
     messages: list[dict[str, Any]],
     tier: Tier = Tier.HEAVY,
@@ -258,14 +275,34 @@ async def complete(
     tools: list[dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Route a completion through the tier's model chain with automatic fallback."""
-    models = list(TIER_MODELS[tier])
+    """Route a completion through the tier's model chain with automatic fallback.
 
+    On total tier failure (all models error — typically the free tiers being rate-
+    limited) it falls through to _FALLBACK_TIERS so the turn still completes. A turn
+    that needs tools and hits a rate-limited free tier escalates to Claude (reliable
+    function-calling, budget-permitting) before the weaker local model.
+    """
+    primary = tier
     if tier in (Tier.HEAVY, Tier.MAX) and not _budget.can_afford(tier):
-        models = list(TIER_MODELS[Tier.MEDIUM])
+        primary = Tier.MEDIUM
+
+    fallback = list(_FALLBACK_TIERS.get(primary, []))
+    if tools and primary == Tier.MEDIUM and _budget.can_afford(Tier.HEAVY):
+        fallback = [Tier.HEAVY, *fallback]  # tool turn + rate limit → Claude, not local
+
+    models: list[str] = []
+    for tr in [primary, *fallback]:
+        for m in TIER_MODELS[tr]:
+            if m not in models:
+                models.append(m)
 
     last_err: Exception | None = None
     for model in models:
+        # Local models can't do function-calling — handing them tools makes them emit
+        # malformed tool-call JSON as the answer. Strip tools on the local fallback rung
+        # so a degraded turn returns clean prose instead of "{".
+        is_local = model.startswith(("ollama/", "ollama_chat/"))
+        call_tools = None if is_local else tools
         try:
             call_kwargs = dict(kwargs)
             if stream:
@@ -276,7 +313,7 @@ async def complete(
                 stream=stream,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                tools=tools,
+                tools=call_tools,
                 **call_kwargs,
             )
             if stream:
