@@ -18,6 +18,10 @@ from friday.skills import registry
 # Confirmation hook: given (skill_name, args), return True to allow an
 # auto_confirm=False (irreversible) skill to run. None = always decline.
 ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
+# Best-effort observer for surfaces that watch the loop live (the dashboard's
+# action feed): observe(kind, data) with kind in {tool_start, tool_end}. Sync,
+# must never raise into the loop — callers are wrapped.
+ObserveFn = Callable[[str, dict[str, Any]], None]
 
 # Who Sutra is talking to. Recalled memory stores facts as "<USER_NAME> is …", so
 # the prompt must tell the model that name == the person it's speaking with,
@@ -134,6 +138,7 @@ async def run(
     tier: Tier = Tier.HEAVY,
     max_tool_rounds: int = 5,
     confirm: ConfirmFn | None = None,
+    observe: ObserveFn | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one turn of the agent loop.
 
@@ -204,7 +209,7 @@ async def run(
 
         stats["rounds"] += 1
         # Execute all tool calls (in parallel where possible)
-        tool_results = await _run_tool_calls(tool_calls, confirm=confirm)
+        tool_results = await _run_tool_calls(tool_calls, confirm=confirm, observe=observe)
         messages.extend(tool_results)
 
     # Exceeded max rounds — ask model to wrap up without more tools
@@ -408,13 +413,23 @@ async def voice_agent_run(
 
 
 async def _run_tool_calls(
-    tool_calls: list[Any], confirm: ConfirmFn | None = None
+    tool_calls: list[Any],
+    confirm: ConfirmFn | None = None,
+    observe: ObserveFn | None = None,
 ) -> list[dict[str, Any]]:
     """Execute tool calls in parallel and return tool-result messages.
 
     Irreversible skills (auto_confirm=False) run only if `confirm` approves them;
-    with no confirm hook they are declined rather than executed.
+    with no confirm hook they are declined rather than executed. `observe` gets a
+    best-effort tool_start/tool_end stream for live surfaces (dashboard feed).
     """
+
+    def _emit(kind: str, data: dict[str, Any]) -> None:
+        if observe:
+            try:
+                observe(kind, data)
+            except Exception:  # noqa: BLE001 — an observer must never break the loop
+                pass
 
     async def _call_one(tc: Any) -> dict[str, Any]:
         fn_name = tc.function.name
@@ -425,6 +440,7 @@ async def _run_tool_calls(
 
         try:
             meta = registry.get(fn_name)
+            _emit("tool_start", {"skill": fn_name, "args": args, "gated": not meta.auto_confirm})
             if not meta.auto_confirm and not (confirm and await confirm(fn_name, args)):
                 result = {
                     "declined": True,
@@ -437,12 +453,19 @@ async def _run_tool_calls(
                     timeout=meta.timeout_s,
                 )
         except KeyError:
+            _emit("tool_start", {"skill": fn_name, "args": args, "gated": False})
             result = {"error": f"Unknown skill: {fn_name}"}
         except TimeoutError:
             result = {"error": f"Skill '{fn_name}' timed out"}
         except Exception as e:  # noqa: BLE001
             result = {"error": str(e)}
 
+        status = (
+            "declined" if isinstance(result, dict) and result.get("declined")
+            else "error" if isinstance(result, dict) and result.get("error")
+            else "ok"
+        )
+        _emit("tool_end", {"skill": fn_name, "status": status})
         return {
             "role": "tool",
             "tool_call_id": tc.id,
