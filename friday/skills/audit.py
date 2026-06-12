@@ -23,6 +23,9 @@ MUTATION_VERBS: frozenset[str] = frozenset({
     "send", "post", "put", "deploy", "push", "install", "uninstall", "overwrite",
     "drop", "purge", "rename", "move", "mv", "forget", "wipe", "destroy", "format",
     "revoke", "set", "open", "create", "update", "modify", "edit", "clear", "reset",
+    # web/desktop action surface (Phase 1.5): anything that fills, clicks, or types
+    # acts on the world and must be gated.
+    "fill", "submit", "click", "type", "press", "key", "drag",
 })
 
 # Mutation-named skills reviewed safe to auto-run: the action is low-stakes and
