@@ -37,6 +37,11 @@ POLL_INTERVAL_S = int(os.getenv("AMBIENT_POLL_S", "5"))
 FLUSH_INTERVAL_S = int(os.getenv("AMBIENT_FLUSH_S", str(20 * 60)))  # 20 min
 IDLE_THRESHOLD_S = int(os.getenv("AMBIENT_IDLE_S", "120"))  # AFK after 2 min no input
 
+# Graph hygiene: auto-purge edge-level dialogue-narration facts each flush (see
+# store.looks_like_narration_fact). OFF by default — deletion stays preview-first
+# (`scripts/clean_memory.py --narration`); flip on once you trust the classifier.
+SWEEP_NARRATION = _flag("AMBIENT_SWEEP_NARRATION", False)
+
 # --- Noise filters (file activity) ---
 IGNORE_PARTS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv", ".mypy_cache",

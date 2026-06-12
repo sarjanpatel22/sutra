@@ -22,13 +22,18 @@ import psutil
 from friday.memory.store import get_store
 
 
-def _gpu() -> str | None:
+def _gpu() -> tuple[str, int] | None:
+    """(name, VRAM in MB) from nvidia-smi, or None if no GPU / driver present."""
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-gpu=name,memory.total",
+             "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5,
         ).stdout.strip()
-        return out.splitlines()[0] if out else None
+        if not out:
+            return None
+        name, mb = out.splitlines()[0].split(",")
+        return name.strip(), int(mb)
     except Exception:  # noqa: BLE001 — no GPU / driver: just skip the fact
         return None
 
@@ -52,6 +57,9 @@ def gather_facts() -> list[str]:
         "Sarjan is from Sudbury, Ontario, Canada.",
         "Sarjan is a software engineer at Acme Corp.",
         "Sarjan is building Sutra, a voice-native ambient AI assistant.",
+        # Atomic restatement: extraction drops adjectives buried in the compound
+        # sentence above ("voice-native" was lost), so state the descriptor alone.
+        "Sutra is a voice-native ambient AI assistant.",
         # --- this machine (live values) ---
         f"Sarjan's computer is named {host} and runs {os_name} on Linux kernel {kernel}.",
         f"Sarjan's machine has {ram_gb} GB of RAM, a {cores}-core CPU, "
@@ -65,7 +73,11 @@ def gather_facts() -> list[str]:
     ]
     gpu = _gpu()
     if gpu:
-        facts.insert(4, f"Sarjan's machine has an {gpu.replace(' MiB', ' MB')} GPU.")
+        name, vram_mb = gpu
+        # Two atomic facts — a compound "…3080 Ti, 16384 MB GPU" loses the VRAM
+        # value in extraction; split so name and VRAM each survive as their own edge.
+        facts.append(f"Sarjan's GPU is an {name}.")
+        facts.append(f"Sarjan's GPU has {round(vram_mb / 1024)} GB of VRAM ({vram_mb} MB).")
     return facts
 
 

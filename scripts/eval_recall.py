@@ -42,7 +42,7 @@ PROBES: list[tuple[str, str]] = [
     ("What kind of assistant is Sutra?", "voice-native"),
     ("What Linux kernel version runs on the machine?", "6.19"),
     ("What GPU does the machine have?", "3080"),
-    ("How much VRAM does the GPU have?", "16384"),
+    ("How much VRAM does the GPU have?", "16 g"),  # "16 GB" / "16 gigabytes"
     ("How much RAM does the machine have?", "33 gb"),
     ("How many CPU cores does the machine have?", "20-core"),
     ("How big is the disk?", "151 gb"),
