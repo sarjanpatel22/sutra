@@ -30,6 +30,21 @@ _DASH_HTML = Path(__file__).with_name("dashboard.html")
 _ORB_HTML = Path(__file__).with_name("orb.html")
 _HEARTBEAT_S = 15.0  # SSE keepalive comment cadence
 
+# Landing page for Sutra's own browser when it auto-launches with the dashboard —
+# in the same gold-on-obsidian language, so the window reads as intentional, not stray.
+_BROWSER_SPLASH = b"""<!DOCTYPE html><html lang=en><head><meta charset=utf-8>
+<title>Sutra's Browser</title><style>
+html,body{height:100%;margin:0;background:#070502;color:#D8C076;
+font-family:"JetBrains Mono",monospace;display:flex;align-items:center;
+justify-content:center;flex-direction:column;gap:16px}
+.r{letter-spacing:10px;font-size:13px;color:rgba(245,238,220,.78)}
+.s{letter-spacing:2px;font-size:10px;color:rgba(216,196,133,.42);max-width:540px;
+text-align:center;line-height:2}</style></head><body>
+<div class=r>SUTRA &middot; BROWSER</div>
+<div class=s>this window is hers. log into any site here once &mdash; she reuses the
+session.<br>ask her to do something and she'll drive this window while you watch.</div>
+</body></html>"""
+
 _bridge: Bridge | None = None
 
 
@@ -79,6 +94,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, _DASH_HTML.read_bytes(), "text/html; charset=utf-8")
             elif path == "/orb":
                 self._send(200, _ORB_HTML.read_bytes(), "text/html; charset=utf-8")
+            elif path == "/sutra-browser":  # splash for the auto-launched browser
+                self._send(200, _BROWSER_SPLASH, "text/html; charset=utf-8")
             elif path == "/api/state":
                 self._json(200, get_state())
             elif path == "/api/skills":
@@ -174,8 +191,11 @@ def serve(
         def _open() -> None:
             if not (fullscreen and _launch_fullscreen(url)):
                 webbrowser.open(url)
+            # auto-launch Sutra's own browser alongside, parked on its splash, so it's
+            # already on screen for web tasks instead of popping up mid-conversation
+            get_bridge().warm_browser(f"{url}sutra-browser")
         threading.Timer(0.6, _open).start()
-        print("      borderless app window · close it (or Ctrl+C here) to exit.\n"
+        print("      borderless app window + Sutra's browser · close to exit.\n"
               if fullscreen else "      windowed · Ctrl+C to stop.\n")
     else:
         print("      serving only (no window) · Ctrl+C to stop.\n")

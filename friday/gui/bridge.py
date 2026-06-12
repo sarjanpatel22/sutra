@@ -87,6 +87,28 @@ class Bridge:
         )
         self._thread.start()
 
+    def warm_browser(self, start_url: str = "") -> None:
+        """Eagerly open Sutra's browser on the bridge loop (dashboard startup), so it's
+        already on screen instead of popping up mid-task. Fire-and-forget; a missing
+        browser/display just leaves it unlaunched (web_task surfaces that later)."""
+        if not self._loop:
+            return
+
+        async def _warm() -> None:
+            try:
+                from friday.skills.browser_session import get_page
+
+                page = await get_page()
+                if start_url:
+                    try:
+                        await page.goto(start_url, wait_until="domcontentloaded", timeout=15_000)
+                    except Exception:  # noqa: BLE001 — splash nav is cosmetic
+                        pass
+            except Exception:  # noqa: BLE001 — no browser/display; degrade silently
+                pass
+
+        asyncio.run_coroutine_threadsafe(_warm(), self._loop)
+
     def stop(self) -> None:
         if self._loop:
             loop = self._loop

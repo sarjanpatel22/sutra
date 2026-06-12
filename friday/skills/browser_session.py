@@ -78,7 +78,13 @@ async def get_page() -> Any:
         user_data_dir=str(_PROFILE_DIR),
         headless=_headless(),
         viewport=_VIEWPORT,
-        args=["--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check"],
+        args=[
+            "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
+            # a visible floating window (not maximized over the dashboard) so you can
+            # see her work and still get back to the dashboard behind it
+            f"--window-size={_VIEWPORT['width']},{_VIEWPORT['height']}",
+            "--window-position=140,90",
+        ],
     )
     _loop = running
     return _context.pages[0] if _context.pages else await _context.new_page()

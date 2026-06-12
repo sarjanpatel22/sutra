@@ -60,6 +60,7 @@ def sse_until(base_url, kind, timeout=6.0):
 def test_pages_and_read_apis(base):
     assert b"CONVERSATION" in get(base + "/").read()
     assert b"THREE" in get(base + "/orb").read()  # the orb rides along for the iframe
+    assert b"SUTRA" in get(base + "/sutra-browser").read()  # splash for her auto-browser
     skills = json.load(get(base + "/api/skills"))
     by_name = {s["name"]: s for s in skills}
     assert len(skills) > 20
