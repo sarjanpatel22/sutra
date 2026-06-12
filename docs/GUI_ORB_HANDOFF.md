@@ -59,7 +59,16 @@ silences→<0.1) walked by a daemon thread paced to playback. Covered by `tests/
 3. Optional UX: auto-launch the orb alongside `sutra voice` (today they're separate processes), or a `sutra-orb` systemd user unit for an always-on ambient presence (mirror `infra/systemd/sutra-ambient.service`).
 4. Later (deferred, multi-week): the full Tauri + Next.js dashboard (Phase 1.7/1.10) — keep the orb on the stdlib-serve path until then.
 
+## Dashboard (Phase 1.7 MVP, 2026-06-12)
+`sutra dashboard` (port 8720) wraps the orb in the working surface: the untouched orb
+page rides as an iframe backdrop under glass panels — conversation (real agent turns),
+live action feed (tool calls as they fire, gate badges), telemetry (p50/p95 + spend),
+and confirmation cards (approve/decline irreversible skills by click; silence declines).
+Same stdlib-serve + chromium `--app` path, zero new deps. Files: `friday/gui/bridge.py`
+(EventBus + asyncio-loop bridge, confirm Future round-trip), `friday/gui/dashboard.py`
+(SSE + POST endpoints), `friday/gui/dashboard.html` (single-file UI, orb palette).
+
 ## Related
 - `friday/gui/server.py` — stdlib http server + chromium kiosk launcher (`_launch_fullscreen`).
-- `friday/cli.py` — `sutra orb` command (`--windowed`, `--no-open`).
+- `friday/cli.py` — `sutra orb` / `sutra dashboard` commands (`--windowed`, `--no-open`).
 - `docs/FRIDAY_VISUAL_DIRECTION.md` — original visual spec (palettes/motion).

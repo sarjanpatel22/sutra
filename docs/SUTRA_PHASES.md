@@ -240,17 +240,17 @@ All irreversible actions route through the confirm gate; deterministic + autonom
 
 | Work item | Done? |
 |-----------|-------|
-| Tauri scaffold + Next.js 14 inside | ⬜ |
-| Tailwind + shadcn/ui + assistant-ui wired | ⬜ |
-| Widget: memory graph (FalkorDB vis) | ⬜ |
-| Widget: task/skill state | ⬜ |
-| Widget: file/code preview | ⬜ |
-| Widget: web cards (search results) | ⬜ |
-| Widget: settings panel | ⬜ |
-| Vercel AI SDK `streamUI` wired for generative layout | ⬜ |
-| WebSocket connection to Friday backend | ⬜ |
+| Tauri scaffold + Next.js 14 inside | ➖ deliberately deferred — MVP shipped on the proven stdlib-serve + chromium `--app` path (zero toolchain, $0); revisit Tauri when packaging/distribution matters |
+| Tailwind + shadcn/ui + assistant-ui wired | ➖ same call: single-file zero-dep `dashboard.html` in the locked gold-on-obsidian orb language |
+| Widget: memory graph (FalkorDB vis) | ➖ exists standalone (`sutra graph`, full 3D viewer); embedding it into the dashboard = next slice |
+| Widget: task/skill state | ✅ live action feed (tool_start/tool_end via agent `observe` hook) + gate badges + skill posture counts (06-12) |
+| Widget: file/code preview | ⬜ next slice |
+| Widget: web cards (search results) | ⬜ next slice |
+| Widget: settings panel | ➖ partial: live model-tier selector in the composer; full panel later |
+| Vercel AI SDK `streamUI` wired for generative layout | ➖ deferred with the React arc (generative layout is Phase 1.10) |
+| WebSocket connection to Friday backend | ✅ as SSE + POST (stdlib has no WS server; same live-stream capability, simpler protocol): `/api/events` replay+heartbeat stream, `/api/chat`, `/api/confirm` (06-12) |
 
-**Exit criteria:** GUI launches, connects to live backend, shows real state.
+**Exit criteria:** GUI launches, connects to live backend, shows real state. **✅ Met 2026-06-12** — `sutra dashboard` opens a borderless window: glass panels over the live orb, real agent turns (free tier, tool calls visible as they fire), live p50/p95 + spend telemetry, and **confirmation cards** — the gate on screen: Sutra asks permission before any irreversible skill, click to approve/decline, silence declines after 120s. Bridge + server fully tested over real HTTP (no LLM in tests).
 
 ---
 

@@ -288,6 +288,17 @@ def orb(
 
 
 @app.command()
+def dashboard(
+    port: int = typer.Option(8720, "--port", "-p", help="Port to serve the dashboard on"),
+    no_open: bool = typer.Option(False, "--no-open", help="Just serve, don't open a window"),
+    windowed: bool = typer.Option(False, "--windowed", help="Normal browser tab (not full-screen)"),
+) -> None:
+    """Open the Sutra dashboard — chat, live actions, and telemetry around the orb."""
+    from friday.gui.dashboard import serve
+    serve(port=port, open_browser=not no_open, fullscreen=not windowed)
+
+
+@app.command()
 def ambient(
     once: bool = typer.Option(False, "--once", help="Single poll+flush then exit (test)"),
 ) -> None:
