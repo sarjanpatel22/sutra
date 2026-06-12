@@ -51,9 +51,13 @@ TIER_MODELS: dict[Tier, list[str]] = {
         "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
     ],
+    # Free tier with headroom: distinct model buckets so one provider's rate limit
+    # doesn't take the whole tier down (70b best → gemini → fast 8b → gemini-2.0).
     Tier.MEDIUM: [
         "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
+        "groq/llama-3.1-8b-instant",
+        "gemini/gemini-2.0-flash",
     ],
     Tier.HEAVY: [
         os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),
@@ -294,6 +298,11 @@ async def complete(
 
     last_err: Exception | None = None
     for model in models:
+        # Local models can't do function-calling — handing them tools makes them emit
+        # malformed tool-call JSON as the answer. Strip tools on the local fallback rung
+        # so a degraded turn returns clean prose instead of "{".
+        is_local = model.startswith(("ollama/", "ollama_chat/"))
+        call_tools = None if is_local else tools
         try:
             call_kwargs = dict(kwargs)
             if stream:
@@ -304,7 +313,7 @@ async def complete(
                 stream=stream,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                tools=tools,
+                tools=call_tools,
                 **call_kwargs,
             )
             if stream:
