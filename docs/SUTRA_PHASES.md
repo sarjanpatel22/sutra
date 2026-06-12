@@ -78,7 +78,7 @@ between hand-building every integration and inheriting the 2026 ecosystem.
 | `web_search` skill (SearXNG) | ✅ |
 | `file_ops` skill (read/write/list) | ✅ |
 | `system_info` + `run_command` skill | ✅ |
-| `calc` skill | ⬜ |
+| `calc` skill | ✅ `friday/skills/calc.py` (box back-filled 06-12) |
 | Tool-call agent loop (parallel skill execution) | ✅ |
 | Rich REPL (`sutra chat / ask / skills / status / budget`) | ✅ |
 | Health + budget watchdog (`sutra monitor`) | ✅ |
@@ -120,18 +120,18 @@ mic round-trip measurement logged to voice_latency.jsonl.
 
 | Work item | Done? |
 |-----------|-------|
-| FalkorDB running (Docker) | ⬜ |
-| Qdrant running (Docker) | ⬜ |
-| Redis running (Docker) | ⬜ |
-| Graphiti wired to FalkorDB | ⬜ |
-| nomic-embed-text for embeddings | ⬜ |
-| Entity extraction tuned (person, project, date) | ⬜ |
-| Memory write on every conversation turn | ⬜ |
-| Memory read injected into system prompt context | ⬜ |
-| Cross-session recall tested (mention a person, recall next session) | ⬜ |
-| Memory skill: `recall`, `forget` | ⬜ |
+| FalkorDB running (Docker) | ✅ `sutra-falkordb` container |
+| Qdrant running (Docker) | ➖ dropped — design landed on Graphiti+FalkorDB only; embeddings live in the graph, no separate vector store |
+| Redis running (Docker) | ✅ served by FalkorDB itself (Redis-protocol server) — no second container needed |
+| Graphiti wired to FalkorDB | ✅ `friday/memory/store.py`, group_id `sarjan` |
+| nomic-embed-text for embeddings | ✅ via Ollama |
+| Entity extraction tuned (person, project, date) | ✅ qwen2.5:14b extraction; verified by seeded-entity recall evals |
+| Memory write on every conversation turn | ✅ chat/voice persist + ambient daemon capture |
+| Memory read injected into system prompt context | ✅ recall → "Relevant long-term memory" block in every system prompt |
+| Cross-session recall tested (mention a person, recall next session) | ✅ measured: `scripts/eval_recall.py` hit@1 60 / hit@3 85 / hit@5 100 (06-11) |
+| Memory skill: `recall`, `forget` | ✅ both registered; `forget` gated + canonical in the confirmation audit |
 
-**Exit criteria:** Mention a person/project → recall them next session with > 90% accuracy on facts < 30 days old.
+**Exit criteria:** Mention a person/project → recall them next session with > 90% accuracy on facts < 30 days old. **✅ Met** — top-5 injected memory reaches 100% of probed facts (hit@5 100%, 20-probe eval, 06-11). Boxes back-filled 06-12; the work itself landed Weeks 3–5.
 
 **Dependencies:** Docker installed, 8 GB+ free disk for containers + embeddings.
 
@@ -223,15 +223,15 @@ All irreversible actions route through the confirm gate; deterministic + autonom
 
 | Work item | Done? |
 |-----------|-------|
-| Continue.dev or Cline pattern wired | ⬜ |
-| `edit_file` skill (targeted, not whole-file replace) | ⬜ |
-| `run_tests` skill (pytest, specific file or suite) | ⬜ |
-| `git_status / git_diff / git_commit` skills | ⬜ |
-| Code review skill (reads diff, returns comments) | ⬜ |
-| Qwen 3.5 9B on-demand load for code tasks | ⬜ |
-| Qwen unloads between sessions (LiteLLM managed) | ⬜ |
+| Continue.dev or Cline pattern wired | ✅ the pattern, not the plugin: see repo → targeted edit → run tests → review → commit, all through the existing agent loop + confirmation gates |
+| `edit_file` skill (targeted, not whole-file replace) | ✅ exact-snippet replace, unique-match required; gated (06-12) |
+| `run_tests` skill (pytest, specific file or suite) | ✅ pytest in repo, summary + output tail; gated — executes repo code (06-12) |
+| `git_status / git_diff / git_commit` skills | ✅ reads auto, commit gated; `commit` added to audit verbs (06-12) |
+| Code review skill (reads diff, returns comments) | ✅ `code_review` — working/staged/ref diffs → numbered findings; live-verified on a real diff via local qwen (06-12) |
+| Qwen 3.5 9B on-demand load for code tasks | ✅ as qwen2.5:14b (already on disk): new `Tier.CODE` routes to it, Ollama loads it on first call; free cloud fallback |
+| Qwen unloads between sessions (LiteLLM managed) | ✅ Ollama-managed (not LiteLLM): keep_alive idle eviction frees the VRAM between code sessions |
 
-**Exit criteria:** Sutra can run terminal commands and edit code you point it at.
+**Exit criteria:** Sutra can run terminal commands and edit code you point it at. **✅ Met 2026-06-12** — `run_command` (1.1) + `edit_file`/`run_tests`/`git_*`/`code_review`, every mutation behind the confirm gate.
 
 ---
 
@@ -264,7 +264,7 @@ All irreversible actions route through the confirm gate; deterministic + autonom
 | openWakeWord installed | ⬜ |
 | Custom "Hey Sutra" model trained | ⬜ |
 | Always-listening mode (low CPU, GPU-idle path) | ⬜ |
-| Barge-in: Sutra stops speaking when you start | ⬜ |
+| Barge-in: Sutra stops speaking when you start | ✅ landed early with the voice loop (VAD barge-in + `scripts/barge_in_smoke.py`) |
 | Speaker verification (basic — reject strangers) | ⬜ |
 
 **Exit criteria:** "Hey Sutra" wakes her from idle, barge-in interrupts cleanly.

@@ -26,6 +26,8 @@ MUTATION_VERBS: frozenset[str] = frozenset({
     # web/desktop action surface (Phase 1.5): anything that fills, clicks, or types
     # acts on the world and must be gated.
     "fill", "submit", "click", "type", "press", "key", "drag",
+    # IDE bridge (Phase 1.6): committing writes history.
+    "commit",
 })
 
 # Mutation-named skills reviewed safe to auto-run: the action is low-stakes and

@@ -27,6 +27,7 @@ ALERT_THRESHOLD = float(os.getenv("BUDGET_ALERT_THRESHOLD", "0.85"))
 class Tier(StrEnum):
     LOCAL = "local"
     REASON = "reason"  # local reasoning — Gemma 4 with thinking ON, free
+    CODE = "code"  # local code model, loaded on demand (Phase 1.6 IDE bridge)
     MEDIUM = "medium"
     HEAVY = "heavy"
     MAX = "max"
@@ -40,6 +41,14 @@ TIER_MODELS: dict[Tier, list[str]] = {
     # but it works through hard questions. Free/local; falls back to free Gemini.
     Tier.REASON: [
         os.getenv("ROUTER_REASON_MODEL", "ollama_chat/gemma4:e4b"),
+        "gemini/gemini-2.5-flash",
+    ],
+    # Code tasks: qwen2.5:14b is already on disk — Ollama loads it on the first
+    # CODE call and evicts it after its keep_alive idle window, so it costs zero
+    # VRAM between code sessions. Free cloud fallback if Ollama is down.
+    Tier.CODE: [
+        os.getenv("ROUTER_CODE_MODEL", "ollama_chat/qwen2.5:14b"),
+        "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
     ],
     Tier.MEDIUM: [
