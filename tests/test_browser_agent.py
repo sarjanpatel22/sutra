@@ -92,6 +92,14 @@ class _FakePage:
         self.keyboard = self
         self.wheels = 0
 
+    @property
+    def main_frame(self):  # _observe traverses frames; the fake page is its own frame
+        return self
+
+    @property
+    def frames(self):
+        return [self]
+
     async def goto(self, url, **k):
         type(self).url = url
 
@@ -144,18 +152,21 @@ async def test_web_task_clicks_then_finishes(monkeypatch):
     assert out["steps"] == 2
 
 
-async def test_web_task_runs_to_max_steps_when_model_loops(monkeypatch):
-    """If the model keeps emitting the same scroll, the run ends at max_steps instead
-    of hanging — the loop guard nudges but never deadlocks."""
+async def test_web_task_hard_stops_when_model_loops(monkeypatch):
+    """3 identical actions in a row → hard stop with an honest 'stuck' answer, in
+    seconds, instead of spinning to max_steps (the live TryHackMe 95s failure)."""
     page = _FakePage([])
 
     async def fake_get_page():
         return page
 
     monkeypatch.setattr(ba, "get_page", fake_get_page)
-    monkeypatch.setattr(ba, "complete", _llm_returning(*['{"action":"scroll","amount":700}'] * 4))
-    out = await web_task("find the thing", "https://site.test", max_steps=4)
-    assert out["steps"] == 4 and page.wheels == 4  # acted each step, then stopped
+    monkeypatch.setattr(ba, "complete", _llm_returning(*['{"action":"scroll","amount":700}'] * 8))
+    out = await web_task("find the thing", "https://site.test", max_steps=8)
+    assert out.get("stuck") is True       # bailed honestly
+    assert out["steps"] == 3              # stopped after 3 identical, not 8
+    assert page.wheels == 3
+    assert "stuck" in out["answer"].lower()
 
 
 async def test_web_task_reports_browser_launch_failure(monkeypatch):

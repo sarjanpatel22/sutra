@@ -53,6 +53,16 @@ and say the user must log in to Sutra's browser first. Indices refer ONLY to the
 current element list."""
 
 _OBSERVE_SELECTOR = "a[href], button, input, textarea, select, [role=button], [onclick]"
+
+# Honest failure answers fed back to the speaker so it never pretends or blames the user.
+_STUCK_MSG = (
+    "I got stuck on that page — a button I kept trying didn't respond, so I stopped. "
+    "The site may need a manual click."
+)
+_MAXED_MSG = (
+    "I worked through several steps but couldn't finish that one on this site. "
+    "It may need a hand, or a more specific instruction."
+)
 # input types that are never a useful target (prefs, toggles) — skip them outright.
 _SKIP_INPUT_TYPES = {"hidden", "radio", "checkbox", "range", "color", "file"}
 # is this element inside the page's main content (a result/article) vs nav/footer chrome?
@@ -62,12 +72,17 @@ _IN_MAIN_JS = (
 )
 
 
-async def _observe(page: Any, cap: int = 50) -> tuple[list[Any], list[str]]:
-    """Indexed interactive elements, **content first** so real results aren't buried
-    under nav/preference chrome. Returns (handles, rendered lines)."""
-    primary: list[tuple[Any, str]] = []   # links/controls inside the main content
-    chrome: list[tuple[Any, str]] = []    # nav/footer/header — kept only as filler
-    for el in await page.query_selector_all(_OBSERVE_SELECTOR):
+async def _collect_frame(frame: Any, is_subframe: bool,
+                         primary: list, chrome: list) -> None:
+    """Pull interactive elements from one frame into primary/chrome buckets.
+
+    Sites like TryHackMe render the real content (Start Machine, tasks) inside an
+    iframe — its elements are always 'primary' (they ARE the embedded app)."""
+    try:
+        els = await frame.query_selector_all(_OBSERVE_SELECTOR)
+    except Exception:  # noqa: BLE001 — cross-origin / detached frame
+        return
+    for el in els:
         try:
             if not await el.is_visible():
                 continue
@@ -83,12 +98,24 @@ async def _observe(page: Any, cap: int = 50) -> tuple[list[Any], list[str]]:
                     if label:
                         break
             val = await el.get_attribute("value") if tag in ("input", "textarea") else None
-            in_main = bool(await el.evaluate(_IN_MAIN_JS))
+            in_main = is_subframe or bool(await el.evaluate(_IN_MAIN_JS))
         except Exception:  # noqa: BLE001 — detached/odd node; skip it
             continue
         extra = f" ={val!r}" if val else ""
         rendered = f"<{tag}> {' '.join(label.split())[:80]}{extra}"
         (primary if in_main else chrome).append((el, rendered))
+
+
+async def _observe(page: Any, cap: int = 50) -> tuple[list[Any], list[str]]:
+    """Indexed interactive elements, **content first** so real results aren't buried
+    under nav/preference chrome — and traversing iframes so embedded app content
+    (TryHackMe rooms, embedded forms) is actually visible. Returns (handles, lines)."""
+    primary: list[tuple[Any, str]] = []   # main content + iframe (embedded app) controls
+    chrome: list[tuple[Any, str]] = []    # nav/footer/header — kept only as filler
+    await _collect_frame(page.main_frame, False, primary, chrome)
+    for frame in page.frames:
+        if frame is not page.main_frame:
+            await _collect_frame(frame, True, primary, chrome)
 
     ordered = primary + chrome  # content links the model needs come first
     handles: list[Any] = []
@@ -220,14 +247,21 @@ async def web_task(
     trace: list[dict[str, Any]] = []
     recent_sigs: list[str] = []
     for _ in range(steps_cap):
+        # Hard stop: 3 identical actions in a row means the page isn't responding to it
+        # (TryHackMe et al.) — bail honestly in seconds instead of spinning to max steps.
+        if len(recent_sigs) >= 3 and len(set(recent_sigs[-3:])) == 1:
+            return {
+                "goal": goal, "answer": _STUCK_MSG, "stuck": True,
+                "url": page.url, "steps": len(trace), "trace": trace,
+            }
         handles, lines = await _observe(page)
         # main-content text (not raw body) so the model sees the article, not nav chrome
         text = (await _best_text(page))[:1800]
-        # if the last 3 actions were identical, the model is stuck — say so explicitly
-        stuck = len(recent_sigs) >= 3 and len(set(recent_sigs[-3:])) == 1
+        # after 2 identical actions, warn the model before the hard stop kicks in
+        stuck = len(recent_sigs) >= 2 and len(set(recent_sigs[-2:])) == 1
         nudge = (
-            "\n\nYou have repeated the same action 3 times with no progress — "
-            "STOP repeating it. Pick a DIFFERENT element or finish with done."
+            "\n\nThat last action did nothing twice. Do NOT repeat it — pick a DIFFERENT "
+            "element, scroll to find a better one, or finish with done."
             if stuck else ""
         )
         obs = (
@@ -262,5 +296,5 @@ async def web_task(
         if err:
             trace[-1]["error"] = err
 
-    return {"goal": goal, "answer": "(max steps reached)", "url": page.url,
+    return {"goal": goal, "answer": _MAXED_MSG, "url": page.url,
             "steps": len(trace), "trace": trace}
