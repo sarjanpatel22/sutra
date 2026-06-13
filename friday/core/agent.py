@@ -373,7 +373,7 @@ def cloud_tools_available() -> bool:
 # own logged-in browser. Everything else irreversible (run_command, run_python,
 # write_file, edit_file, git_commit, desktop type/click/key, forget…) is still
 # DECLINED by voice — you can't talk Sutra into writing files or running commands.
-_VOICE_AUTO_APPROVE = {"web_task", "fill_form"}
+_VOICE_AUTO_APPROVE = {"web_task", "web_task_vision", "fill_form"}
 
 
 async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
