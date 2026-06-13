@@ -7,7 +7,23 @@ autonomous browse-and-act run is gated.
 
 import friday.skills.browser_agent as ba
 from friday.skills import registry
-from friday.skills.browser_agent import _parse_action, web_task
+from friday.skills.browser_agent import _history_block, _parse_action, _signature, web_task
+
+
+def test_history_block_empty_and_populated():
+    assert "nothing yet" in _history_block([])
+    block = _history_block([
+        {"action": {"action": "type", "index": 2, "text": "linux"}},
+        {"action": {"action": "click", "index": 5}, "error": "element gone"},
+    ])
+    assert "type" in block and "linux" in block and "ERROR: element gone" in block
+
+
+def test_signature_distinguishes_actions():
+    a = _signature({"action": "scroll", "amount": 700})
+    assert a == _signature({"action": "scroll", "amount": 700})  # stable
+    assert a != _signature({"action": "scroll", "amount": -700})  # target-sensitive
+    assert a != _signature({"action": "click", "index": 1})
 
 
 def test_parse_action_plain_json():
@@ -58,6 +74,12 @@ class _FakeHandle:
     async def click(self, **k):
         self._clicks.append(True)
 
+    async def fill(self, _text):
+        return None
+
+    async def press(self, _key):
+        return None
+
 
 class _FakePage:
     """Minimal Playwright Page stand-in: one clickable button, fixed text."""
@@ -67,6 +89,8 @@ class _FakePage:
     def __init__(self, clicks):
         self._clicks = clicks
         self.mouse = self
+        self.keyboard = self
+        self.wheels = 0
 
     async def goto(self, url, **k):
         type(self).url = url
@@ -83,8 +107,11 @@ class _FakePage:
     async def wait_for_load_state(self, *a, **k):
         return None
 
-    async def wheel(self, *a, **k):
+    async def press(self, _key):  # keyboard.press
         return None
+
+    async def wheel(self, *a, **k):
+        self.wheels += 1
 
 
 def _llm_returning(*replies):
@@ -115,6 +142,20 @@ async def test_web_task_clicks_then_finishes(monkeypatch):
     assert out["answer"] == "started"
     assert clicks == [True]  # it really actuated the page
     assert out["steps"] == 2
+
+
+async def test_web_task_runs_to_max_steps_when_model_loops(monkeypatch):
+    """If the model keeps emitting the same scroll, the run ends at max_steps instead
+    of hanging — the loop guard nudges but never deadlocks."""
+    page = _FakePage([])
+
+    async def fake_get_page():
+        return page
+
+    monkeypatch.setattr(ba, "get_page", fake_get_page)
+    monkeypatch.setattr(ba, "complete", _llm_returning(*['{"action":"scroll","amount":700}'] * 4))
+    out = await web_task("find the thing", "https://site.test", max_steps=4)
+    assert out["steps"] == 4 and page.wheels == 4  # acted each step, then stopped
 
 
 async def test_web_task_reports_browser_launch_failure(monkeypatch):
