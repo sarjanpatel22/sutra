@@ -32,9 +32,12 @@ _VOICE_RULES = (
     "Answer from your own knowledge; don't call tools or functions."
 )
 _VOICE_TOOL_RULES = (
-    "Use the provided tools to get real, current info instead of guessing. After they return, "
-    "reply in spoken English, under 20 words, no markdown or lists — "
-    "just say it naturally, in character."
+    "You have real tools that actually DO things — open or show a website, search the web, "
+    "navigate, run a task. When the user asks you to DO, OPEN, SHOW, START, or FIND something, "
+    "you MUST call the matching tool to really do it. NEVER claim you did it ('right this way', "
+    "'here you go', 'TryHackMe it is') without calling the tool first — pretending is a failure. "
+    "Also use tools for real/current info instead of guessing. After a tool returns, reply in "
+    "spoken English, under 20 words, no markdown or lists — naturally, in character."
 )
 
 

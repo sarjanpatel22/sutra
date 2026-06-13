@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -14,6 +15,8 @@ from friday.core.router import Tier, complete
 from friday.core.turnlog import log_text_turn
 from friday.memory.store import get_store, looks_like_noise
 from friday.skills import registry
+
+_log = logging.getLogger("sutra.agent")
 
 # Confirmation hook: given (skill_name, args), return True to allow an
 # auto_confirm=False (irreversible) skill to run. None = always decline.
@@ -406,7 +409,11 @@ async def voice_agent_run(
 
     tools = registry.all_tools()
     for _ in range(max_tool_rounds):
-        response = await complete(messages, tier=tier, tools=tools, max_tokens=256)
+        # Low temperature here: action requests must reliably trigger a tool call,
+        # not a witty "right this way" that never actually does it.
+        response = await complete(
+            messages, tier=tier, tools=tools, max_tokens=256, temperature=0.3
+        )
         msg = response.choices[0].message
         messages.append({
             "role": "assistant",
@@ -416,6 +423,8 @@ async def voice_agent_run(
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
             return (msg.content or "").strip()
+        names = ", ".join(getattr(tc, "function", tc).name for tc in tool_calls)
+        _log.info("voice tool call(s): %s", names)
         # Web/browser tasks approved hands-free; destructive skills declined.
         messages.extend(await _run_tool_calls(tool_calls, confirm=_voice_confirm))
 
