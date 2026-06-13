@@ -1,25 +1,32 @@
-"""Tests for automatic tier selection — simple→MEDIUM (free), hard→HEAVY (Claude)."""
+"""Tests for the auto router — one brain decides act-vs-chat + effort, free by default."""
 
 import pytest
 
 import friday.core.autoroute as ar
-from friday.core.autoroute import pick_tier, route
+from friday.core.autoroute import decide, pick_tier, route
 from friday.core.router import Tier
+
+_FREE = {Tier.MEDIUM, Tier.CODE, Tier.LOCAL, Tier.REASON}
+
+
+@pytest.mark.parametrize("text", [
+    "hi", "thanks!", "what do you think of that", "tell me a joke", "good morning",
+])
+def test_chitchat_does_not_act_and_stays_free(text):
+    d = decide(text)
+    assert d.act is False and d.effort == "low" and d.tier in _FREE
 
 
 @pytest.mark.parametrize("text", [
     "what time is it?",
-    "hi",
     "how much RAM do I have",
-    "what's 17 times 23",
-    "who won the game last night",
-    "thanks!",
+    "search for the latest news",
+    "what's the weather",
+    "do you remember my sister's name",
 ])
-def test_simple_turns_stay_free(text):
-    assert pick_tier(text) is Tier.MEDIUM
-
-
-_FREE = {Tier.MEDIUM, Tier.CODE, Tier.LOCAL, Tier.REASON}
+def test_light_tool_turns_act_at_medium(text):
+    d = decide(text)
+    assert d.act is True and d.effort == "medium" and d.tier is Tier.MEDIUM
 
 
 @pytest.mark.parametrize("text", [
@@ -28,28 +35,36 @@ _FREE = {Tier.MEDIUM, Tier.CODE, Tier.LOCAL, Tier.REASON}
     "log in to my account and book the appointment",
     "analyze this error and figure out the fix",
     "compare these two approaches and recommend one",
-    "research the best GPUs and summarize",
     "first open the site, and then fill out the form",
 ])
-def test_hard_turns_stay_free_by_default(text, monkeypatch):
+def test_high_turns_act_and_stay_free_by_default(text, monkeypatch):
     monkeypatch.delenv("ROUTER_ALLOW_PAID", raising=False)
-    assert pick_tier(text) in _FREE  # heavy classification, but never the paid tier
+    d = decide(text)
+    assert d.act is True and d.effort == "high" and d.tier in _FREE
+
+
+def test_tryhackme_phrase_now_goes_agentic():
+    # The exact phrase that silently fell to local chat before — must act now.
+    d = decide("go to tryhackme.com and start a room")
+    assert d.act is True and d.effort == "high"
 
 
 def test_coding_routes_to_free_code_tier(monkeypatch):
     monkeypatch.delenv("ROUTER_ALLOW_PAID", raising=False)
-    assert pick_tier("refactor this function and write a unit test") is Tier.CODE
+    d = decide("refactor this function and write a unit test")
+    assert d.act is True and d.tier is Tier.CODE and d.effort == "high"
 
 
-def test_long_request_stays_free(monkeypatch):
+def test_long_request_is_high_and_free(monkeypatch):
     monkeypatch.delenv("ROUTER_ALLOW_PAID", raising=False)
-    assert pick_tier("please " + "detail " * 45) in _FREE
+    d = decide("please " + "detail " * 45)
+    assert d.act is True and d.effort == "high" and d.tier in _FREE
 
 
-def test_paid_flag_enables_claude_for_heavy(monkeypatch):
+def test_paid_flag_enables_claude_for_high(monkeypatch):
     monkeypatch.setenv("ROUTER_ALLOW_PAID", "1")
     assert pick_tier("analyze https://example.com step by step") is Tier.HEAVY
-    assert pick_tier("hello there") is Tier.MEDIUM  # simple still free even when paid allowed
+    assert pick_tier("hello there") is Tier.MEDIUM  # chit-chat free even when paid allowed
 
 
 def test_route_returns_reason(monkeypatch):
@@ -60,9 +75,10 @@ def test_route_returns_reason(monkeypatch):
     assert tier is Tier.MEDIUM and reason
 
 
-def test_word_boundary_avoids_false_heavy():
-    # "plan" inside "explanation" / "planet" must NOT trip the heavy router
-    assert pick_tier("give me a short explanation of planets") is Tier.MEDIUM
+def test_word_boundary_avoids_false_high():
+    # "plan" inside "explanation" / "planet" must NOT trip the high router.
+    d = decide("give me a short explanation of planets")
+    assert d.effort != "high"
 
 
 def test_paid_over_budget_falls_back_to_free(monkeypatch):
@@ -72,7 +88,6 @@ def test_paid_over_budget_falls_back_to_free(monkeypatch):
         daily_pct = 100.0
         monthly_pct = 40.0
     monkeypatch.setattr(ar, "get_budget", lambda: B())
-    # paid allowed, but the day's budget is spent → stay free
     assert pick_tier("analyze https://example.com step by step") in _FREE
 
 

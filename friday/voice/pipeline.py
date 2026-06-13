@@ -228,7 +228,6 @@ async def process_audio(
     """
     from friday.core.agent import (
         cloud_tools_available,
-        likely_needs_tool,
         voice_agent_run,
         voice_stream,
     )
@@ -250,9 +249,15 @@ async def process_audio(
 
     _log.info("STT [%.0fms]: %s", lat.stt_ms, transcript)
 
-    # Skill-needing turns ("what's the weather", "how much RAM") go through cloud
-    # function-calling; chit-chat stays on the fast local path.
-    use_tools = likely_needs_tool(transcript) and cloud_tools_available()
+    # One brain decides: act (cloud function-calling) vs chit-chat (fast local path),
+    # and at what effort. A real task — "go to tryhackme and start a room" — now goes
+    # agentic even without a keyword match; plain talk stays local.
+    from friday.core.autoroute import decide
+
+    plan = decide(transcript)
+    use_tools = plan.act and cloud_tools_available()
+    if plan.act:
+        _log.info("voice route: %s effort (%s) — %s", plan.effort, plan.tier.value, plan.reason)
 
     # Streaming agent → TTS worker thread → speaker
     tts = _get_tts()
@@ -322,10 +327,8 @@ async def process_audio(
         # token-streamed. Synthesize the finished reply, then speak it. Fall back to
         # the local path if the cloud round-trip fails (offline / key issue).
         try:
-            from friday.core.autoroute import pick_tier
-
             reply_text = await voice_agent_run(
-                transcript, history=history, tier=pick_tier(transcript)
+                transcript, history=history, tier=plan.tier
             )
             lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
             reply_tokens = [reply_text]
@@ -392,7 +395,6 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
     """
     from friday.core.agent import (
         cloud_tools_available,
-        likely_needs_tool,
         persist_turn_async,
         voice_agent_run,
         voice_stream,
@@ -403,7 +405,10 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
     if not text:
         return ""
 
-    use_tools = likely_needs_tool(text) and cloud_tools_available()
+    from friday.core.autoroute import decide
+
+    plan = decide(text)
+    use_tools = plan.act and cloud_tools_available()
     tts = _get_tts()
     sample_rate = tts.sample_rate
     token_queue: q_mod.Queue[str | None] = q_mod.Queue()
@@ -444,9 +449,7 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
         # Cloud function-calling needs the whole reply (not token-streamed); fall back
         # to the local streaming path if the cloud round-trip fails (offline/key).
         try:
-            from friday.core.autoroute import pick_tier
-
-            reply_text = await voice_agent_run(text, history=history, tier=pick_tier(text))
+            reply_text = await voice_agent_run(text, history=history, tier=plan.tier)
             reply_tokens = [reply_text]
             token_queue.put(reply_text)
             token_queue.put(None)
