@@ -62,7 +62,8 @@ _ACTION = re.compile(
     r"\b("
     r"open|launch|start (?!over\b)|show me|pull up|bring up|go to|navigate|visit|"
     r"play|run|click|type|fill|book|order|send|download|install|sign up|register|"
-    r"find me|get me|look up|search|browse|deploy|connect to"
+    r"find me|get me|look up|search|browse|deploy|connect to|"
+    r"close|switch to|focus|minimi[sz]e|maximi[sz]e|quit"
     r")\b",
     re.I,
 )
