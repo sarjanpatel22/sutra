@@ -123,3 +123,10 @@ async def test_voice_confirm_policy():
     for destructive in ("run_command", "run_python", "write_file", "edit_file",
                         "git_commit", "forget", "type_text"):
         assert await agent._voice_confirm(destructive, {}) is False
+
+
+def test_spoken_strips_fake_tool_code():
+    assert agent._spoken("```tool_code\nopen_website('x')\n```") == "Done."
+    assert agent._spoken('{"action":"x"}') == "Done."
+    assert agent._spoken("  There you go, love.  ") == "There you go, love."
+    assert agent._spoken(None) == ""

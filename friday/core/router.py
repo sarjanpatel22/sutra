@@ -305,6 +305,8 @@ async def complete(
         call_tools = None if is_local else tools
         try:
             call_kwargs = dict(kwargs)
+            if call_tools is None:
+                call_kwargs.pop("tool_choice", None)  # no tools → can't force a tool call
             if stream:
                 call_kwargs.setdefault("stream_options", {"include_usage": True})
             response = await litellm.acompletion(

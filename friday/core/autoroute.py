@@ -91,6 +91,7 @@ class Decision:
     tier: Tier         # which tier to run on
     effort: str        # "low" | "medium" | "high" — for the UI/feed
     reason: str        # one-line human explanation
+    tool_required: bool = False  # a tool MUST run (open/show/go/search/URL) — force it
 
 
 def _allow_paid() -> bool:
@@ -118,23 +119,29 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
 
     coding = bool(_CODE.search(t))
     action = bool(_ACTION.search(t))
+    is_url = bool(_URL.search(t))
     high = bool(
-        _URL.search(t) or _HEAVY.search(t) or coding or action
+        is_url or _HEAVY.search(t) or coding or action
         or len(t.split()) > 40 or len(t) > 240
     )
 
     if high:
+        # A concrete "do this" turn (open/show/go/search or a URL) — a tool MUST run,
+        # so force it. Analysis/coding/"complex" stays free to answer without a tool.
+        tool_required = is_url or action
         why = (
-            "web task" if _URL.search(t)
+            "web task" if is_url
             else "coding" if coding
             else "action" if action
             else "complex / multi-step"
         )
         if paid:
-            return Decision(True, Tier.HEAVY, "high", f"{why} → Claude")
+            return Decision(True, Tier.HEAVY, "high", f"{why} → Claude", tool_required)
         if coding:
-            return Decision(True, Tier.CODE, "high", f"{why} → free local code model")
-        return Decision(True, Tier.MEDIUM, "high", f"{why} → free 70B")
+            return Decision(
+                True, Tier.CODE, "high", f"{why} → free local code model", tool_required
+            )
+        return Decision(True, Tier.MEDIUM, "high", f"{why} → free 70B", tool_required)
 
     if _NEEDS_TOOL.search(t):
         return Decision(True, Tier.MEDIUM, "medium", "needs a tool → free tier")

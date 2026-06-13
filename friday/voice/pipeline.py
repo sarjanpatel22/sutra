@@ -328,7 +328,8 @@ async def process_audio(
         # the local path if the cloud round-trip fails (offline / key issue).
         try:
             reply_text = await voice_agent_run(
-                transcript, history=history, tier=plan.tier
+                transcript, history=history, tier=plan.tier,
+                force_tool=plan.tool_required,
             )
             lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
             reply_tokens = [reply_text]
@@ -449,7 +450,9 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
         # Cloud function-calling needs the whole reply (not token-streamed); fall back
         # to the local streaming path if the cloud round-trip fails (offline/key).
         try:
-            reply_text = await voice_agent_run(text, history=history, tier=plan.tier)
+            reply_text = await voice_agent_run(
+                text, history=history, tier=plan.tier, force_tool=plan.tool_required
+            )
             reply_tokens = [reply_text]
             token_queue.put(reply_text)
             token_queue.put(None)

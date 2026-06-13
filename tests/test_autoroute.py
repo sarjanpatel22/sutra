@@ -111,3 +111,12 @@ def test_budget_error_does_not_break_routing(monkeypatch):
         raise RuntimeError("no budget file")
     monkeypatch.setattr(ar, "get_budget", boom)
     assert pick_tier("analyze this deeply") is Tier.HEAVY  # falls through cleanly
+
+
+def test_tool_required_only_for_concrete_actions():
+    assert decide("open the tryhackme website").tool_required is True
+    assert decide("go to https://example.com").tool_required is True
+    assert decide("search for the news").tool_required is True
+    # analysis/coding/complex are high-effort but don't force a tool
+    assert decide("analyze the tradeoffs between threads and async").tool_required is False
+    assert decide("tell me a joke").tool_required is False

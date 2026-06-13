@@ -381,11 +381,21 @@ async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
     return skill in _VOICE_AUTO_APPROVE
 
 
+def _spoken(text: str | None) -> str:
+    """Sanitize a reply for TTS. The 70B occasionally emits a fake tool-call / code
+    block as its 'answer' (```tool_code …```, raw JSON) — never read that aloud."""
+    t = (text or "").strip()
+    if "```" in t or "tool_code" in t or t.startswith("{") or t.startswith("print("):
+        return "Done."
+    return t
+
+
 async def voice_agent_run(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
     tier: Tier = Tier.MEDIUM,
     max_tool_rounds: int = 4,
+    force_tool: bool = False,
 ) -> str:
     """Voice turn that can call skills — routed to a tool-capable cloud tier.
 
@@ -408,11 +418,16 @@ async def voice_agent_run(
     messages.append({"role": "user", "content": user_input})
 
     tools = registry.all_tools()
-    for _ in range(max_tool_rounds):
+    for round_i in range(max_tool_rounds):
         # Low temperature here: action requests must reliably trigger a tool call,
-        # not a witty "right this way" that never actually does it.
+        # not a witty "right this way" that never actually does it. When the router
+        # KNOWS a tool must run (open/show/go/search), force one on the first round —
+        # the 70B otherwise sometimes narrates the action instead of calling it.
+        extra: dict[str, Any] = {}
+        if force_tool and round_i == 0:
+            extra["tool_choice"] = "required"
         response = await complete(
-            messages, tier=tier, tools=tools, max_tokens=256, temperature=0.3
+            messages, tier=tier, tools=tools, max_tokens=256, temperature=0.3, **extra
         )
         msg = response.choices[0].message
         messages.append({
@@ -422,7 +437,7 @@ async def voice_agent_run(
         })
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
-            return (msg.content or "").strip()
+            return _spoken(msg.content)
         names = ", ".join(getattr(tc, "function", tc).name for tc in tool_calls)
         _log.info("voice tool call(s): %s", names)
         # Web/browser tasks approved hands-free; destructive skills declined.
@@ -430,7 +445,7 @@ async def voice_agent_run(
 
     # Out of tool rounds — force a final spoken answer with no more tools.
     response = await complete(messages, tier=tier, tools=None, max_tokens=128)
-    return (response.choices[0].message.content or "").strip()
+    return _spoken(response.choices[0].message.content)
 
 
 async def _run_tool_calls(
