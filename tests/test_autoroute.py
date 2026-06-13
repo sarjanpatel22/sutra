@@ -20,13 +20,26 @@ def test_chitchat_does_not_act_and_stays_free(text):
 @pytest.mark.parametrize("text", [
     "what time is it?",
     "how much RAM do I have",
-    "search for the latest news",
     "what's the weather",
     "do you remember my sister's name",
 ])
 def test_light_tool_turns_act_at_medium(text):
     d = decide(text)
     assert d.act is True and d.effort == "medium" and d.tier is Tier.MEDIUM
+
+
+@pytest.mark.parametrize("text", [
+    "okay, can you open the try hack me?",   # natural speech + STT spacing
+    "show me the tryhackme window",
+    "open tryhackme",
+    "can you launch hack the box",
+    "pull up my email",
+    "search for the latest news",
+])
+def test_action_intent_routes_agentic(text):
+    # The real-world failure: spoken action requests must reach the tool agent.
+    d = decide(text)
+    assert d.act is True
 
 
 @pytest.mark.parametrize("text", [

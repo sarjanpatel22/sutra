@@ -54,6 +54,19 @@ _CODE = re.compile(
     re.I,
 )
 
+# Imperative/request action verbs — robust to natural speech & STT spacing (e.g.
+# "can you open the try hack me"). Liberal on purpose: a false positive just routes
+# a chat turn to the (free) tool-capable agent, which simply answers — cheap. Missing
+# a real action (the old failure) is the costly mistake, so we bias toward acting.
+_ACTION = re.compile(
+    r"\b("
+    r"open|launch|start (?!over\b)|show me|pull up|bring up|go to|navigate|visit|"
+    r"play|run|click|type|fill|book|order|send|download|install|sign up|register|"
+    r"find me|get me|look up|search|browse|deploy|connect to"
+    r")\b",
+    re.I,
+)
+
 # Light tool needs: one live fact / a single action. Worth acting on, but not "high".
 # (Folds in what used to be agent.likely_needs_tool so voice no longer needs it.)
 _NEEDS_TOOL = re.compile(
@@ -104,8 +117,9 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
     paid = _paid_ok()
 
     coding = bool(_CODE.search(t))
+    action = bool(_ACTION.search(t))
     high = bool(
-        _URL.search(t) or _HEAVY.search(t) or coding
+        _URL.search(t) or _HEAVY.search(t) or coding or action
         or len(t.split()) > 40 or len(t) > 240
     )
 
@@ -113,6 +127,7 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
         why = (
             "web task" if _URL.search(t)
             else "coding" if coding
+            else "action" if action
             else "complex / multi-step"
         )
         if paid:

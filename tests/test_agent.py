@@ -114,3 +114,12 @@ def test_cloud_tools_available(monkeypatch):
     assert agent.cloud_tools_available() is False
     monkeypatch.setenv("GROQ_API_KEY", "x")
     assert agent.cloud_tools_available() is True
+
+
+async def test_voice_confirm_policy():
+    """Voice runs web/browser tasks hands-free but declines destructive ops."""
+    assert await agent._voice_confirm("web_task", {}) is True
+    assert await agent._voice_confirm("fill_form", {}) is True
+    for destructive in ("run_command", "run_python", "write_file", "edit_file",
+                        "git_commit", "forget", "type_text"):
+        assert await agent._voice_confirm(destructive, {}) is False

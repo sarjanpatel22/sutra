@@ -366,6 +366,18 @@ def cloud_tools_available() -> bool:
     return any(os.getenv(k) for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"))
 
 
+# Gated skills voice may run hands-free: the browsing/navigation family, in Sutra's
+# own logged-in browser. Everything else irreversible (run_command, run_python,
+# write_file, edit_file, git_commit, desktop type/click/key, forget…) is still
+# DECLINED by voice — you can't talk Sutra into writing files or running commands.
+_VOICE_AUTO_APPROVE = {"web_task", "fill_form"}
+
+
+async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
+    """Voice's confirmation policy: approve web/browser tasks, decline destructive ops."""
+    return skill in _VOICE_AUTO_APPROVE
+
+
 async def voice_agent_run(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
@@ -376,8 +388,8 @@ async def voice_agent_run(
 
     Local Gemma emits malformed tool calls, so skill-needing voice turns escalate
     here (free Groq/Gemini function-calling). Returns a short spoken answer.
-    Irreversible skills are declined (no confirm hook is passed) — voice never
-    silently writes files or runs commands.
+    Web/browser skills run hands-free (Sutra's own browser); destructive skills
+    (commands, file writes) are still declined — see _VOICE_AUTO_APPROVE.
     """
     registry.autodiscover()
     mood, _ = persona.active_mood_for(user_input)
@@ -404,8 +416,8 @@ async def voice_agent_run(
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
             return (msg.content or "").strip()
-        # No confirm hook → irreversible skills are declined, never run unattended.
-        messages.extend(await _run_tool_calls(tool_calls))
+        # Web/browser tasks approved hands-free; destructive skills declined.
+        messages.extend(await _run_tool_calls(tool_calls, confirm=_voice_confirm))
 
     # Out of tool rounds — force a final spoken answer with no more tools.
     response = await complete(messages, tier=tier, tools=None, max_tokens=128)
