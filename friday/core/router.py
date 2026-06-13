@@ -51,12 +51,18 @@ TIER_MODELS: dict[Tier, list[str]] = {
         "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
     ],
-    # Free tier with headroom: distinct model buckets so one provider's rate limit
-    # doesn't take the whole tier down (70b best → gemini → fast 8b → gemini-2.0).
+    # Free tier with headroom. Groq meters EACH model separately (≈100k tokens/day
+    # per model), and tool turns carry big tool schemas — so one model exhausts fast.
+    # Spread across several function-calling-capable Groq models (each its own quota)
+    # plus Gemini, so a rate-limited model rolls to a FRESH one that can still call
+    # tools, instead of collapsing to the local model (which can't function-call).
     Tier.MEDIUM: [
         "groq/llama-3.3-70b-versatile",
+        "groq/openai/gpt-oss-120b",
+        "groq/meta-llama/llama-4-scout-17b-16e-instruct",
         "gemini/gemini-2.5-flash",
         "groq/llama-3.1-8b-instant",
+        "groq/openai/gpt-oss-20b",
         "gemini/gemini-2.0-flash",
     ],
     Tier.HEAVY: [

@@ -375,6 +375,14 @@ def cloud_tools_available() -> bool:
 # DECLINED by voice — you can't talk Sutra into writing files or running commands.
 _VOICE_AUTO_APPROVE = {"web_task", "web_task_vision", "fill_form", "close_window"}
 
+# Spoken when the router KNEW a tool had to run (force_tool) but the loop finished
+# without a single tool firing — the rate-limited/local-fallback case where the model
+# can only emit text and would otherwise narrate an action that never happened.
+_RATELIMITED_MSG = (
+    "I couldn't actually do that just now — my free models are rate-limited. "
+    "Try again in a bit."
+)
+
 
 async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
     """Voice's confirmation policy: approve web/browser tasks, decline destructive ops."""
@@ -418,6 +426,7 @@ async def voice_agent_run(
     messages.append({"role": "user", "content": user_input})
 
     tools = registry.all_tools()
+    acted = False  # did ANY tool call actually fire this turn?
     for round_i in range(max_tool_rounds):
         # Low temperature here: action requests must reliably trigger a tool call,
         # not a witty "right this way" that never actually does it. When the router
@@ -437,13 +446,24 @@ async def voice_agent_run(
         })
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
+            # Forced a tool but the model only produced text → it couldn't act
+            # (local fallback / rate-limit). Don't read the misleading narration.
+            if force_tool and not acted:
+                return _RATELIMITED_MSG
             return _spoken(msg.content)
-        names = ", ".join(getattr(tc, "function", tc).name for tc in tool_calls)
-        _log.info("voice tool call(s): %s", names)
+        acted = True
+        for tc in tool_calls:
+            fn = getattr(tc, "function", tc)
+            _log.info("voice tool call: %s args=%s", fn.name, getattr(fn, "arguments", ""))
         # Web/browser tasks approved hands-free; destructive skills declined.
-        messages.extend(await _run_tool_calls(tool_calls, confirm=_voice_confirm))
+        results = await _run_tool_calls(tool_calls, confirm=_voice_confirm)
+        for res in results:  # log what each tool actually returned (success or error)
+            _log.info("voice tool result: %s", str(res.get("content", ""))[:300])
+        messages.extend(results)
 
     # Out of tool rounds — force a final spoken answer with no more tools.
+    if force_tool and not acted:
+        return _RATELIMITED_MSG
     response = await complete(messages, tier=tier, tools=None, max_tokens=128)
     return _spoken(response.choices[0].message.content)
 

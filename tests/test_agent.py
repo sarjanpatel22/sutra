@@ -130,3 +130,60 @@ def test_spoken_strips_fake_tool_code():
     assert agent._spoken('{"action":"x"}') == "Done."
     assert agent._spoken("  There you go, love.  ") == "There you go, love."
     assert agent._spoken(None) == ""
+
+
+# --- forced-tool failure honesty (rate-limit / local-fallback case) -----------
+
+def _resp(content=None, tool_calls=None):
+    """Build a minimal object shaped like a litellm completion response."""
+    msg = types.SimpleNamespace(content=content, tool_calls=tool_calls)
+    choice = types.SimpleNamespace(message=msg)
+    return types.SimpleNamespace(choices=[choice])
+
+
+@pytest.fixture
+def _no_memory(monkeypatch):
+    """Stub out memory recall + autodiscovery so voice_agent_run is offline/deterministic."""
+
+    class _Store:
+        async def recall(self, *a, **k):
+            return []
+
+    monkeypatch.setattr(agent, "get_store", lambda: _Store())
+    monkeypatch.setattr(agent.registry, "autodiscover", lambda: None)
+    monkeypatch.setattr(agent.registry, "all_tools", lambda: [])
+
+
+async def test_forced_tool_no_call_returns_ratelimited(_no_memory, monkeypatch):
+    # Router forced a tool, but the model (local fallback) only emitted text.
+    async def fake_complete(messages, **kwargs):
+        return _resp(content="Let me fire up Firefox... I couldn't get that to work")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    out = await agent.voice_agent_run("open my email", force_tool=True)
+    assert out == agent._RATELIMITED_MSG
+
+
+async def test_forced_tool_with_call_returns_real_reply(_no_memory, temp_skills, monkeypatch):
+    # The model calls a tool on round 0, then gives a real answer → no rate-limit msg.
+    calls = {"n": 0}
+
+    async def fake_complete(messages, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _resp(tool_calls=[_tc("_t_safe", {"x": 7})])
+        return _resp(content="Done, opened it.")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    out = await agent.voice_agent_run("open my email", force_tool=True)
+    assert out == "Done, opened it."
+
+
+async def test_unforced_text_reply_unchanged(_no_memory, monkeypatch):
+    # Regression guard: force_tool=False text reply passes through _spoken unchanged.
+    async def fake_complete(messages, **kwargs):
+        return _resp(content="It's about three o'clock.")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    out = await agent.voice_agent_run("what's up", force_tool=False)
+    assert out == "It's about three o'clock."

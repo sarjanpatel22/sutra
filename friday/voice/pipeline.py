@@ -255,8 +255,18 @@ async def process_audio(
     from friday.core.autoroute import decide
 
     plan = decide(transcript)
-    use_tools = plan.act and cloud_tools_available()
+    # Deterministic fast-path: unambiguous commands ("open Firefox", "close X",
+    # "switch to Y") run the skill DIRECTLY — no LLM, so they work instantly even
+    # when the free cloud tiers are rate-limited (the old silent-failure cause).
+    command_result = None
     if plan.act:
+        from friday.core.commands import try_command
+        command_result = await try_command(transcript)
+        if command_result is not None:
+            _log.info("voice command (no LLM): %s -> %s",
+                      command_result.get("skill"), command_result.get("result"))
+    use_tools = command_result is None and plan.act and cloud_tools_available()
+    if plan.act and command_result is None:
         _log.info("voice route: %s effort (%s) — %s", plan.effort, plan.tier.value, plan.reason)
 
     # Streaming agent → TTS worker thread → speaker
@@ -322,7 +332,15 @@ async def process_audio(
             token_queue.put(token)
         token_queue.put(None)  # signal TTS to flush and stop
 
-    if use_tools:
+    if command_result is not None:
+        # The skill already ran deterministically — just speak the confirmation.
+        reply_text = command_result["spoken"]
+        lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
+        reply_tokens = [reply_text]
+        token_queue.put(reply_text)
+        token_queue.put(None)
+        play_blocking()
+    elif use_tools:
         # Cloud function-calling: tool calls need the whole response, so this isn't
         # token-streamed. Synthesize the finished reply, then speak it. Fall back to
         # the local path if the cloud round-trip fails (offline / key issue).
@@ -340,7 +358,7 @@ async def process_audio(
             _log.warning("voice tool path failed (%s) — falling back to local", e)
             use_tools = False
 
-    if not use_tools:
+    if command_result is None and not use_tools:
         if barge_in:
             # Barge-in's grace window must start at first audio, so generate fully,
             # then play interruptibly.
@@ -409,7 +427,11 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
     from friday.core.autoroute import decide
 
     plan = decide(text)
-    use_tools = plan.act and cloud_tools_available()
+    command_result = None
+    if plan.act:
+        from friday.core.commands import try_command
+        command_result = await try_command(text)
+    use_tools = command_result is None and plan.act and cloud_tools_available()
     tts = _get_tts()
     sample_rate = tts.sample_rate
     token_queue: q_mod.Queue[str | None] = q_mod.Queue()
@@ -446,7 +468,14 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
             play_audio(chunk.audio, sample_rate=sample_rate, blocking=True)
 
     reply_tokens: list[str] = []
-    if use_tools:
+    if command_result is not None:
+        # Deterministic command already ran the skill — just speak the confirmation.
+        reply_text = command_result["spoken"]
+        reply_tokens = [reply_text]
+        token_queue.put(reply_text)
+        token_queue.put(None)
+        play_blocking()
+    elif use_tools:
         # Cloud function-calling needs the whole reply (not token-streamed); fall back
         # to the local streaming path if the cloud round-trip fails (offline/key).
         try:
@@ -461,7 +490,7 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
             _log.warning("text tool path failed (%s) — falling back to local", e)
             use_tools = False
 
-    if not use_tools:
+    if command_result is None and not use_tools:
         # Overlap: speak the first sentence while the rest still generates.
         playback_thread = threading.Thread(target=play_blocking, daemon=True)
         playback_thread.start()
