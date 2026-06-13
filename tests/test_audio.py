@@ -6,7 +6,9 @@ The live mic path still needs a manual `sutra voice --mode vad` check.
 """
 
 import numpy as np
+import pytest
 
+import friday.voice.audio as audio
 from friday.voice.audio import _frame_rms, _is_speech_frame, _speech_window_start
 
 
@@ -62,3 +64,81 @@ def test_absolute_minimum_floor():
     # In a dead-silent room (noise_floor≈0) a quiet frame still needs real signal.
     assert _is_speech_frame(True, rms=100.0, noise_floor=0.0) is False
     assert _is_speech_frame(True, rms=400.0, noise_floor=0.0) is True
+
+
+# --- device resolution (the HDMI-avoidance fix) ----------------------------------
+
+# Mirrors this box: default output is an HDMI sink the user can't hear.
+_FAKE_DEVICES = [
+    {"name": "HDA NVidia: HDMI 0 (hw:0,3)", "max_input_channels": 0, "max_output_channels": 8},
+    {"name": "sof-hda-dsp: - (hw:1,0)", "max_input_channels": 2, "max_output_channels": 2},
+    {"name": "pulse", "max_input_channels": 32, "max_output_channels": 32},
+]
+
+
+@pytest.fixture
+def fake_devices(monkeypatch):
+    monkeypatch.setattr(audio.sd, "query_devices", lambda: list(_FAKE_DEVICES))
+    monkeypatch.delenv("SUTRA_OUTPUT_DEVICE", raising=False)
+    monkeypatch.delenv("SUTRA_INPUT_DEVICE", raising=False)
+
+
+def test_resolve_output_prefers_pulse_over_hdmi(fake_devices):
+    # pulse is index 2; HDMI (index 0) must be skipped even though it's first.
+    assert audio.resolve_output_device() == 2
+
+
+def test_resolve_output_env_index_override(fake_devices, monkeypatch):
+    monkeypatch.setenv("SUTRA_OUTPUT_DEVICE", "1")
+    assert audio.resolve_output_device() == 1
+
+
+def test_resolve_output_env_name_substring(fake_devices, monkeypatch):
+    monkeypatch.setenv("SUTRA_OUTPUT_DEVICE", "sof-hda")
+    assert audio.resolve_output_device() == 1
+
+
+def test_resolve_output_unknown_name_passed_through(fake_devices, monkeypatch):
+    monkeypatch.setenv("SUTRA_OUTPUT_DEVICE", "nonesuch")
+    assert audio.resolve_output_device() == "nonesuch"
+
+
+def test_resolve_output_avoids_hdmi_when_only_analog(monkeypatch):
+    devs = [
+        {"name": "HDA NVidia: HDMI 0", "max_input_channels": 0, "max_output_channels": 8},
+        {"name": "Built-in Analog Speaker", "max_input_channels": 0, "max_output_channels": 2},
+    ]
+    monkeypatch.setattr(audio.sd, "query_devices", lambda: devs)
+    monkeypatch.delenv("SUTRA_OUTPUT_DEVICE", raising=False)
+    assert audio.resolve_output_device() == 1
+
+
+def test_resolve_input_prefers_pulse(fake_devices):
+    assert audio.resolve_input_device() == 2
+
+
+def test_resolve_never_raises(monkeypatch):
+    def boom():
+        raise RuntimeError("no audio subsystem")
+
+    monkeypatch.setattr(audio.sd, "query_devices", boom)
+    monkeypatch.delenv("SUTRA_OUTPUT_DEVICE", raising=False)
+    assert audio.resolve_output_device() is None
+
+
+def test_audio_report_shape(fake_devices):
+    rep = audio.audio_report()
+    assert set(rep) == {
+        "input_device", "output_device", "resolved_output",
+        "resolved_input", "all_outputs", "all_inputs",
+    }
+    assert "pulse" in rep["all_outputs"]
+    assert rep["resolved_output"] == 2
+
+
+def test_mic_rms_swallows_errors(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("mic gone")
+
+    monkeypatch.setattr(audio.sd, "rec", boom)
+    assert audio.mic_rms(0.1) == 0.0

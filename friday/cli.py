@@ -234,6 +234,47 @@ def devices() -> None:
     console.print(t)
 
 
+def _audio_check() -> None:
+    """Quick speaker+mic doctor: list devices, play a test tone, measure mic level.
+
+    Run with `sutra voice --check` to confirm you can hear Sutra and she can hear
+    you BEFORE a real session — diagnoses the 'nothing happened' / silent-HDMI case.
+    """
+    from friday.voice import audio
+
+    report = audio.audio_report()
+    table = Table(title="Audio devices", show_header=True, header_style="bold")
+    table.add_column("role")
+    table.add_column("resolved")
+    table.add_row("output (speaker)", str(report.get("resolved_output")))
+    table.add_row("input (mic)", str(report.get("resolved_input")))
+    console.print(table)
+    console.print(f"[dim]all outputs: {report.get('all_outputs')}[/dim]")
+    console.print(f"[dim]all inputs:  {report.get('all_inputs')}[/dim]")
+
+    console.print("\n[bold]▶ playing a 1s test tone — you should HEAR it…[/bold]")
+    try:
+        audio.play_test_tone(seconds=1.0)
+    except Exception as e:  # noqa: BLE001 — report, don't crash the doctor
+        console.print(f"[red]tone playback failed: {e}[/red]")
+    if not Confirm.ask("Did you hear the tone?", default=True):
+        console.print(
+            "[yellow]Set the right speaker with SUTRA_OUTPUT_DEVICE "
+            "(an index or a name substring from 'all outputs' above), then re-run.[/yellow]"
+        )
+
+    console.print("\n[bold]🎙  say something for 3 seconds…[/bold]")
+    try:
+        rms = audio.mic_rms(seconds=3.0)
+        verdict = (
+            "good — she can hear you" if rms > 0.01
+            else "TOO QUIET — check the mic / SUTRA_INPUT_DEVICE"
+        )
+        console.print(f"mic level (RMS): [bold]{rms:.4f}[/bold] — {verdict}")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]mic capture failed: {e}[/red]")
+
+
 @app.command()
 def voice(
     mode: str = typer.Option(
@@ -241,8 +282,27 @@ def voice(
         help="ptt (hold SPACE), vad (auto-detect), or text (type, mic-free)",
     ),
     orb: bool = typer.Option(False, "--orb", help="Show the presence orb full-screen too"),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v",
+        help="Print live transcripts, routing decisions, and errors (INFO logging)",
+    ),
+    check: bool = typer.Option(
+        False, "--check", help="Audio doctor: test speaker + mic, then exit (no session)",
+    ),
 ) -> None:
     """Start voice mode. ptt=hold SPACE, vad=always listening, text=type to her (mic-free)."""
+    if verbose:
+        import logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            datefmt="%H:%M:%S",
+        )
+        logging.getLogger("LiteLLM").setLevel(logging.WARNING)  # mute its INFO spam
+    if check:
+        _audio_check()
+        return
+
     from friday.voice.pipeline import (
         push_to_talk_loop,
         text_presence_loop,

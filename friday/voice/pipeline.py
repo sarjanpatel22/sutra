@@ -527,8 +527,12 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
             reply, history, lat, _ = await process_audio(audio, history)
 
             if reply:
+                # process_audio appends (user transcript, assistant reply) to history,
+                # so the real recognized text is the just-added user turn — log that,
+                # not a "(ptt)" placeholder, so the latency log shows what Sutra heard.
+                transcript = history[-2]["content"] if len(history) >= 2 else ""
                 _log_latency(VoiceTurn(
-                    transcript="(ptt)",
+                    transcript=transcript,
                     reply_text=reply[:80],
                     latency=lat,
                 ))
@@ -677,8 +681,12 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
                 console.print("[yellow]⊘ barge-in — stopped speaking[/yellow]")
 
             if reply:
+                # process_audio appends (user transcript, assistant reply) to history,
+                # so the real recognized text is the just-added user turn — log that,
+                # not a "(vad)" placeholder, so the latency log shows what Sutra heard.
+                transcript = history[-2]["content"] if len(history) >= 2 else ""
                 _log_latency(VoiceTurn(
-                    transcript="(vad)",
+                    transcript=transcript,
                     reply_text=reply[:80],
                     latency=lat,
                 ))

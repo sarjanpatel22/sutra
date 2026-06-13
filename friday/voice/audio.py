@@ -35,6 +35,74 @@ if isinstance(_INPUT_DEVICE, str) and _INPUT_DEVICE.isdigit():
 if isinstance(_OUTPUT_DEVICE, str) and _OUTPUT_DEVICE.isdigit():
     _OUTPUT_DEVICE = int(_OUTPUT_DEVICE)
 
+# Names we prefer for playback (PipeWire/Pulse virtual sinks + real analog jacks),
+# in priority order. They resample to the device's native rate, so 16k/24k "just work".
+_OUTPUT_PREFER = ("pulse", "default", "sysdefault", "pipewire", "speaker", "headphone", "analog")
+_INPUT_PREFER = ("pulse", "default", "sysdefault", "pipewire")
+# Substring that flags a sink the user almost certainly can't hear (monitor over HDMI).
+_AVOID = ("hdmi",)
+
+
+def _match_by_name(needle: str, want_output: bool) -> int | None:
+    """First device index whose name contains `needle` (case-insensitive) and has
+    channels of the requested direction. None if nothing matches."""
+    key = "max_output_channels" if want_output else "max_input_channels"
+    low = needle.lower()
+    try:
+        for i, d in enumerate(sd.query_devices()):
+            if low in str(d["name"]).lower() and d[key] > 0:
+                return i
+    except Exception:  # noqa: BLE001 — querying devices must never raise into caller
+        return None
+    return None
+
+
+def _resolve(env_var: str, prefer: tuple[str, ...], want_output: bool) -> int | str | None:
+    """Shared device-resolution policy. Returns an int index, a name string, or None
+    (meaning: let sounddevice decide). Never raises."""
+    try:
+        override = os.getenv(env_var)
+        if override:
+            if override.isdigit():
+                return int(override)
+            idx = _match_by_name(override, want_output)
+            return idx if idx is not None else override  # pass raw name to sd as a fallback
+
+        key = "max_output_channels" if want_output else "max_input_channels"
+        devices = list(enumerate(sd.query_devices()))
+
+        # 1) Preferred virtual/analog sinks, in priority order, skipping HDMI.
+        for name in prefer:
+            for i, d in devices:
+                nm = str(d["name"]).lower()
+                if name in nm and d[key] > 0 and not any(a in nm for a in _AVOID):
+                    return i
+
+        # 2) Any usable, non-HDMI device of the right direction.
+        for i, d in devices:
+            nm = str(d["name"]).lower()
+            if d[key] > 0 and not any(a in nm for a in _AVOID):
+                return i
+    except Exception:  # noqa: BLE001 — fall through to "let sounddevice decide"
+        return None
+    return None  # nothing better found → sounddevice default
+
+
+def resolve_output_device() -> int | str | None:
+    """Pick an audible playback device (see module-level policy notes).
+
+    Honors $SUTRA_OUTPUT_DEVICE (int index or name substring) first, then prefers a
+    non-HDMI sink (pulse/pipewire/analog/speaker/headphone), else returns None so
+    sounddevice uses its own default. Never raises.
+    """
+    return _resolve("SUTRA_OUTPUT_DEVICE", _OUTPUT_PREFER, want_output=True)
+
+
+def resolve_input_device() -> int | str | None:
+    """Pick a capture device, honoring $SUTRA_INPUT_DEVICE then preferring
+    pulse/pipewire. Returns None to let sounddevice decide. Never raises."""
+    return _resolve("SUTRA_INPUT_DEVICE", _INPUT_PREFER, want_output=False)
+
 
 def list_devices() -> list[dict[str, object]]:
     devices = []
@@ -367,11 +435,71 @@ def record_with_vad_streaming(
         executor.shutdown(wait=False)
 
 
-def play_audio(audio: np.ndarray, sample_rate: int = 24000, blocking: bool = True) -> None:
-    """Play float32 or int16 audio array through the default output device."""
+def play_audio(
+    audio: np.ndarray,
+    sample_rate: int = 24000,
+    blocking: bool = True,
+    device: int | str | None = None,
+) -> None:
+    """Play a float32/int16 audio array through an audible output device.
+
+    With no explicit `device`, routes to `resolve_output_device()` so replies reach a
+    sink the user can hear (not a silent HDMI monitor). Pass `device` to force one.
+    """
     if audio.dtype == np.int16:
         audio = audio.astype(np.float32) / 32768.0
-    sd.play(audio, samplerate=sample_rate, device=_OUTPUT_DEVICE, blocking=blocking)
+    target = device if device is not None else resolve_output_device()
+    sd.play(audio, samplerate=sample_rate, device=target, blocking=blocking)
+
+
+def play_test_tone(seconds: float = 1.0, freq: float = 440.0) -> None:
+    """Play a sine tone through the resolved output device so the user can confirm
+    they hear sound. Best-effort: logs and swallows any audio error."""
+    try:
+        t = np.linspace(0.0, seconds, int(SAMPLE_RATE * seconds), endpoint=False)
+        tone = (0.3 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+        play_audio(tone, sample_rate=SAMPLE_RATE, blocking=True)
+    except Exception:  # noqa: BLE001 — a tone failing must never crash the caller
+        _log.exception("play_test_tone failed")
+
+
+def mic_rms(seconds: float = 2.0) -> float:
+    """Record from the resolved input device for `seconds` and return RMS (0..~1).
+
+    A near-zero value means the mic heard nothing (wrong device / muted). Best-effort:
+    returns 0.0 on any capture error rather than raising."""
+    try:
+        frames = int(SAMPLE_RATE * seconds)
+        rec = sd.rec(
+            frames,
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=np.float32,
+            device=resolve_input_device(),
+        )
+        sd.wait()
+        return float(np.sqrt(np.mean(np.square(rec)))) if rec.size else 0.0
+    except Exception:  # noqa: BLE001 — mic quirks must never raise into the caller
+        _log.exception("mic_rms failed")
+        return 0.0
+
+
+def audio_report() -> dict[str, object]:
+    """Diagnostics snapshot — no hardware I/O, just device queries. Never raises."""
+    try:
+        devices = list(sd.query_devices())
+    except Exception:  # noqa: BLE001
+        devices = []
+    outputs = [str(d["name"]) for d in devices if d["max_output_channels"] > 0]
+    inputs = [str(d["name"]) for d in devices if d["max_input_channels"] > 0]
+    return {
+        "input_device": _INPUT_DEVICE,
+        "output_device": _OUTPUT_DEVICE,
+        "resolved_output": resolve_output_device(),
+        "resolved_input": resolve_input_device(),
+        "all_outputs": outputs,
+        "all_inputs": inputs,
+    }
 
 
 def play_audio_stream(
