@@ -127,10 +127,11 @@ async def _do(page: Any, marks: list[dict[str, Any]], a: dict[str, Any]) -> str 
 @skill(
     name="web_task_vision",
     description=(
-        "Do a web task by SIGHT: Sutra screenshots the page, sees the numbered "
-        "clickable elements, and clicks/types over several steps to reach a goal. Use "
-        "for visual/React apps where the normal web_task can't find the controls. "
-        "Does NOT bypass CAPTCHAs or bot-walls. IRREVERSIBLE — requires confirmation."
+        "Do a web task by SIGHT — the most reliable way to operate a website. Sutra "
+        "screenshots the page, sees the numbered clickable elements, and clicks/types "
+        "over several steps to reach a goal. PREFER THIS for any multi-step web task, "
+        "search, or visual/React app (over web_task). Needs a starting URL. Does NOT "
+        "bypass CAPTCHAs or bot-walls. IRREVERSIBLE — requires confirmation."
     ),
     auto_confirm=False,
     timeout_s=240,

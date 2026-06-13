@@ -46,6 +46,9 @@ class _Page:
     async def goto(self, url, **k):
         type(self).url = url
 
+    async def set_viewport_size(self, *a, **k):
+        return None
+
     async def wait_for_load_state(self, *a, **k):
         return None
 
