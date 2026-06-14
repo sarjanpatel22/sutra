@@ -384,9 +384,25 @@ _RATELIMITED_MSG = (
 )
 
 
+def _autonomous() -> bool:
+    """Whether voice may run normally-gated tools (run_command, run_python, file/desktop
+    ops) HANDS-FREE — Sarjan's explicit opt-in for authorized terminal/CTF work on his
+    own box. OFF by default; set SUTRA_AUTONOMOUS=1 to unleash. Even when on, run_command
+    keeps its own catastrophic floor (system_info.is_catastrophic), so a misheard command
+    still can't wipe the machine."""
+    return os.getenv("SUTRA_AUTONOMOUS", "0").strip().lower() not in ("", "0", "false", "no")
+
+
 async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
-    """Voice's confirmation policy: approve web/browser tasks, decline destructive ops."""
-    return skill in _VOICE_AUTO_APPROVE
+    """Voice's confirmation policy.
+
+    Default: only the browsing family runs hands-free; everything irreversible is
+    declined (you can't talk Sutra into shell/file ops). Autonomous mode (opt-in via
+    SUTRA_AUTONOMOUS) approves the rest too, for hands-free terminal/CTF work — the
+    run_command catastrophic floor remains the hard safety net under it."""
+    if skill in _VOICE_AUTO_APPROVE:
+        return True
+    return _autonomous()
 
 
 def _spoken(text: str | None) -> str:

@@ -4,12 +4,57 @@ from __future__ import annotations
 
 import asyncio
 import platform
+import re
 import shutil
 import time
 
 import psutil  # type: ignore[import-untyped]
 
 from friday.skills.registry import skill
+
+# Commands so destructive that a MISHEARD voice request must never run them. Enforced
+# inside run_command itself (defense in depth) so NO caller — autonomous voice
+# included — can trip them. A safety NET, not a full sandbox: it blocks the obvious
+# system-killers (wiping root/home, formatting a disk, fork bombs, shutdown), and
+# deliberately leaves ordinary pentest/CTF commands (nmap, openvpn, gobuster, rm of a
+# scratch dir) alone.
+_FORK_BOMB = re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}")
+_DISK = re.compile(
+    r"\b(?:mkfs(?:\.\w+)?|wipefs)\b"                       # format / wipe a filesystem
+    r"|\bdd\b.*\bof=/dev/(?:sd|nvme|mmcblk|vd|hd|disk)"    # dd onto a block device
+    r"|>\s*/dev/(?:sd|nvme|mmcblk|vd|hd)",                 # redirect onto a disk node
+    re.I,
+)
+_POWER = re.compile(r"\b(?:shutdown|reboot|halt|poweroff)\b|\binit\s+[06]\b", re.I)
+_CHMOD_ROOT = re.compile(r"\bchmod\s+-R\s+0*777\s+/(?:\s|$)", re.I)
+# A dangerous rm target. Two cases:
+#  - root / a home dir / ~ as a WHOLE target — but a scratch subpath under it
+#    (/home/me/ctf, /tmp/x) stays allowed, since that's normal CTF cleanup.
+#  - a system dir OR anything inside it (/usr/lib, /etc/x) — all of it is system-owned.
+_RM_TARGET = re.compile(
+    r"(?:\s|=|'|\")(?:/home|/root|~|\$HOME|/)(?:\s|/?\*|'|\"|$)"
+    r"|(?:\s|'|\")/(?:etc|usr|var|bin|sbin|boot|lib\w*|sys)(?:/\S*)?(?:\s|'|\"|$)",
+    re.I,
+)
+
+
+def is_catastrophic(command: str) -> bool:
+    """True if `command` matches a system-destroying pattern that must never run.
+
+    A safety NET against a misheard voice command, not a sandbox: it blocks the
+    obvious machine-killers (wiping root/home, formatting a disk, a fork bomb,
+    shutdown) and leaves ordinary CTF/pentest commands (nmap, openvpn, rm of a
+    scratch dir) alone.
+    """
+    c = command or ""
+    if _FORK_BOMB.search(c) or _DISK.search(c) or _POWER.search(c) or _CHMOD_ROOT.search(c):
+        return True
+    if re.search(r"\brm\b", c, re.I):  # rm needs BOTH recursive and force AND a whole-target
+        recursive = re.search(r"(?:^|\s)-\S*r|--recursive\b", c, re.I)
+        force = re.search(r"(?:^|\s)-\S*f|--force\b", c, re.I)
+        if recursive and force and _RM_TARGET.search(c):
+            return True
+    return False
 
 
 @skill(
@@ -93,6 +138,15 @@ async def run_command(command: str) -> dict[str, str | int]:
 
     command: Shell command to run. Will be executed via /bin/sh -c.
     """
+    if is_catastrophic(command):
+        return {
+            "stdout": "",
+            "stderr": (
+                f"refused: {command.strip()[:80]!r} looks system-destroying and is "
+                "blocked for safety. Run it yourself if you truly mean it."
+            ),
+            "returncode": 126,
+        }
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
