@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from typing import Any
 
 import litellm
@@ -25,6 +26,15 @@ from friday.skills.browser_session import get_page
 from friday.skills.registry import skill
 
 _VISION_MODEL = "groq/meta-llama/llama-4-scout-17b-16e-instruct"  # free, fast, multimodal
+
+# Per-step settle: cap the wait so a busy SPA (ads/polling) can't burn 3.5s EVERY step.
+# Measured: the old networkidle=3500 was the worst-case sink behind the 71s spin.
+_SETTLE_MS = 1500
+# JPEG (not PNG) screenshots: ~2x smaller, upload + vision-infer faster, same picks
+# (measured: identical action chosen on PNG vs JPEG).
+_JPEG_QUALITY = 70
+# Hard wall-clock cap so a task NEVER grinds (he watched one spin 71s). Overridable.
+_DEFAULT_BUDGET_S = 45
 
 # Mark every visible clickable with a numbered badge and return [{idx,tag,label}].
 # Reused each step; clears its own prior marks first so numbering stays in sync.
@@ -69,14 +79,22 @@ _MARK_JS = r"""(maxN) => {
 _CLEAR_JS = "() => document.querySelectorAll('.sutra-mark').forEach(e => e.remove())"
 
 _SYS = """You are Sutra, operating a web browser by LOOKING at a screenshot. Each \
-clickable thing has a red number badge. You also get a list of those numbers with a \
-short label. Reply with ONLY one JSON object:
+clickable thing has a red number badge; you also get a list of those numbers with short \
+labels.
+
+FIRST, before clicking anything: if the GOAL's answer is already VISIBLE anywhere in the \
+screenshot — body text, an infobox, a sidebar, a table — reply "done" with it right away. \
+Do NOT click around to "confirm" what you can already read.
+
+Otherwise pick ONE action to make progress. Reply with ONLY one JSON object:
   {"act":"click","n":N}                 click badge N
   {"act":"type","n":N,"text":"…","enter":true}  type into field N (enter to submit)
-  {"act":"scroll","dy":600}             scroll down (negative = up) for off-screen content
+  {"act":"scroll","dy":600}             scroll (negative = up) to reveal off-screen content
   {"act":"done","answer":"…"}           the goal is met / answered — report it
-Pick the single best number for the goal. "done" is the only way to answer — never type \
-your answer into the page. If a CAPTCHA or human-check blocks you, use "done" and say so."""
+"done" is the ONLY way to give an answer — never type your answer into the page. If acting \
+left you on the same screen, try a DIFFERENT action (scroll to find it, or answer if you \
+can now see it) — don't repeat a click that did nothing. If a CAPTCHA or human-check \
+blocks you, use "done" and say so."""
 
 
 async def _mark(page: Any, cap: int) -> list[dict[str, Any]]:
@@ -137,15 +155,20 @@ async def _do(page: Any, marks: list[dict[str, Any]], a: dict[str, Any]) -> str 
     timeout_s=240,
 )
 async def web_task_vision(
-    goal: str, start_url: str, max_steps: int = 12
+    goal: str, start_url: str, max_steps: int = 12, max_seconds: float = _DEFAULT_BUDGET_S
 ) -> dict[str, Any]:
-    """Drive Sutra's browser toward a goal using vision (screenshots + Set-of-Mark)."""
+    """Drive Sutra's browser toward a goal using vision (screenshots + Set-of-Mark).
+
+    max_seconds caps total wall-clock time so the task degrades honestly instead of
+    grinding — it stops and says so rather than spinning on a stuck page.
+    """
     goal = goal.strip()
     if not goal:
         return {"error": "no goal given"}
     if not _http_url(start_url):
         return {"error": "start_url must be an http(s) URL"}
     steps_cap = max(1, min(25, max_steps))
+    deadline = time.monotonic() + max(10.0, max_seconds)
 
     try:
         page = await get_page()
@@ -156,21 +179,26 @@ async def web_task_vision(
     trace: list[dict[str, Any]] = []
     sigs: list[str] = []
     for _ in range(steps_cap):
+        if time.monotonic() > deadline:
+            return {"goal": goal, "answer": "I ran out of time on that page and stopped.",
+                    "timed_out": True, "url": page.url, "steps": len(trace), "trace": trace}
         if len(sigs) >= 3 and len(set(sigs[-3:])) == 1:
             return {"goal": goal, "answer": "I got visually stuck on that page and stopped.",
                     "stuck": True, "url": page.url, "steps": len(trace), "trace": trace}
         try:
-            await page.wait_for_load_state("networkidle", timeout=3500)
+            await page.wait_for_load_state("networkidle", timeout=_SETTLE_MS)
         except Exception:  # noqa: BLE001
             pass
         marks = await _mark(page, cap=40)
-        shot = base64.b64encode(await page.screenshot()).decode()
+        shot = base64.b64encode(
+            await page.screenshot(type="jpeg", quality=_JPEG_QUALITY)
+        ).decode()
         await page.evaluate(_CLEAR_JS)
         listing = "\n".join(f"{m['idx']}: <{m['tag']}> {m['label']}" for m in marks) or "(none)"
         user = [
             {"type": "text", "text": f"GOAL: {goal}\n\nNumbered elements:\n{listing}\n\n"
                                      "Look at the screenshot and reply with one JSON action:"},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{shot}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{shot}"}},
         ]
         try:  # free Groq vision; called directly (router has no multimodal tier)
             r = await litellm.acompletion(
