@@ -3,7 +3,7 @@
 import pytest
 
 import friday.core.autoroute as ar
-from friday.core.autoroute import decide, pick_tier, route
+from friday.core.autoroute import chat_tier, decide, pick_tier, route
 from friday.core.router import Tier
 
 _FREE = {Tier.MEDIUM, Tier.CODE, Tier.LOCAL, Tier.REASON}
@@ -142,3 +142,38 @@ def test_tool_required_only_for_concrete_actions():
     # analysis/coding/complex are high-effort but don't force a tool
     assert decide("analyze the tradeoffs between threads and async").tool_required is False
     assert decide("tell me a joke").tool_required is False
+
+
+@pytest.mark.parametrize("text", [
+    "hi", "hey sutra", "hello", "good morning", "good night",
+    "how are you", "what's up", "thanks", "thank you", "thanks so much",
+    "ok", "okay", "cool", "nice", "lol", "haha", "bye", "yes", "no", "got it",
+])
+def test_chat_tier_trivial_stays_local(text):
+    # Greetings / acknowledgements / social filler → instant, free, dim local model.
+    assert chat_tier(text) is Tier.LOCAL
+
+
+@pytest.mark.parametrize("text", [
+    "explain how transformers work",
+    "should I take the job offer in Toronto?",
+    "what's the difference between TCP and UDP",
+    "why is my python script leaking memory",
+    "give me your opinion on rust versus go for a new backend",
+    "how does HTTPS actually keep a connection secure",
+    "I've been thinking about quitting my job. It pays well but I'm bored.",
+])
+def test_chat_tier_substantive_uses_medium(text):
+    # Real questions / explanations / advice / multi-sentence → the free 70B.
+    assert chat_tier(text) is Tier.MEDIUM
+
+
+def test_chat_tier_empty_is_local():
+    assert chat_tier("") is Tier.LOCAL
+    assert chat_tier("   ") is Tier.LOCAL
+
+
+def test_chat_tier_short_question_still_medium():
+    # Few words but clearly a question → don't demote it to the 4B model.
+    assert chat_tier("why though?") is Tier.MEDIUM
+    assert chat_tier("how come?") is Tier.MEDIUM

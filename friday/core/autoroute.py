@@ -83,6 +83,29 @@ _TASK = re.compile(
     re.I,
 )
 
+# Trivial conversational turns — greetings, acknowledgements, social filler. These are
+# the ONLY chat turns kept on the fast/free LOCAL model: a 4B answer to "hi" or "thanks"
+# is fine and instant, and it spares the Groq rate limit for turns that actually need a
+# brain. Word-boundary matched so "hi" doesn't fire inside "this", "ok" inside "broke".
+# Anchored/whole-utterance markers (^…$) for the pure social turns, plus a few bare
+# interjections. Everything NOT matched here is treated as substantive (see chat_tier).
+_TRIVIAL = re.compile(
+    r"^\s*(?:"
+    r"hi|hey|hello|yo|sup|hiya|howdy|"
+    r"hey (?:there|sutra)|hi (?:there|sutra)|hello (?:there|sutra)|"
+    r"good (?:morning|afternoon|evening|night)|"
+    r"how(?:'?s| is| are)? (?:it going|you|things|you doing|ya)|"
+    r"what'?s up|whats up|wassup|how'?s life|"
+    r"thanks?(?: you| a lot| so much)?|thx|ty|cheers|appreciate it|"
+    r"ok(?:ay)?|k|kk|cool|nice|sweet|great|awesome|sounds good|got it|gotcha|"
+    r"yep|yup|yeah|yes|nope|nah|no|sure|alright|right|fine|"
+    r"lol|lmao|haha+|hehe+|nice one|"
+    r"bye|goodbye|good ?bye|see ya|see you|later|cya|take care|night|"
+    r"morning|love (?:it|that|you)|wow|damn|nice work|well done|good job"
+    r")[\s.!?,]*$",
+    re.I,
+)
+
 # Light tool needs: one live fact / a single action. Worth acting on, but not "high".
 # (Folds in what used to be agent.likely_needs_tool so voice no longer needs it.)
 _NEEDS_TOOL = re.compile(
@@ -178,3 +201,37 @@ def route(text: str, history: list[dict[str, Any]] | None = None) -> tuple[Tier,
 def pick_tier(text: str, history: list[dict[str, Any]] | None = None) -> Tier:
     """Just the tier for a turn (free by default; Claude only if ROUTER_ALLOW_PAID)."""
     return decide(text, history).tier
+
+
+def chat_tier(text: str) -> Tier:
+    """Which model a *non-action* conversational turn should think on.
+
+    Substantive chat — a real question, an explanation/opinion/advice ask, a
+    comparison, "how does X work", or anything multi-sentence — deserves the free
+    70B (Tier.MEDIUM), not the dim local 4B. Only TRIVIAL social turns (greetings,
+    acknowledgements, "thanks", "lol", a couple-word non-question) stay on the fast,
+    instant, $0 Tier.LOCAL so hellos never burn the Groq rate limit.
+
+    Consulted ONLY on the conversational (act=False) path — it does not touch
+    decide()/route()/pick_tier(). Bias: when unsure, return MEDIUM. A slightly
+    too-smart answer to "meh" chat is free; a 4B answer to a real question is the
+    exact failure this fixes.
+    """
+    t = (text or "").strip()
+    if not t:
+        return Tier.LOCAL  # nothing to think about — keep it cheap
+
+    # A pure greeting/acknowledgement/social filler → instant, free, local.
+    if _TRIVIAL.match(t):
+        return Tier.LOCAL
+
+    # A question mark almost always means real content — never demote it.
+    words = t.split()
+    if "?" not in t and len(words) <= 3:
+        # Very short and NOT a question, and it didn't match the social set above —
+        # still likely throwaway ("yeah maybe", "the red one"). Keep it local; the
+        # mistake here is cheap (a brief non-answer), unlike on a real question.
+        return Tier.LOCAL
+
+    # Everything else is substantive → the free 70B.
+    return Tier.MEDIUM

@@ -322,9 +322,15 @@ async def process_audio(
                 break
             play_audio(ch, sample_rate=sample_rate, blocking=True)
 
+    # Substantive chat deserves the free 70B (Tier.MEDIUM); trivial greetings stay on
+    # the instant local 4B. Degrade to LOCAL when no free cloud key is set so offline
+    # still answers. voice_stream still escalates to fallback_tier on garbage output.
+    from friday.core.autoroute import chat_tier
+    chat_t = chat_tier(transcript) if cloud_tools_available() else Tier.LOCAL
+
     async def generate_local() -> None:
         nonlocal first_token
-        async for token in voice_stream(transcript, history=history, tier=Tier.LOCAL):
+        async for token in voice_stream(transcript, history=history, tier=chat_t):
             reply_tokens.append(token)
             if first_token:
                 lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
@@ -491,10 +497,14 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
             use_tools = False
 
     if command_result is None and not use_tools:
+        # Substantive chat → free 70B; trivial social turns stay on the instant local
+        # model. Degrade to LOCAL with no free cloud key so offline still works.
+        from friday.core.autoroute import chat_tier
+        chat_t = chat_tier(text) if cloud_tools_available() else Tier.LOCAL
         # Overlap: speak the first sentence while the rest still generates.
         playback_thread = threading.Thread(target=play_blocking, daemon=True)
         playback_thread.start()
-        async for token in voice_stream(text, history=history, tier=Tier.LOCAL):
+        async for token in voice_stream(text, history=history, tier=chat_t):
             reply_tokens.append(token)
             token_queue.put(token)
         token_queue.put(None)
