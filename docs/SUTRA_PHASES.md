@@ -210,11 +210,22 @@ machine-local), drop `"disabled": true`, then `sutra mcp` to connect + list tool
 | `web_extract` skill (scrape structured data) | ✅ 06-11 — CSS-selector matches (text/attr) or headings+links overview, read-only |
 | `fill_form` skill (Playwright) | ✅ 06-11 — fills CSS-selector fields + optional submit; **gated** (auto_confirm=False), verified live (httpbin POST round-trip) |
 | Irreversible web actions always confirmed | ✅ 06-11 — `fill_form` is auto_confirm=False → routes through the same confirm gate as write_file/run_command (sub-agents decline it) |
+| Desktop **vision** take-over (beyond the browser) | ✅ 06-14 — `guide_me`/`sutra guide` looks at the real screen and says which control to click (read-only); `act_on_screen`+`type_into`/`sutra do` OCR-locate a text-labelled control (tesseract, real coords) and click/type via xdotool — **gated** (auto_confirm=False, `-y` skips), hands-free only under `SUTRA_AUTONOMOUS`. `vision/screen.py` (capture + average-hash) + `vision/locate.py` (OCR). Honest limit: text-labelled controls only (icon-only buttons aren't found) |
 
 **Exit criteria:** Sutra can browse and act on a site you specify. **✅ Met 2026-06-11** —
 `browse_url`/`web_extract` (read), `fill_form` + xdotool input (gated act), `web_task`
 (autonomous browse-use pattern over the free router), `run_python` (gated code exec).
 All irreversible actions route through the confirm gate; deterministic + autonomous, $0.
+
+> **JARVIS upgrade — 2026-06-14 (verified):** the always-on, watch-and-help layer landed.
+> **Brain** — `core/autoroute.py` `chat_tier()` sends substantive chat to the free Groq
+> 70B and keeps trivial greetings on local gemma3:4b (used by `voice/pipeline.py` on the
+> non-action paths). **`sutra watch`** (`friday/watch/`) — ambient loop that screenshots
+> only when the screen changes, asks a free vision model for ONE genuinely-useful
+> suggestion (silent otherwise) and surfaces it as a desktop notification; OFF by default,
+> `--once` flag, tuned via `WATCH_*` env, screenshots go to Groq only on change.
+> **`guide_me`** (read-only) + **`act_on_screen`/`type_into`** (the OCR+xdotool take-over,
+> gated / autonomous-only for voice) give Sutra desktop control beyond the browser.
 
 ---
 
