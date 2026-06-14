@@ -150,6 +150,41 @@ async def test_list_windows_variants(fakes: dict[str, _Recorder]) -> None:
         assert out["skill"] == "list_windows"
 
 
+async def test_compound_open_falls_through_to_llm(fakes: dict[str, _Recorder]) -> None:
+    # The real misfire: a whole sentence got shoved into gtk-launch as an "app".
+    out = await commands.try_command(
+        "open the dry at me and start any room and let's finish it"
+    )
+    assert out is None  # must reach the LLM (web_task_vision), not open_app
+    assert fakes["open_app"].calls == []
+
+
+async def test_compound_open_site_then_action_falls_through(fakes: dict[str, _Recorder]) -> None:
+    for phrase in (
+        "open tryhackme and start a room",
+        "open google.com and search for nmap",
+        "launch firefox then go to my dashboard",
+    ):
+        assert await commands.try_command(phrase) is None
+    assert fakes["open_app"].calls == []
+    assert fakes["open_url"].calls == []
+
+
+async def test_compound_focus_and_close_fall_through(fakes: dict[str, _Recorder]) -> None:
+    assert await commands.try_command("go to my room and submit the flag") is None
+    assert await commands.try_command("close firefox and open chrome") is None
+    assert fakes["focus_window"].calls == []
+    assert fakes["close_window"].calls == []
+
+
+async def test_short_multiword_app_still_launches(fakes: dict[str, _Recorder]) -> None:
+    # Guard must not over-fire: a genuine 3-word app name still launches directly.
+    out = await commands.try_command("open visual studio code")
+    assert out is not None
+    assert out["skill"] == "open_app"
+    assert fakes["open_app"].calls == [("visual studio code",)]
+
+
 async def test_list_windows_singular(monkeypatch: pytest.MonkeyPatch) -> None:
     rec = _Recorder("list_windows", {"windows": [{"id": "1", "title": "a"}]})
     monkeypatch.setattr(commands, "list_windows", rec)

@@ -54,6 +54,21 @@ _LIST_RE = re.compile(
 # launch command ("open up to me", "open to ideas", "open about it", "open minded").
 _CONVERSATIONAL_AFTER_OPEN = {"up", "to", "about", "minded"}
 
+# A launch/focus/close target is a short NAME ("firefox", "vs code",
+# "tryhackme.com") — never a sentence. These markers, or simply being long, flag a
+# COMPOUND or conversational phrase ("open X and start a room and finish it",
+# "go to my room then submit") that this deterministic shortcut must NOT run as an
+# app — it has to reach the LLM, which can pick web_task_vision etc. Catching this
+# is the whole "conservative, any doubt → None" promise of this module.
+_SENTENCE_MARKER = re.compile(
+    r"\b(?:and|then|so|but|also|after|or|let'?s|let\s+us)\b|\?", re.IGNORECASE
+)
+
+
+def _is_sentence_like(obj: str) -> bool:
+    """True when the command object is too long or clause-y to be a real target."""
+    return len(obj.split()) > 3 or bool(_SENTENCE_MARKER.search(obj))
+
 
 def _strip_filler(text: str) -> str:
     """Lower-noise normalization: collapse whitespace, strip leading/trailing filler.
@@ -122,6 +137,8 @@ async def try_command(text: str) -> dict[str, Any] | None:
         first_word = obj.split(maxsplit=1)[0].lower() if obj else ""
         if not obj or first_word in _CONVERSATIONAL_AFTER_OPEN:
             return None
+        if _is_sentence_like(obj):
+            return None  # compound/conversational ("open X and finish it") → LLM
         if _looks_like_url(obj):
             url = _normalize_url(obj)
             result = await _safe(open_url, url)
@@ -134,7 +151,7 @@ async def try_command(text: str) -> dict[str, Any] | None:
     # 3. switch to / focus / bring up / go to <X>
     if m := _FOCUS_RE.match(cleaned):
         obj = m.group(1).strip()
-        if not obj:
+        if not obj or _is_sentence_like(obj):
             return None
         if _looks_like_url(obj):
             url = _normalize_url(obj)
@@ -149,6 +166,8 @@ async def try_command(text: str) -> dict[str, Any] | None:
         obj = re.sub(r"\s+window$", "", obj, flags=re.IGNORECASE).strip()
         # Reject generic/empty targets: bare "window"/"tab", an article alone, or "it".
         if not obj or obj.lower() in {"the", "a", "tab", "the tab", "window", "it", "this"}:
+            return None
+        if _is_sentence_like(obj):  # "close X and open Y" → LLM, not a blind close
             return None
         result = await _safe(close_window, obj)
         return _result(f"Closing {obj}.", "close_window", result)
