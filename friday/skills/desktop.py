@@ -21,6 +21,32 @@ async def _run(cmd: list[str], stdin: str | None = None) -> tuple[int, str, str]
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
+async def _launch_detached(cmd: list[str], settle_s: float = 4.0) -> tuple[int | None, str]:
+    """Fire-and-forget a GUI launcher (e.g. xdg-open) and return promptly.
+
+    The bug this avoids: piping stdout/stderr and calling communicate() blocks
+    until those pipes hit EOF — but the browser xdg-open spawns INHERITS the pipe
+    and holds it open for its whole lifetime, so we'd wait for the browser to
+    CLOSE (→ the 20s skill-timeout kill). So: detach into its own session, send
+    stdio to /dev/null (no pipe to block on), and wait only for the launcher's
+    own exit. If it hasn't returned by settle_s a cold browser is still coming
+    up — it has already handed off, so we report success and leave it running
+    rather than killing the browser mid-start.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        code = await asyncio.wait_for(proc.wait(), timeout=settle_s)
+        return code, ""
+    except TimeoutError:
+        return None, "still launching"  # handed off; browser is warming up
+
+
 def _clipboard_get_cmd() -> list[str] | None:
     if shutil.which("wl-paste"):
         return ["wl-paste", "--no-newline"]
@@ -107,7 +133,7 @@ async def open_url(url: str) -> dict[str, Any]:
         return {"error": "only http(s) URLs are allowed", "url": url}
     if not shutil.which("xdg-open"):
         return {"error": "xdg-open not available"}
-    code, _, err = await _run(["xdg-open", url])
-    if code != 0:
-        return {"error": err.strip() or "xdg-open failed", "url": url}
+    code, note = await _launch_detached(["xdg-open", url])
+    if code not in (0, None):  # None = handed off, browser still warming (fine)
+        return {"error": note or "xdg-open failed", "url": url}
     return {"status": "ok", "url": url}

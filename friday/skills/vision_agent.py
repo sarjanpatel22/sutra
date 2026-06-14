@@ -119,6 +119,24 @@ async def _handle(page: Any, idx: int) -> Any:
     return await page.query_selector(f"[data-sutra-idx='{idx}']")
 
 
+async def _maybe_login(page: Any, url: str) -> int:
+    """Bring the user's Firefox session for this site into Sutra's browser BEFORE
+    the first load, so an auth-walled task (TryHackMe) starts already logged in.
+
+    This is the move that beats Google's "can't sign in on an automated browser"
+    wall: we never type a sign-in through automation — we transplant the session
+    cookie the user already earned in real Firefox. Best-effort and silent; the
+    task proceeds logged-out if there's nothing to import. Returns the cookie count
+    (never the values — privacy).
+    """
+    try:
+        from friday.skills.firefox_login import apply_firefox_login, domain_of
+
+        return await apply_firefox_login(page.context, domain_of(url))
+    except Exception:  # noqa: BLE001 — login reuse is best-effort, never fatal
+        return 0
+
+
 async def _do(page: Any, marks: list[dict[str, Any]], a: dict[str, Any]) -> str | None:
     """Execute one vision action by badge number. Returns an error string or None."""
     act = a.get("act")
@@ -172,6 +190,7 @@ async def web_task_vision(
 
     try:
         page = await get_page()
+        await _maybe_login(page, start_url)  # inherit the user's real login first
         await page.goto(start_url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not open {start_url}: {e}"}
