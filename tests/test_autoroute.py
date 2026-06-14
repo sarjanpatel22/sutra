@@ -62,6 +62,28 @@ def test_tryhackme_phrase_now_goes_agentic():
     assert d.act is True and d.effort == "high"
 
 
+@pytest.mark.parametrize("text", [
+    # The live-test phrases that fell to chit-chat — finishing/continuing a task.
+    "let's finish this room",
+    "now tell me what should we do to finish this openjail room",
+    "why are you not finishing this room",
+    "let's solve it",
+    "keep going",
+    "enumerate the box and get the flag",
+])
+def test_finish_continue_task_acts_with_tool(text):
+    d = decide(text)
+    assert d.act is True and d.effort == "high" and d.tool_required is True
+
+
+def test_finish_task_does_not_break_chitchat():
+    # The new task pattern must not swallow ordinary talk.
+    for chat in ("tell me a joke", "what do you think of that", "good morning"):
+        assert decide(chat).act is False
+    # word-boundary: "solve"/"complete" stems shouldn't fire inside other words
+    assert decide("give me a short explanation of planets").effort != "high"
+
+
 def test_coding_routes_to_free_code_tier(monkeypatch):
     monkeypatch.delenv("ROUTER_ALLOW_PAID", raising=False)
     d = decide("refactor this function and write a unit test")

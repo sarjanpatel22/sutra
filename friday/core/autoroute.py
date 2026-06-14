@@ -68,6 +68,21 @@ _ACTION = re.compile(
     re.I,
 )
 
+# Continuing or finishing an in-progress task — especially a CTF room/box/lab.
+# "finish this room", "let's solve it", "keep going", "why aren't you finishing the
+# room". Real agentic work that carries no open/go verb, so it used to fall to
+# chit-chat and the model could only narrate. Per this module's bias-to-act rule we'd
+# rather over-trigger here than miss a real "do it" (greetings/opinions don't match).
+_TASK = re.compile(
+    r"\b("
+    r"finish\w*|complete|solv\w*|crack\w*|pwn\w*|exploit\w*|enumerat\w*|"
+    r"capture the flag|get the flag|root (?:the|this|it)|"
+    r"keep going|carry on|continue|proceed|next step|"
+    r"do (?:the|this|that) (?:room|lab|machine|box|task|challenge|step)"
+    r")\b",
+    re.I,
+)
+
 # Light tool needs: one live fact / a single action. Worth acting on, but not "high".
 # (Folds in what used to be agent.likely_needs_tool so voice no longer needs it.)
 _NEEDS_TOOL = re.compile(
@@ -121,19 +136,22 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
     coding = bool(_CODE.search(t))
     action = bool(_ACTION.search(t))
     is_url = bool(_URL.search(t))
+    task = bool(_TASK.search(t))
     high = bool(
-        is_url or _HEAVY.search(t) or coding or action
+        is_url or _HEAVY.search(t) or task or coding or action
         or len(t.split()) > 40 or len(t) > 240
     )
 
     if high:
-        # A concrete "do this" turn (open/show/go/search or a URL) — a tool MUST run,
-        # so force it. Analysis/coding/"complex" stays free to answer without a tool.
-        tool_required = is_url or action
+        # A concrete "do this" turn (open/show/go/search, a URL, or finish/continue a
+        # task) — a tool MUST run, so force it. Analysis/coding/"complex" stays free to
+        # answer without a tool.
+        tool_required = is_url or action or task
         why = (
             "web task" if is_url
             else "coding" if coding
             else "action" if action
+            else "finish task" if task
             else "complex / multi-step"
         )
         if paid:
