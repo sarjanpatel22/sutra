@@ -90,7 +90,10 @@ def evaluate(expression: str) -> float:
 
 @skill(
     name="calc",
-    description="Evaluate a math expression (arithmetic + functions like sqrt, sin, log).",
+    description=(
+        "THE tool for math and arithmetic — e.g. 'what is 15 times 27', '8 plus 5', "
+        "percentages, sqrt, sin, log. Pass the expression (e.g. '15*27'). Not a shell command."
+    ),
     auto_confirm=True,
     timeout_s=5,
 )

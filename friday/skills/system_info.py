@@ -82,7 +82,8 @@ async def battery() -> dict[str, object]:
 @skill(
     name="run_command",
     description=(
-        "Run a shell command and return stdout/stderr. Sandboxed — use for read-only commands."
+        "Run a shell/terminal command on the system or files (e.g. 'ls', 'df -h') and return "
+        "stdout/stderr. NOT for arithmetic (use calc) and NOT for launching apps (use open_app)."
     ),
     auto_confirm=False,  # requires confirmation — can mutate system state
     timeout_s=30,

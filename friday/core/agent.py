@@ -390,10 +390,19 @@ async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
 
 
 def _spoken(text: str | None) -> str:
-    """Sanitize a reply for TTS. The 70B occasionally emits a fake tool-call / code
-    block as its 'answer' (```tool_code …```, raw JSON) — never read that aloud."""
+    """Sanitize a reply for TTS. Models occasionally emit a fake tool-call / code
+    block as their 'answer' (```tool_code …```, raw JSON, or a local model parroting
+    'Tool Calls: [...]' from the history) — never read that aloud."""
     t = (text or "").strip()
-    if "```" in t or "tool_code" in t or t.startswith("{") or t.startswith("print("):
+    low = t.lower()
+    if (
+        "```" in t
+        or "tool_code" in low
+        or low.startswith("tool call")  # "Tool Calls: [", "Tool Call:"
+        or t.startswith("{")
+        or t.startswith("[")
+        or t.startswith("print(")
+    ):
         return "Done."
     return t
 
@@ -427,6 +436,7 @@ async def voice_agent_run(
 
     tools = registry.all_tools()
     acted = False  # did ANY tool call actually fire this turn?
+    seen: set[tuple[str, str]] = set()  # (tool, args) already run — to catch repeat loops
     for round_i in range(max_tool_rounds):
         # Low temperature here: action requests must reliably trigger a tool call,
         # not a witty "right this way" that never actually does it. When the router
@@ -452,14 +462,22 @@ async def voice_agent_run(
                 return _RATELIMITED_MSG
             return _spoken(msg.content)
         acted = True
+        keys: set[tuple[str, str]] = set()
         for tc in tool_calls:
             fn = getattr(tc, "function", tc)
+            keys.add((fn.name, getattr(fn, "arguments", "") or ""))
             _log.info("voice tool call: %s args=%s", fn.name, getattr(fn, "arguments", ""))
         # Web/browser tasks approved hands-free; destructive skills declined.
         results = await _run_tool_calls(tool_calls, confirm=_voice_confirm)
         for res in results:  # log what each tool actually returned (success or error)
             _log.info("voice tool result: %s", str(res.get("content", ""))[:300])
         messages.extend(results)
+        # A small local model (the offline fallback) can loop re-calling the same tool
+        # instead of answering. If this whole round only repeated calls we already ran,
+        # stop and make it synthesize a spoken answer from the results it has.
+        if keys and keys <= seen:
+            break
+        seen |= keys
 
     # Out of tool rounds — force a final spoken answer with no more tools.
     if force_tool and not acted:

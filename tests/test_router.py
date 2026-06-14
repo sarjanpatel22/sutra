@@ -1,6 +1,7 @@
 """BudgetTracker unit tests — cost accounting, limits, resets, alerts, persistence."""
 
 import time
+import types
 
 import pytest
 
@@ -186,3 +187,188 @@ def test_persistence_roundtrip():
     assert b2.daily_spent == pytest.approx(0.018)
     assert b2.monthly_spent == pytest.approx(0.018)
     assert b2.daily_tokens == 2000
+
+
+# ===========================================================================
+# Local tool-capable fallback (qwen before gemma) — regression for the router
+# fix: when every cloud LLM is rate-limited, a TOOL turn must fall back to a
+# tool-CAPABLE local model (qwen2.5, Tier.LOCAL_TOOLS) BEFORE the chat-only
+# local model (gemma3, Tier.LOCAL) — gemma can't accept a tools array at all,
+# so reaching it on a tool turn would collapse the action into prose.
+# ===========================================================================
+
+
+# --- _tool_incapable: only local gemma can't take tools --------------------
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "ollama/gemma3:4b",
+        "ollama_chat/gemma3:4b",
+    ],
+)
+def test_tool_incapable_true_for_local_gemma(model):
+    """gemma is the one local model Ollama hard-rejects tools on → strip them."""
+    assert router._tool_incapable(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "ollama_chat/qwen2.5:7b",   # local but DOES emit tool_calls
+        "ollama_chat/llama3.2:3b",  # local but DOES emit tool_calls
+    ],
+)
+def test_tool_incapable_false_for_tool_capable_local(model):
+    """Other local models keep their tools so the offline fallback can still act."""
+    assert router._tool_incapable(model) is False
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "groq/llama-3.3-70b-versatile",
+        "gemini/gemini-2.5-flash",
+        "claude-sonnet-4-6",
+    ],
+)
+def test_tool_incapable_false_for_cloud(model):
+    """Cloud models all function-call — never strip their tools."""
+    assert router._tool_incapable(model) is False
+
+
+# --- _prefer_local_tools: inject qwen immediately before gemma -------------
+
+def test_prefer_local_tools_inserts_before_local():
+    """LOCAL_TOOLS (qwen) must land immediately BEFORE LOCAL (gemma)."""
+    out = router._prefer_local_tools([Tier.MEDIUM, Tier.LOCAL])
+    assert out == [Tier.MEDIUM, Tier.LOCAL_TOOLS, Tier.LOCAL]
+    # qwen sits directly in front of gemma
+    i = out.index(Tier.LOCAL_TOOLS)
+    assert out[i + 1] is Tier.LOCAL
+
+
+def test_prefer_local_tools_no_duplicate_when_already_present():
+    """An existing LOCAL_TOOLS must not be added a second time."""
+    out = router._prefer_local_tools([Tier.LOCAL_TOOLS, Tier.MEDIUM, Tier.LOCAL])
+    assert out.count(Tier.LOCAL_TOOLS) == 1
+    # ...and the one we keep is still ordered ahead of LOCAL
+    assert out.index(Tier.LOCAL_TOOLS) < out.index(Tier.LOCAL)
+
+
+def test_prefer_local_tools_unchanged_without_local():
+    """No LOCAL tier → nothing to guard → list returned as-is."""
+    tiers = [Tier.HEAVY, Tier.MEDIUM]
+    out = router._prefer_local_tools(tiers)
+    assert out == tiers
+
+
+# --- complete() per-model tool handling + fallback order -------------------
+
+_FAKE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Look up the weather.",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    },
+}
+
+
+def _fake_response(content="ok"):
+    """Minimal litellm-shaped response with usage=None so budget recording skips."""
+    message = types.SimpleNamespace(content=content, tool_calls=None)
+    choice = types.SimpleNamespace(message=message)
+    return types.SimpleNamespace(choices=[choice], usage=None)
+
+
+def _recording_acompletion(calls, *, fail_substrings):
+    """Build a fake litellm.acompletion that records (model, tools) per call and
+    raises for any model whose id contains one of `fail_substrings` (simulating a
+    rate-limited cloud model / a downed local model)."""
+
+    async def fake(*, model, messages, tools=None, **kwargs):  # noqa: ANN001
+        calls.append({"model": model, "tools": tools})
+        if any(sub in model for sub in fail_substrings):
+            raise RuntimeError(f"simulated failure for {model}")
+        return _fake_response()
+
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_complete_strips_tools_per_model_and_prefers_qwen(monkeypatch):
+    """On a tool turn with every CLOUD model down, the router must:
+      * pass the tools array to the cloud models it tries,
+      * fall back to qwen (LOCAL_TOOLS) and keep its tools,
+      * reach qwen BEFORE any gemma model.
+    qwen succeeds here, so gemma is never reached (correct: the action fired).
+    """
+    calls: list[dict] = []
+    # Fail every cloud model (groq/gemini/claude); ollama models succeed.
+    fake = _recording_acompletion(calls, fail_substrings=("groq/", "gemini/", "claude"))
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    resp = await router.complete(
+        [{"role": "user", "content": "weather in Toronto?"}],
+        tier=Tier.MEDIUM,
+        tools=[_FAKE_TOOL],
+    )
+    assert resp.choices[0].message.content == "ok"
+
+    models = [c["model"] for c in calls]
+    # at least one cloud model was attempted and got the tools list
+    cloud = [
+        c for c in calls
+        if c["model"].startswith(("groq/", "gemini/")) or "claude" in c["model"]
+    ]
+    assert cloud, "expected cloud models to be attempted first"
+    assert all(c["tools"] == [_FAKE_TOOL] for c in cloud), "cloud calls must carry tools"
+
+    # qwen was reached and KEPT its tools (it can function-call locally)
+    qwen = next(c for c in calls if c["model"].startswith("ollama_chat/qwen2.5"))
+    assert qwen["tools"] == [_FAKE_TOOL]
+
+    # ORDER: qwen (LOCAL_TOOLS) attempted before ANY gemma model (LOCAL)
+    qwen_idx = next(i for i, m in enumerate(models) if m.startswith("ollama_chat/qwen2.5"))
+    gemma_idxs = [i for i, m in enumerate(models) if "gemma" in m]
+    if gemma_idxs:
+        assert qwen_idx < min(gemma_idxs), "qwen must be tried before gemma"
+    # qwen succeeded → gemma should not even be reached
+    assert qwen["model"] == models[-1], "qwen success should end the fallback chain"
+
+
+@pytest.mark.asyncio
+async def test_complete_strips_tools_for_gemma_when_qwen_also_down(monkeypatch):
+    """If qwen ALSO fails, the chat-only gemma is the last resort — and its tools
+    MUST be stripped to None (Ollama rejects a tools array for gemma)."""
+    calls: list[dict] = []
+    # Everything cloud fails AND qwen fails → forces gemma as the final rung.
+    fake = _recording_acompletion(
+        calls, fail_substrings=("groq/", "gemini/", "claude", "qwen2.5")
+    )
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    resp = await router.complete(
+        [{"role": "user", "content": "weather in Toronto?"}],
+        tier=Tier.MEDIUM,
+        tools=[_FAKE_TOOL],
+    )
+    assert resp.choices[0].message.content == "ok"  # gemma carried the turn (as prose)
+
+    # qwen was attempted (and given tools) before gemma
+    qwen = next(c for c in calls if c["model"].startswith("ollama_chat/qwen2.5"))
+    assert qwen["tools"] == [_FAKE_TOOL]
+
+    # gemma was reached and its tools were STRIPPED to None
+    gemma = next(c for c in calls if "gemma" in c["model"])
+    assert gemma["tools"] is None, "gemma must never receive a tools array"
+
+    models = [c["model"] for c in calls]
+    qwen_idx = models.index(qwen["model"])
+    gemma_idx = models.index(gemma["model"])
+    assert qwen_idx < gemma_idx, "qwen must be tried before gemma"

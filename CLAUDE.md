@@ -17,7 +17,7 @@ v1 target: ~6 months at 10 hrs/wk.
 ## Stack
 - Router: LiteLLM tiered (local Ollama → Groq → Gemini → Claude)
 - Council: Claude API (Sonnet default, Opus rare, Haiku for cheap)
-- Local: Gemma 4 E4B (router + voice handler), Qwen 3.5 9B (architect, on-demand)
+- Local: gemma3:4b (fast voice/chat, no tools), qwen2.5:7b (offline FUNCTION-CALLING fallback — quota-proof tool turns), gemma4:e4b (reasoning), qwen2.5:14b (memory extraction)
 - Voice: faster-whisper Large-v3 INT8 + Kokoro + Pipecat (Week 2)
 - Memory: Graphiti + FalkorDB + Qdrant (Week 3)
 - Desktop automation: xdotool (X11 confirmed)

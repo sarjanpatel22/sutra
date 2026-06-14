@@ -122,9 +122,9 @@ async def apply_firefox_login(context: Any, domain: str = "") -> int:
     name="import_firefox_login",
     description=(
         "Copy your Firefox cookies into Sutra's browser so she is logged into the same "
-        "sites you are — no second login. Give a domain (e.g. 'tryhackme.com') to import "
-        "just that site, or leave empty for all. Use this before a web_task on a site you "
-        "are already signed into in Firefox."
+        "sites you are — no second login. ONLY for importing logins, NEVER for opening or "
+        "launching Firefox ('open firefox' -> open_app). Give a domain (e.g. 'tryhackme.com') "
+        "to import one site, or leave empty for all; use before a web_task on a signed-in site."
     ),
     auto_confirm=True,
     timeout_s=20,

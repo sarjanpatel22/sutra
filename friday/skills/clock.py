@@ -11,7 +11,11 @@ from friday.skills.registry import skill
 
 @skill(
     name="current_time",
-    description="Get the current date and time, optionally for a given timezone.",
+    description=(
+        "Answers 'what time is it' / 'what's the time' / 'what's the date' / 'what day is "
+        "it' — returns the clock time, date, and weekday. Optional timezone. This is the "
+        "ONLY time/date/clock tool; it is NOT weather, temperature, or forecast."
+    ),
     auto_confirm=True,
     timeout_s=2,
 )

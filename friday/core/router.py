@@ -26,6 +26,7 @@ ALERT_THRESHOLD = float(os.getenv("BUDGET_ALERT_THRESHOLD", "0.85"))
 
 class Tier(StrEnum):
     LOCAL = "local"
+    LOCAL_TOOLS = "local_tools"  # local function-calling fallback (qwen2.5) — quota-proof
     REASON = "reason"  # local reasoning — Gemma 4 with thinking ON, free
     CODE = "code"  # local code model, loaded on demand (Phase 1.6 IDE bridge)
     MEDIUM = "medium"
@@ -36,6 +37,16 @@ class Tier(StrEnum):
 TIER_MODELS: dict[Tier, list[str]] = {
     Tier.LOCAL: [
         os.getenv("ROUTER_LOCAL_MODEL", "ollama/gemma3:4b"),
+    ],
+    # Local FUNCTION-CALLING fallback. gemma3:4b (Tier.LOCAL) literally can't take a
+    # tools array — Ollama rejects it ("does not support tools") — so when every free
+    # CLOUD model is rate-limited, a tool turn would otherwise collapse to prose and
+    # narrate an action that never happens. qwen2.5:7b DOES emit real tool_calls
+    # locally (measured: scripts/probe_local_tools.py), so it's the offline safety net
+    # that keeps actions working at $0 with no quota. Tried only on the tool-turn
+    # fallback rung, after the cloud tiers — see _prefer_local_tools.
+    Tier.LOCAL_TOOLS: [
+        os.getenv("ROUTER_LOCAL_TOOLS_MODEL", "ollama_chat/qwen2.5:7b"),
     ],
     # Local reasoning: Gemma 4 (a reasoning model) with thinking left ON — slower
     # but it works through hard questions. Free/local; falls back to free Gemini.
@@ -87,6 +98,31 @@ _COST_PER_1K: dict[str, tuple[float, float]] = {
 # Provider prefixes that are always free (local or free-tier APIs).
 # Guards against silently charging the default rate on a model-name typo.
 _FREE_PREFIXES = ("ollama/", "ollama_chat/", "groq/", "gemini/")
+
+# Local models that cannot accept a tools array AT ALL — Ollama hard-rejects the
+# request ("does not support tools"). Matched as a substring of the model id. Every
+# OTHER local model (qwen2.5, llama3.x) emits real tool_calls, so it KEEPS its tools
+# and can function-call offline. Verified empirically: scripts/probe_local_tools.py.
+_LOCAL_NO_TOOLS = ("gemma",)
+
+
+def _tool_incapable(model: str) -> bool:
+    """True if `model` is a local model that can't accept tools (so they're stripped)."""
+    if not model.startswith(("ollama/", "ollama_chat/")):
+        return False  # cloud models all function-call
+    return any(tag in model for tag in _LOCAL_NO_TOOLS)
+
+
+def _prefer_local_tools(tiers: list[Tier]) -> list[Tier]:
+    """For tool turns: try the tool-capable local model (qwen) BEFORE the chat-only
+    local model (gemma), so a fully rate-limited tool turn still fires a real tool
+    instead of degrading to prose that only *describes* the action."""
+    out: list[Tier] = []
+    for t in tiers:
+        if t is Tier.LOCAL and Tier.LOCAL_TOOLS not in out:
+            out.append(Tier.LOCAL_TOOLS)
+        out.append(t)
+    return out
 
 # Registered alert callbacks: fn(scope, pct_used) where scope is "daily"|"monthly"
 _alert_callbacks: list[Callable[[str, float], None]] = []
@@ -263,9 +299,12 @@ async def _tracked_stream(response: Any, model: str) -> AsyncIterator[Any]:
 # Local Ollama is the universal last resort: free and never rate-limited.
 _FALLBACK_TIERS: dict[Tier, list[Tier]] = {
     Tier.LOCAL: [],
+    Tier.LOCAL_TOOLS: [Tier.LOCAL],  # qwen fails → gemma prose (last resort)
     Tier.REASON: [Tier.MEDIUM, Tier.LOCAL],
     Tier.CODE: [Tier.MEDIUM, Tier.LOCAL],
-    Tier.MEDIUM: [Tier.LOCAL],
+    # qwen before gemma: it's the stronger writer, so even a no-tools synthesis after
+    # a cloud outage reads naturally instead of gemma parroting the tool-call history.
+    Tier.MEDIUM: [Tier.LOCAL_TOOLS, Tier.LOCAL],
     Tier.HEAVY: [Tier.MEDIUM, Tier.LOCAL],
     Tier.MAX: [Tier.HEAVY, Tier.MEDIUM, Tier.LOCAL],
 }
@@ -295,6 +334,10 @@ async def complete(
     fallback = list(_FALLBACK_TIERS.get(primary, []))
     if tools and primary == Tier.MEDIUM and _budget.can_afford(Tier.HEAVY):
         fallback = [Tier.HEAVY, *fallback]  # tool turn + rate limit → Claude, not local
+    if tools:
+        # ...then a tool-CAPABLE local model (qwen) before the chat-only one (gemma),
+        # so a fully rate-limited tool turn still acts instead of just narrating.
+        fallback = _prefer_local_tools(fallback)
 
     models: list[str] = []
     for tr in [primary, *fallback]:
@@ -304,11 +347,10 @@ async def complete(
 
     last_err: Exception | None = None
     for model in models:
-        # Local models can't do function-calling — handing them tools makes them emit
-        # malformed tool-call JSON as the answer. Strip tools on the local fallback rung
-        # so a degraded turn returns clean prose instead of "{".
-        is_local = model.startswith(("ollama/", "ollama_chat/"))
-        call_tools = None if is_local else tools
+        # Strip tools only for local models that genuinely can't accept them (gemma —
+        # Ollama rejects the request outright). qwen2.5/llama KEEP their tools and
+        # function-call locally, which is what makes the offline fallback actually act.
+        call_tools = None if _tool_incapable(model) else tools
         try:
             call_kwargs = dict(kwargs)
             if call_tools is None:

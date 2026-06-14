@@ -11,7 +11,11 @@ from friday.skills.registry import skill
 
 @skill(
     name="weather",
-    description="Get the current weather for a city (blank = your IP-based location).",
+    description=(
+        "Answers 'what's the weather' / 'how hot is it' / forecast questions for a city "
+        "(blank = your IP-based location). ONLY for weather, temperature, and sky "
+        "conditions — it does NOT tell the clock time, date, or day (use current_time)."
+    ),
     auto_confirm=True,
     timeout_s=10,
 )

@@ -90,10 +90,10 @@ def _is_safe_url(url: str) -> bool:
 @skill(
     name="open_url",
     description=(
-        "Open a web URL (http/https) in the user's default browser (a normal browser "
-        "window). For DOING something on a page — reading it, clicking, searching, "
-        "logging-in flows — use browse_url / web_task / browser_open instead; this only "
-        "hands the URL off to the browser."
+        "Open a web URL/website (http/https) in the user's default browser — e.g. 'open "
+        "github.com'. Requires an actual URL; to launch the browser app itself ('open "
+        "firefox') use open_app. For DOING something on a page — reading, clicking, "
+        "logging-in flows — use browse_url / web_task / browser_open instead."
     ),
     auto_confirm=True,
     timeout_s=20,  # xdg-open can block while a cold browser starts; 5s was too tight

@@ -68,9 +68,9 @@ def _candidates(name: str) -> list[str]:
 @skill(
     name="open_app",
     description=(
-        "Open / launch a desktop APPLICATION by name (Firefox, terminal, VS Code, "
-        "file manager, calculator, text editor). Use this when the user wants to "
-        "start a program. For opening a website/URL use open_url or browser_open."
+        "THE tool to open or launch a desktop application by name — e.g. 'open firefox', "
+        "'launch terminal', 'open vs code', 'open calculator'. Pass the app name (e.g. "
+        "'firefox'). For a website/URL use open_url; this starts a program, not a web page."
     ),
     auto_confirm=True,
     timeout_s=20,
