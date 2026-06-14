@@ -24,6 +24,15 @@ _DEFAULT_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
 # already trimmed the audio upstream; re-running Whisper's internal VAD is wasted work.
 _DEFAULT_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en") or None
 _DEFAULT_BEAM = int(os.getenv("WHISPER_BEAM", "1"))
+# Bias the decoder toward the rare proper nouns Sarjan actually says — small.en
+# otherwise hears "TryHackMe" as "dry at me" and the command dies. initial_prompt is
+# fed as prior context so these tokens win close calls. Env-overridable to extend it;
+# if mishears persist on noisy input, set WHISPER_MODEL=large-v3 for more accuracy.
+_VOCAB_PROMPT = os.getenv(
+    "WHISPER_PROMPT",
+    "Sutra. TryHackMe, Hack The Box, nmap, gobuster, ffuf, Burp Suite, Metasploit, "
+    "OpenVPN, Kali Linux, reverse shell, privilege escalation, subdomain, payload, CTF.",
+) or None
 
 
 @dataclass
@@ -76,6 +85,7 @@ class STT:
         language: str | None = _DEFAULT_LANGUAGE,
         beam_size: int = _DEFAULT_BEAM,
         vad_filter: bool = False,
+        initial_prompt: str | None = _VOCAB_PROMPT,
     ) -> TranscribeResult:
         """Transcribe int16 or float32 PCM audio."""
         if audio.dtype == np.int16:
@@ -88,6 +98,7 @@ class STT:
             beam_size=beam_size,
             vad_filter=vad_filter,
             vad_parameters={"min_silence_duration_ms": 300},
+            initial_prompt=initial_prompt,
         )
         segments = list(segments_gen)
         latency_ms = (time.monotonic() - t0) * 1000
