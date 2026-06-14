@@ -177,6 +177,14 @@ async def test_compound_focus_and_close_fall_through(fakes: dict[str, _Recorder]
     assert fakes["close_window"].calls == []
 
 
+async def test_open_web_target_is_not_an_app(fakes: dict[str, _Recorder]) -> None:
+    # Live bug: "open any hard room" (3 words) slipped the sentence-guard and got
+    # gtk-launch'd as a fake app. Web/CTF targets must go to the LLM, never open_app.
+    for phrase in ("open any hard room", "open the website", "open my box", "open a lab"):
+        assert await commands.try_command(phrase) is None
+    assert fakes["open_app"].calls == []
+
+
 async def test_short_multiword_app_still_launches(fakes: dict[str, _Recorder]) -> None:
     # Guard must not over-fire: a genuine 3-word app name still launches directly.
     out = await commands.try_command("open visual studio code")

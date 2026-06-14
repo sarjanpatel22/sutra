@@ -70,6 +70,15 @@ def _is_sentence_like(obj: str) -> bool:
     return len(obj.split()) > 3 or bool(_SENTENCE_MARKER.search(obj))
 
 
+# Words that mean the target is a web/CTF thing, never a desktop app — so "open a
+# hard room", "open the website", "open my box" must go to the LLM (web_task_vision),
+# never gtk-launch. Caught the live "open any hard room" → gtk-launch garbage.
+_NOT_AN_APP = re.compile(
+    r"\b(room|box|machine|lab|challenge|target|website|site|web ?page|page|tab|url|link)\b",
+    re.I,
+)
+
+
 def _strip_filler(text: str) -> str:
     """Lower-noise normalization: collapse whitespace, strip leading/trailing filler.
 
@@ -139,6 +148,8 @@ async def try_command(text: str) -> dict[str, Any] | None:
             return None
         if _is_sentence_like(obj):
             return None  # compound/conversational ("open X and finish it") → LLM
+        if _NOT_AN_APP.search(obj):
+            return None  # "open a hard room" / "open the website" → web agent, not gtk-launch
         if _looks_like_url(obj):
             url = _normalize_url(obj)
             result = await _safe(open_url, url)
