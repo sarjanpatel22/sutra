@@ -140,6 +140,20 @@ async def tick(
     return surfaced
 
 
+async def watch_once(cfg: WatchConfig | None = None) -> str | None:
+    """Run exactly ONE watch tick and return its surfaced suggestion (or None).
+
+    A single-shot for testing `sutra watch --once`: fresh state, current wall clock,
+    one `tick`. Returns None when the screen is unavailable, unchanged, or the model
+    stays quiet. Does not loop and does not touch `run_watch`'s behaviour.
+    """
+    cfg = cfg or WatchConfig.from_env()
+    if not screen.screen_available():
+        log.warning("watch --once: no display / no screenshot tool — nothing to watch")
+        return None
+    return await tick(WatchState(), cfg, _now())
+
+
 async def run_watch(cfg: WatchConfig | None = None) -> None:
     """Entry point for `sutra watch`: loop forever, ticking every `poll_s` seconds.
 

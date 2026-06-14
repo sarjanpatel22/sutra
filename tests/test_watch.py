@@ -13,7 +13,7 @@ import pytest
 
 import friday.watch.loop as loop
 import friday.watch.suggest as suggest_mod
-from friday.watch.loop import decide_action, tick
+from friday.watch.loop import decide_action, tick, watch_once
 from friday.watch.state import WatchConfig, WatchState
 from friday.watch.suggest import clean_suggestion, suggest_from_screen
 
@@ -175,6 +175,39 @@ async def test_tick_suggest_error_never_crashes() -> None:
     assert out is None
     assert notify.sent == []  # type: ignore[attr-defined]
     assert state.last_hash == 0b1111_0000  # still advanced despite the error
+
+
+# ── watch_once single-tick (tick stubbed — no capture/vision/notify) ─────────────
+
+async def test_watch_once_returns_suggestion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(loop.screen, "screen_available", lambda: True)
+
+    async def fake_tick(*_a: object, **_k: object) -> str | None:
+        return "Close that stray tab."
+
+    monkeypatch.setattr(loop, "tick", fake_tick)
+    assert await watch_once(CFG) == "Close that stray tab."
+
+
+async def test_watch_once_returns_none_when_quiet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(loop.screen, "screen_available", lambda: True)
+
+    async def fake_tick(*_a: object, **_k: object) -> str | None:
+        return None
+
+    monkeypatch.setattr(loop, "tick", fake_tick)
+    assert await watch_once(CFG) is None
+
+
+async def test_watch_once_none_without_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No display → returns None without ever ticking.
+    monkeypatch.setattr(loop.screen, "screen_available", lambda: False)
+
+    async def boom(*_a: object, **_k: object) -> str | None:
+        raise AssertionError("tick must not run when no display is available")
+
+    monkeypatch.setattr(loop, "tick", boom)
+    assert await watch_once(CFG) is None
 
 
 # ── suggest_from_screen parsing (litellm mocked, no network) ─────────────────────

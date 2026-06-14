@@ -373,7 +373,78 @@ def ambient(
 
 
 @app.command()
-def watch() -> None:
+def guide(
+    goal: str = typer.Argument(..., help="What you're trying to do on screen right now"),
+) -> None:
+    """Look at your screen and tell you which control to click — read-only, no clicking.
+
+    Grabs one screenshot, asks the free vision model where the relevant button/menu/field
+    is, and prints that. Never moves the mouse or types — use `sutra do` for that.
+    """
+    from friday.skills.guide import guide_me
+
+    async def _run() -> dict[str, Any]:
+        with console.status("[cyan]looking at your screen…[/cyan]"):
+            return await guide_me(goal)
+
+    result = asyncio.run(_run())
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/red]")
+        return
+    console.print(Panel(
+        result["guidance"],
+        title=f"[cyan]{result['goal']}[/cyan]", border_style="cyan", padding=(0, 1),
+    ))
+
+
+@app.command()
+def do(
+    goal: str = typer.Argument(..., help="What to click, e.g. 'press Save' or 'open Search menu'"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt (scripted/autonomous use)"
+    ),
+) -> None:
+    """Actually CLICK a control on your real desktop — the take-over after `guide`.
+
+    Finds the control by its on-screen text (OCR) and clicks its real location. This is
+    IRREVERSIBLE — it moves the mouse and clicks the live desktop — so it confirms first
+    unless you pass --yes. Text-labelled controls only.
+    """
+    from friday.skills.desktop_control import act_on_screen
+
+    if not yes:
+        console.print(Panel(
+            f"[bold]Click on your live desktop:[/bold] {goal}\n"
+            "[dim]This moves the mouse and clicks for real.[/dim]",
+            title="[yellow]Confirm action[/yellow]", border_style="yellow",
+        ))
+        if not Confirm.ask("  Do it?", default=False):
+            console.print("Cancelled.")
+            return
+
+    async def _run() -> dict[str, Any]:
+        with console.status("[cyan]finding the control…[/cyan]"):
+            return await act_on_screen(goal)
+
+    result = asyncio.run(_run())
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/red]")
+    elif result.get("acted"):
+        coords = result.get("coords", [])
+        console.print(
+            f"[green]Clicked[/green] [bold]{result.get('target')}[/bold] "
+            f"[dim]at {tuple(coords)}[/dim]"
+        )
+    else:  # honest "nothing matched — here's what I can see"
+        console.print(f"[yellow]{result.get('note', 'Nothing matched.')}[/yellow]")
+
+
+@app.command()
+def watch(
+    once: bool = typer.Option(
+        False, "--once", help="Run a single tick, print the suggestion (or quiet line), then exit"
+    ),
+) -> None:
     """Watch your desktop and proactively suggest — Sutra glancing over your shoulder.
 
     Sends a screenshot to the free vision model only when the screen changes and a
@@ -381,7 +452,16 @@ def watch() -> None:
     until you run this; tune via WATCH_* env vars (WATCH_COOLDOWN_S, WATCH_DAILY_CAP,
     WATCH_SPEAK, …). Ctrl+C to stop.
     """
-    from friday.watch.loop import run_watch
+    from friday.watch.loop import run_watch, watch_once
+
+    if once:
+        suggestion = asyncio.run(watch_once())
+        if suggestion:
+            console.print(Panel(suggestion, title="[cyan]Sutra[/cyan]", border_style="cyan"))
+        else:
+            console.print("[dim]Nothing worth interrupting you for right now.[/dim]")
+        return
+
     console.print("\n  👁  [bold]Sutra is watching[/bold] — suggestions only when they help")
     console.print(
         "      [dim]silent unless useful · a screenshot goes to the free vision model "
