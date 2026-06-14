@@ -373,6 +373,27 @@ def ambient(
 
 
 @app.command()
+def watch() -> None:
+    """Watch your desktop and proactively suggest — Sutra glancing over your shoulder.
+
+    Sends a screenshot to the free vision model only when the screen changes and a
+    cooldown has elapsed, and stays silent unless a suggestion genuinely helps. Off
+    until you run this; tune via WATCH_* env vars (WATCH_COOLDOWN_S, WATCH_DAILY_CAP,
+    WATCH_SPEAK, …). Ctrl+C to stop.
+    """
+    from friday.watch.loop import run_watch
+    console.print("\n  👁  [bold]Sutra is watching[/bold] — suggestions only when they help")
+    console.print(
+        "      [dim]silent unless useful · a screenshot goes to the free vision model "
+        "only when the screen changes · Ctrl+C to stop[/dim]\n"
+    )
+    try:
+        asyncio.run(run_watch())
+    except KeyboardInterrupt:
+        console.print("\n[dim]Watch stopped.[/dim]")
+
+
+@app.command()
 def status() -> None:
     """Run a one-shot health check and print results."""
     from friday.core.monitor import print_report, run_health_checks
