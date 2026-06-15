@@ -19,8 +19,9 @@ from friday.watch.suggest import clean_suggestion, suggest_from_screen
 
 CFG = WatchConfig(poll_s=20, cooldown_s=90, change_threshold=8, daily_cap=40)
 
-# A fixed wall-clock instant (2026-06-14 12:00 local) so day math is deterministic.
-NOON = dt.datetime(2026, 6, 14, 12, 0, 0).timestamp()
+# Noon *today* (not a hardcoded calendar date) so it matches the default WatchState.day
+# and the day math stays deterministic no matter when the suite runs.
+NOON = dt.datetime.combine(dt.date.today(), dt.time(12, 0, 0)).timestamp()
 
 # Two non-zero hashes that differ in 16 bits — comfortably past the threshold(8), so
 # `changed()` is True. Using non-zero values avoids the "no baseline" always-changed path.
@@ -69,13 +70,13 @@ def test_decide_look() -> None:
 def test_decide_midnight_rollover_resets_count() -> None:
     # Yesterday's state with a full count; "now" is today → count resets to 0,
     # so we're under cap again and free to look.
-    yesterday = dt.date(2026, 6, 13)
+    yesterday = dt.date.today() - dt.timedelta(days=1)
     state = WatchState(
         last_hash=HASH_A, last_suggest_ts=NOON - 100_000, count_today=40, day=yesterday
     )
     assert decide_action(state, HASH_B, NOON, CFG) == "look"
     assert state.count_today == 0
-    assert state.day == dt.date(2026, 6, 14)
+    assert state.day == dt.date.today()
 
 
 # ── full tick (suggest + notify injected) ───────────────────────────────────────
