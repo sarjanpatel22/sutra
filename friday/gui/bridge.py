@@ -175,7 +175,27 @@ class Bridge:
             self._inflight.clear()
             return
         self._history = self._history[-_MAX_HISTORY:]
-        self.bus.publish("reply", text=reply)
+        # Compose widget layout for Generative UI — fire-and-forget; fallback is a
+        # markdown widget so this can never break the reply path.
+        widgets_json: list[dict] = []
+        try:
+            from friday.gui.widgets import compose_layout
+
+            # Pull any structured tool result from the most recent tool message.
+            tool_data = None
+            for msg in reversed(self._history):
+                if msg.get("role") == "tool" and msg.get("content"):
+                    import json as _json
+                    try:
+                        tool_data = _json.loads(msg["content"])
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+            layout = compose_layout(reply, tool_data=tool_data)
+            widgets_json = layout.to_json()
+        except Exception:  # noqa: BLE001 — widget compose must never kill the reply
+            pass
+        self.bus.publish("reply", text=reply, widgets=widgets_json)
         set_state("speaking", 0.55)
         assert self._loop is not None
         self._loop.call_later(_SPEAK_PULSE_S, set_state, "idle")

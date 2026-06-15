@@ -306,14 +306,14 @@ All irreversible actions route through the confirm gate; deterministic + autonom
 
 | Work item | Done? |
 |-----------|-------|
-| Vercel AI SDK `streamUI` fully wired | ⬜ |
-| Widget composition from LLM layout spec | ⬜ |
-| MapLibre widget (location queries) | ⬜ |
-| Code diff widget | ⬜ |
-| Chart widget (data queries) | ⬜ |
-| Layout persists across turns in same session | ⬜ |
+| Vercel AI SDK `streamUI` fully wired | ➖ N/A — dashboard is stdlib-served (no React/Next/Tauri); generative layout done with a pydantic widget-spec schema + composer instead |
+| Widget composition from LLM layout spec | ✅ 2026-06-15 — `friday/gui/widgets.py`: 7 widget types (markdown/metric/key_value/code/bar_chart/cards/table), deterministic composer (system_info→metrics, search→cards, code→code; zero LLM cost) + a free-Groq LLM-compose fallback, schema-validated and markdown-safe on any failure. 42 tests |
+| MapLibre widget (location queries) | ⬜ optional follow-on (no map dependency added) |
+| Code diff widget | ◐ `code` widget shipped; diff-specific highlighting is a follow-on |
+| Chart widget (data queries) | ✅ `bar_chart` widget (vanilla-JS render, gold palette) |
+| Layout persists across turns in same session | ⬜ follow-on — each turn composes a fresh layout |
 
-**Exit criteria:** Different queries spawn meaningfully different widget layouts.
+**Exit criteria:** Different queries spawn meaningfully different widget layouts. **✅ Met (mechanism)** — "system info"→metric grid, "search …"→cards, "write a function"→code block, prose→markdown; the visual polish is live art-direction on the GPU (the knobs are listed in the dashboard CSS), same as the orb.
 
 ---
 

@@ -134,6 +134,142 @@
   .confirm-card.resolved { opacity: 0.45; }
   .confirm-card.resolved button { pointer-events: none; opacity: 0.4; }
   .confirm-card .verdict { font-size: 8px; letter-spacing: 3px; color: var(--gold-soft); margin-top: 8px; }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+     GENERATIVE UI — centre widget panel
+     Appears below the orb when Sutra has something structured to show.
+     Hidden by default; revealed per-reply.
+  ────────────────────────────────────────────────────────────────────────── */
+  #widget-panel {
+    position: fixed;
+    left: 50%; transform: translateX(-50%);
+    top: 72px; bottom: 24px;
+    width: 520px; max-width: calc(100vw - 880px); /* squeeze between the side panels */
+    display: none; flex-direction: column;
+    background: var(--glass);
+    backdrop-filter: blur(18px) saturate(1.05);
+    -webkit-backdrop-filter: blur(18px) saturate(1.05);
+    border: 1px solid var(--gold-faint); border-radius: 10px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 18px 50px rgba(0,0,0,0.45);
+    overflow: hidden;
+    animation: rise 0.5s ease both;
+    z-index: 10;
+  }
+  #widget-panel.visible { display: flex; }
+  #widget-panel .panel-title { flex: 0 0 auto; }
+  #widget-body {
+    flex: 1 1 auto; overflow-y: auto; padding: 14px 16px 14px;
+    scrollbar-width: none; display: flex; flex-direction: column; gap: 14px;
+  }
+  #widget-body::-webkit-scrollbar { display: none; }
+
+  /* ── widget: markdown ── */
+  .w-markdown {
+    font-size: 12px; line-height: 1.75; color: var(--ink);
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* ── widget: metric grid ── */
+  .w-metrics {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px;
+  }
+  .w-metric-cell {
+    background: rgba(216,196,133,0.05); border: 1px solid var(--gold-faint);
+    border-radius: 8px; padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    animation: rise 0.5s ease both;
+  }
+  .w-metric-label {
+    font-size: 8px; letter-spacing: 3px; color: var(--gold-dim); text-transform: uppercase;
+  }
+  .w-metric-value {
+    font-size: 22px; color: var(--champagne); letter-spacing: 1px; line-height: 1.1;
+  }
+  .w-metric-unit { font-size: 9px; color: var(--ink-dim); letter-spacing: 1px; }
+
+  /* ── widget: key-value ── */
+  .w-kv { display: flex; flex-direction: column; gap: 4px; }
+  .w-kv-row {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    padding: 5px 0; border-bottom: 1px solid rgba(216,196,133,0.06);
+    font-size: 10px; letter-spacing: 1px;
+  }
+  .w-kv-row:last-child { border-bottom: none; }
+  .w-kv-label { color: var(--gold-dim); min-width: 80px; }
+  .w-kv-value { color: var(--ink); text-align: right; word-break: break-all; }
+
+  /* ── widget: code ── */
+  .w-code {
+    background: rgba(7,5,2,0.65); border: 1px solid rgba(216,196,133,0.10);
+    border-radius: 8px; overflow: hidden;
+  }
+  .w-code-lang {
+    padding: 5px 12px 4px; font-size: 8px; letter-spacing: 3px; color: var(--gold-dim);
+    border-bottom: 1px solid rgba(216,196,133,0.08); text-transform: uppercase;
+  }
+  .w-code-body {
+    padding: 12px 14px; font-size: 11px; line-height: 1.65;
+    color: var(--ink); overflow-x: auto; white-space: pre;
+    scrollbar-width: thin; scrollbar-color: rgba(216,196,133,0.15) transparent;
+  }
+
+  /* ── widget: bar chart ── */
+  .w-chart { display: flex; flex-direction: column; gap: 8px; }
+  .w-chart-title {
+    font-size: 8px; letter-spacing: 3px; color: var(--gold-dim); text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .w-bar-row { display: flex; align-items: center; gap: 8px; }
+  .w-bar-label { font-size: 9px; color: var(--ink-dim); min-width: 80px; letter-spacing: 1px; text-align: right; }
+  .w-bar-track {
+    flex: 1; height: 4px; background: rgba(216,196,133,0.08); border-radius: 2px; overflow: hidden;
+  }
+  .w-bar-fill {
+    height: 100%; border-radius: 2px;
+    background: linear-gradient(90deg, rgba(208,192,140,0.5), var(--champagne));
+    transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
+  }
+  .w-bar-val { font-size: 9px; color: var(--champagne); min-width: 40px; letter-spacing: 1px; }
+
+  /* ── widget: cards ── */
+  .w-cards { display: flex; flex-direction: column; gap: 8px; }
+  .w-card {
+    background: rgba(216,196,133,0.04); border: 1px solid rgba(216,196,133,0.10);
+    border-radius: 8px; padding: 10px 12px; animation: rise 0.5s ease both;
+    transition: border-color 0.3s ease;
+  }
+  .w-card:hover { border-color: rgba(216,196,133,0.28); }
+  .w-card a { text-decoration: none; display: block; }
+  .w-card-title { font-size: 11px; color: var(--platinum); margin-bottom: 3px; }
+  .w-card-subtitle {
+    font-size: 10px; color: var(--ink-dim); line-height: 1.5;
+    max-height: 2.8em; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .w-card-url { font-size: 8px; color: var(--gold-dim); margin-top: 4px; letter-spacing: 1px; }
+
+  /* ── widget: table ── */
+  .w-table-wrap { overflow-x: auto; border-radius: 6px; }
+  .w-table {
+    width: 100%; border-collapse: collapse; font-size: 10px; letter-spacing: 1px;
+  }
+  .w-table th {
+    text-align: left; padding: 6px 10px; font-size: 8px; letter-spacing: 3px;
+    color: var(--gold-dim); border-bottom: 1px solid rgba(216,196,133,0.14);
+    white-space: nowrap;
+  }
+  .w-table td {
+    padding: 6px 10px; color: var(--ink-dim); border-bottom: 1px solid rgba(216,196,133,0.05);
+    white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .w-table tr:last-child td { border-bottom: none; }
+  .w-table tr:hover td { color: var(--ink); background: rgba(216,196,133,0.03); }
+
+  /* ── widget type badge ── */
+  .w-type-badge {
+    font-size: 7px; letter-spacing: 2px; color: rgba(216,196,133,0.30);
+    text-align: right; margin-top: 4px;
+  }
 </style>
 </head>
 <body>
@@ -155,6 +291,12 @@
       <option value="max">max</option>
     </select>
   </div>
+</section>
+
+<!-- ── GENERATIVE UI centre panel ── -->
+<section id="widget-panel" class="panel">
+  <div class="panel-title">SURFACE &nbsp;·&nbsp; <span id="widget-type-label">—</span></div>
+  <div id="widget-body"></div>
 </section>
 
 <section id="stats" class="panel">
@@ -239,6 +381,187 @@ async function resolve(cid, approve) {
   }).catch(() => {});
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   GENERATIVE UI — widget renderers
+   Each render_* function returns a DOM element in the gold-on-obsidian palette.
+───────────────────────────────────────────────────────────────────────────── */
+
+function renderMarkdown(w) {
+  const d = document.createElement("div");
+  d.className = "w-markdown";
+  d.textContent = w.text;
+  return d;
+}
+
+function renderMetric(w) {
+  // Single metric cell — the caller groups multiple metrics in a grid.
+  const d = document.createElement("div");
+  d.className = "w-metric-cell";
+  d.innerHTML =
+    `<div class="w-metric-label">${esc(w.label)}</div>` +
+    `<div class="w-metric-value">${esc(w.value)}</div>` +
+    (w.unit ? `<div class="w-metric-unit">${esc(w.unit)}</div>` : "");
+  return d;
+}
+
+function renderKeyValue(w) {
+  const d = document.createElement("div");
+  d.className = "w-kv";
+  for (const p of (w.pairs || [])) {
+    const row = document.createElement("div");
+    row.className = "w-kv-row";
+    row.innerHTML = `<span class="w-kv-label">${esc(p.label)}</span>` +
+                    `<span class="w-kv-value">${esc(p.value)}</span>`;
+    d.appendChild(row);
+  }
+  return d;
+}
+
+function renderCode(w) {
+  const d = document.createElement("div");
+  d.className = "w-code";
+  const lang = w.language || "text";
+  d.innerHTML = `<div class="w-code-lang">${esc(lang)}</div>` +
+                `<div class="w-code-body"></div>`;
+  d.querySelector(".w-code-body").textContent = w.text || "";
+  return d;
+}
+
+function renderBarChart(w) {
+  const d = document.createElement("div");
+  d.className = "w-chart";
+  if (w.title) {
+    const t = document.createElement("div");
+    t.className = "w-chart-title"; t.textContent = w.title;
+    d.appendChild(t);
+  }
+  const labels = w.labels || [], values = w.values || [];
+  const max = Math.max(...values, 1);
+  for (let i = 0; i < labels.length; i++) {
+    const pct = (values[i] / max * 100).toFixed(1);
+    const val = w.unit ? `${values[i]}${w.unit}` : String(values[i]);
+    const row = document.createElement("div");
+    row.className = "w-bar-row";
+    row.innerHTML =
+      `<span class="w-bar-label">${esc(labels[i])}</span>` +
+      `<div class="w-bar-track"><div class="w-bar-fill" style="width:0%"></div></div>` +
+      `<span class="w-bar-val">${esc(val)}</span>`;
+    d.appendChild(row);
+    // animate fill after paint
+    requestAnimationFrame(() => {
+      const fill = row.querySelector(".w-bar-fill");
+      if (fill) fill.style.width = pct + "%";
+    });
+  }
+  return d;
+}
+
+function renderCards(w) {
+  const d = document.createElement("div");
+  d.className = "w-cards";
+  for (const item of (w.items || [])) {
+    const card = document.createElement("div");
+    card.className = "w-card";
+    const inner = item.url
+      ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">
+           <div class="w-card-title">${esc(item.title)}</div>
+           <div class="w-card-subtitle">${esc(item.subtitle)}</div>
+           <div class="w-card-url">${esc(item.url.replace(/^https?:\/\//, ""))}</div>
+         </a>`
+      : `<div class="w-card-title">${esc(item.title)}</div>
+         <div class="w-card-subtitle">${esc(item.subtitle)}</div>`;
+    card.innerHTML = inner;
+    d.appendChild(card);
+  }
+  return d;
+}
+
+function renderTable(w) {
+  const wrap = document.createElement("div");
+  wrap.className = "w-table-wrap";
+  const tbl = document.createElement("table");
+  tbl.className = "w-table";
+  const cols = w.columns || [];
+  if (cols.length) {
+    const thead = document.createElement("thead");
+    const tr = document.createElement("tr");
+    for (const c of cols) {
+      const th = document.createElement("th"); th.textContent = c; tr.appendChild(th);
+    }
+    thead.appendChild(tr); tbl.appendChild(thead);
+  }
+  const tbody = document.createElement("tbody");
+  for (const row of (w.rows || [])) {
+    const tr = document.createElement("tr");
+    for (const cell of (Array.isArray(row) ? row : [row])) {
+      const td = document.createElement("td"); td.textContent = String(cell); tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody); wrap.appendChild(tbl);
+  return wrap;
+}
+
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Map type → renderer
+const widgetRenderers = {
+  markdown: renderMarkdown,
+  metric:   renderMetric,
+  key_value: renderKeyValue,
+  code:     renderCode,
+  bar_chart: renderBarChart,
+  cards:    renderCards,
+  table:    renderTable,
+};
+
+/**
+ * Render a widget layout (array of specs) into the centre panel.
+ * Metric widgets are grouped into a single grid row.
+ * If the layout is empty or only a single markdown widget, hides the panel.
+ */
+function renderWidgets(widgets) {
+  const panel = $("widget-panel");
+  const body  = $("widget-body");
+  const label = $("widget-type-label");
+  body.innerHTML = "";
+
+  if (!widgets || widgets.length === 0) { panel.classList.remove("visible"); return; }
+
+  // Suppress the panel for a lone plain-markdown widget — text is already in the
+  // conversation panel; duplicating it adds no value.
+  const isSoleMd = widgets.length === 1 && widgets[0].type === "markdown";
+  if (isSoleMd) { panel.classList.remove("visible"); return; }
+
+  // Collect consecutive metric widgets into a grid container.
+  const typeNames = [...new Set(widgets.map((w) => w.type))];
+  label.textContent = typeNames.join(" · ");
+
+  let i = 0;
+  while (i < widgets.length) {
+    const w = widgets[i];
+    if (w.type === "metric") {
+      // gather a run of metrics
+      const grid = document.createElement("div");
+      grid.className = "w-metrics";
+      while (i < widgets.length && widgets[i].type === "metric") {
+        grid.appendChild(renderMetric(widgets[i])); i++;
+      }
+      body.appendChild(grid);
+    } else {
+      const renderer = widgetRenderers[w.type];
+      if (renderer) body.appendChild(renderer(w));
+      i++;
+    }
+  }
+
+  panel.classList.add("visible");
+}
+
 /* ── event stream ── */
 const handlers = {
   user:            (e) => {
@@ -252,7 +575,12 @@ const handlers = {
     setBusy(true);
   },
   status:          (e) => setBusy(true),
-  reply:           (e) => { msg("sutra", "SUTRA", e.text, e.ts); setBusy(false); },
+  reply:           (e) => {
+    msg("sutra", "SUTRA", e.text, e.ts);
+    setBusy(false);
+    // Render the generative UI widget layout if the server sent one.
+    if (e.widgets && e.widgets.length) renderWidgets(e.widgets);
+  },
   error:           (e) => { msg("system", "SYSTEM", e.text, e.ts); setBusy(false); },
   tool_start:      actRow,
   tool_end:        actEnd,
