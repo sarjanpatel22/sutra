@@ -8,7 +8,9 @@ from friday.skills.registry import skill
 
 @skill(
     name="recall",
-    description="Search long-term memory for facts about a person, project, or topic.",
+    description="Search Sutra's memory for personal facts the user has shared (their job, "
+    "projects, preferences, past conversations). NOT for general knowledge, opinions, or "
+    "philosophical questions.",
     auto_confirm=True,
     timeout_s=20,
 )

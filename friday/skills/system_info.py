@@ -127,8 +127,10 @@ async def battery() -> dict[str, object]:
 @skill(
     name="run_command",
     description=(
-        "Run a shell/terminal command on the system or files (e.g. 'ls', 'df -h') and return "
-        "stdout/stderr. NOT for arithmetic (use calc) and NOT for launching apps (use open_app)."
+        "Run an explicit shell/terminal command the user gives (e.g. 'df -h', 'git log') and "
+        "return stdout/stderr. Prefer a SPECIFIC tool when one fits: read_file to read a file, "
+        "list_directory to list a folder, clipboard_get for the clipboard, system_info for "
+        "CPU/RAM/disk. NOT for arithmetic (use calc) or launching apps (use open_app)."
     ),
     auto_confirm=False,  # requires confirmation — can mutate system state
     timeout_s=30,

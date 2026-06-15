@@ -69,7 +69,8 @@ def _clipboard_set_cmd() -> list[str] | None:
 
 @skill(
     name="clipboard_get",
-    description="Read the current text contents of the system clipboard.",
+    description="Read what's currently on the system clipboard — 'what's in my clipboard', "
+    "'what did I copy'.",
     auto_confirm=True,
     timeout_s=5,
 )
@@ -86,7 +87,8 @@ async def clipboard_get() -> dict[str, Any]:
 
 @skill(
     name="clipboard_set",
-    description="Copy text to the system clipboard.",
+    description="Put text onto the system clipboard — 'copy X to my clipboard'. To TYPE into "
+    "the focused window instead, use type_text.",
     auto_confirm=True,
     timeout_s=5,
 )

@@ -21,7 +21,8 @@ def _safe_path(path_str: str) -> Path:
 
 @skill(
     name="read_file",
-    description="Read the contents of a file.",
+    description="Read a file's text contents — 'read/show/open the file X'. Use this, not "
+    "run_command, to read a file.",
     auto_confirm=True,
     timeout_s=5,
 )
@@ -104,7 +105,8 @@ async def edit_file(
 
 @skill(
     name="list_directory",
-    description="List files and directories at a given path.",
+    description="List the files and folders in a directory — 'what files are in X', 'list my "
+    "home folder'. Use this, not run_command, to list a directory.",
     auto_confirm=True,
     timeout_s=5,
 )

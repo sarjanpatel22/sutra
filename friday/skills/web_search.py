@@ -21,7 +21,9 @@ class SearchResult:
 
 @skill(
     name="web_search",
-    description="Search the web via local SearXNG and return ranked results.",
+    description="Search the web for CURRENT or external facts (news, prices, sports scores, "
+    "recent events, looking something up). NOT for general knowledge you already know or "
+    "opinion/philosophy questions.",
     auto_confirm=True,
     timeout_s=10,
 )
