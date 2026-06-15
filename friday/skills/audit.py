@@ -42,8 +42,12 @@ REVIEWED_AUTO_EXCEPTIONS: dict[str, str] = {
 }
 
 # Must exist and must be gated: a regression lock on the known irreversible surface
-# (filesystem write, shell exec, destructive memory delete).
-CANONICAL_GATED: frozenset[str] = frozenset({"write_file", "run_command", "forget"})
+# (filesystem write, shell exec, destructive memory delete, and the desktop take-over
+# that clicks/types on the live screen). act_on_screen carries no mutation verb in its
+# name, so without this entry nothing would catch it being flipped to auto_confirm=True.
+CANONICAL_GATED: frozenset[str] = frozenset(
+    {"write_file", "run_command", "forget", "act_on_screen", "type_into"}
+)
 
 _SPLIT = re.compile(r"[^a-z0-9]+")
 

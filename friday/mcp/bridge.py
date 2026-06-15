@@ -190,22 +190,36 @@ class MCPBridge:
 
 # Process-wide singleton — connect lazily, only when MCP is actually configured.
 _bridge: MCPBridge | None = None
+# Guards check-and-connect so two concurrent callers (e.g. chat loop + dashboard)
+# can't both spawn a bridge — that would orphan subprocesses and double-register tools.
+_bridge_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    global _bridge_lock
+    if _bridge_lock is None:
+        _bridge_lock = asyncio.Lock()
+    return _bridge_lock
 
 
 async def get_bridge() -> MCPBridge | None:
     """Return the connected bridge, starting it on first use. Returns None when no
     MCP server is configured, so callers can `if await get_bridge()` cheaply."""
     global _bridge
-    if _bridge is not None:
+    if _bridge is not None:  # fast path — already connected, no lock needed
         return _bridge
-    if not mcp_configured():
-        return None
-    _bridge = await MCPBridge().connect()
-    return _bridge
+    async with _get_lock():
+        if _bridge is not None:  # another coroutine connected while we waited
+            return _bridge
+        if not mcp_configured():
+            return None
+        _bridge = await MCPBridge().connect()
+        return _bridge
 
 
 async def close_bridge() -> None:
     global _bridge
-    if _bridge is not None:
-        await _bridge.aclose()
-        _bridge = None
+    async with _get_lock():
+        if _bridge is not None:
+            await _bridge.aclose()
+            _bridge = None

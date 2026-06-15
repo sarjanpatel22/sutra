@@ -24,6 +24,14 @@ _BUDGET_FILE = _STATE_DIR / "budget.json"
 ALERT_THRESHOLD = float(os.getenv("BUDGET_ALERT_THRESHOLD", "0.85"))
 
 
+def allow_paid() -> bool:
+    """Whether paid (Claude) tiers may be used at all. OFF by default — the $0
+    guarantee. autoroute already honours this when picking a tier; the fallback
+    chain in complete() must honour it too, or a rate-limited free tool turn would
+    silently escalate to billed Claude behind the flag's back."""
+    return os.getenv("ROUTER_ALLOW_PAID", "0").strip().lower() not in ("", "0", "false", "no")
+
+
 class Tier(StrEnum):
     LOCAL = "local"
     LOCAL_TOOLS = "local_tools"  # local function-calling fallback (qwen2.5) — quota-proof
@@ -332,8 +340,8 @@ async def complete(
         primary = Tier.MEDIUM
 
     fallback = list(_FALLBACK_TIERS.get(primary, []))
-    if tools and primary == Tier.MEDIUM and _budget.can_afford(Tier.HEAVY):
-        fallback = [Tier.HEAVY, *fallback]  # tool turn + rate limit → Claude, not local
+    if tools and primary == Tier.MEDIUM and allow_paid() and _budget.can_afford(Tier.HEAVY):
+        fallback = [Tier.HEAVY, *fallback]  # tool turn + rate limit → Claude (only if paid allowed)
     if tools:
         # ...then a tool-CAPABLE local model (qwen) before the chat-only one (gemma),
         # so a fully rate-limited tool turn still acts instead of just narrating.

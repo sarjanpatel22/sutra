@@ -377,7 +377,10 @@ def cloud_tools_available() -> bool:
 # own logged-in browser. Everything else irreversible (run_command, run_python,
 # write_file, edit_file, git_commit, desktop type/click/key, forget…) is still
 # DECLINED by voice — you can't talk Sutra into writing files or running commands.
-_VOICE_AUTO_APPROVE = {"web_task", "web_task_vision", "fill_form", "close_window"}
+# NOTE: close_window is intentionally NOT here — it's auto_confirm=False because it
+# can lose unsaved work, so voice must not auto-approve it. The deterministic "close X"
+# command path (core/commands.py) still handles an explicit spoken command.
+_VOICE_AUTO_APPROVE = {"web_task", "web_task_vision", "fill_form"}
 
 # Spoken when the router KNEW a tool had to run (force_tool) but the loop finished
 # without a single tool firing — the rate-limited/local-fallback case where the model
@@ -502,7 +505,9 @@ async def voice_agent_run(
     # Out of tool rounds — force a final spoken answer with no more tools.
     if force_tool and not acted:
         return _RATELIMITED_MSG
-    response = await complete(messages, tier=tier, tools=None, max_tokens=128)
+    # Low temperature: the final answer must faithfully report the tool results, not
+    # creatively reinterpret them (matches the 0.3 used for the tool rounds above).
+    response = await complete(messages, tier=tier, tools=None, max_tokens=128, temperature=0.3)
     return _spoken(response.choices[0].message.content)
 
 

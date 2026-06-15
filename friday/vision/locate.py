@@ -15,6 +15,7 @@ JPEG the watch loop uses) because small UI text needs the detail to OCR cleanly.
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from dataclasses import dataclass
 
@@ -45,8 +46,13 @@ class Element:
 
 
 def ocr_available() -> bool:
-    """True if the OCR + capture tools needed for desktop location are present."""
-    return bool(_TESSERACT) and bool(_IMPORT)
+    """True if the OCR + capture tools AND an X11 display are present.
+
+    Mirrors screen.screen_available()'s DISPLAY check: without a display the full-res
+    `import -window root` grab fails, and reporting "no display" beats a misleading
+    "I couldn't read the screen" in a headless / SSH / CI context.
+    """
+    return bool(_TESSERACT) and bool(_IMPORT) and bool(os.getenv("DISPLAY"))
 
 
 def parse_tsv(tsv: str, min_conf: float = 40.0) -> list[Element]:

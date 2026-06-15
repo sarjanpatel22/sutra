@@ -132,7 +132,7 @@ async def _chat_loop(tier: Tier) -> None:
                 f"[bold]{skill_name}[/bold]\n[dim]{args}[/dim]",
                 title="[yellow]Confirm action[/yellow]", border_style="yellow",
             ))
-            ok = await asyncio.get_event_loop().run_in_executor(
+            ok = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: Confirm.ask("  Run this?", default=False)
             )
             status.start()
