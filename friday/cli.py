@@ -473,6 +473,55 @@ def watch(
         console.print("\n[dim]Watch stopped.[/dim]")
 
 
+rag_app = typer.Typer(help="Local document RAG — ingest files, ask grounded questions.")
+app.add_typer(rag_app, name="rag")
+
+
+@rag_app.command("ingest")
+def rag_ingest(
+    paths: list[str] = typer.Argument(..., help="Files or folders to ingest"),
+    collection: str = typer.Option("default", "--collection", "-c", help="Collection name"),
+) -> None:
+    """Chunk + embed files into a RAG collection (free, local nomic-embed)."""
+    from friday.rag.ingest import ingest_paths
+    with console.status("[cyan]chunking + embedding…[/cyan]"):
+        res = ingest_paths(paths, collection)
+    console.print(
+        f"[green]Ingested {res['chunks']} chunks from {res['files']} file(s)[/green] "
+        f"→ '{res['collection']}' (total {res['total']})."
+    )
+
+
+@rag_app.command("ask")
+def rag_ask(
+    query: str = typer.Argument(..., help="Question to answer from your documents"),
+    k: int = typer.Option(5, "-k", help="Passages to retrieve"),
+    collection: str = typer.Option("default", "--collection", "-c", help="Collection name"),
+) -> None:
+    """Retrieve relevant passages and answer grounded in them, citing sources."""
+    from friday.core.router import Tier, complete
+    from friday.rag.store import RagStore
+
+    async def _run() -> None:
+        store = RagStore(collection)
+        if len(store) == 0:
+            console.print("[yellow]Nothing ingested — run `sutra rag ingest <path>`.[/yellow]")
+            return
+        hits = store.search(query, k)
+        ctx = "\n\n".join(f"[{h['source']}]\n{h['text']}" for h in hits)
+        msgs = [
+            {"role": "system", "content": "Answer using ONLY the provided context from the "
+             "user's documents. Cite the source files. If the answer isn't in the context, "
+             "say so plainly — don't invent."},
+            {"role": "user", "content": f"Context:\n{ctx}\n\nQuestion: {query}"},
+        ]
+        r = await complete(msgs, tier=Tier.MEDIUM, tools=None, max_tokens=400)
+        console.print(Markdown(r.choices[0].message.content or ""))
+        console.print("[dim]sources: " + ", ".join(sorted({h["source"] for h in hits})) + "[/dim]")
+
+    asyncio.run(_run())
+
+
 @app.command()
 def status() -> None:
     """Run a one-shot health check and print results."""
