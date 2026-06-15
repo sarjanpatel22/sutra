@@ -76,10 +76,22 @@ def test_browsing_and_dialogue_narration_is_low_value():
 def test_real_facts_are_not_low_value():
     for fact in (
         "Sarjan is a software engineer at Acme Corp, based in Toronto.",
-        "Sutra's memory layer is built on Graphiti and FalkorDB, with Qdrant for vectors.",
+        "Sutra's memory layer is built on Graphiti and FalkorDB.",
         "Sutra's voice loop uses faster-whisper for STT and Kokoro for TTS.",
         "Sarjan edited store.py and test_memory.py in the friday-os project.",
         "Sarjan is from Sudbury, Ontario, Canada.",
+    ):
+        assert looks_low_value(fact) is False, fact
+
+
+def test_real_facts_naming_a_browser_are_not_low_value():
+    # Regression: the old blunt `"firefox"/"youtube" in text` rule dropped real facts
+    # that merely *name* a browser. Only a telemetry SHAPE (watched / was-on / time-spent)
+    # should flag now — a capability/profile fact must survive.
+    for fact in (
+        "Sarjan completed a TryHackMe room via a Firefox cookie transplant.",
+        "Sutra can drive Firefox through xdotool to automate the browser.",
+        "Sarjan uses Firefox as his main browser for security research.",
     ):
         assert looks_low_value(fact) is False, fact
 
@@ -122,7 +134,7 @@ def test_real_facts_are_not_narration():
     # NOT communication verbs — and the atomic descriptor we seed must survive.
     for fact in (
         "Sutra is a voice-native ambient AI assistant.",
-        "Sutra's memory layer is built on Graphiti and FalkorDB, with Qdrant for vectors.",
+        "Sutra's memory layer is built on Graphiti and FalkorDB.",
         "Sutra uses qwen2.5:14b for memory extraction.",
         "Sutra runs Ollama locally for the fast voice path.",
         "Sarjan is a software engineer at Acme Corp.",

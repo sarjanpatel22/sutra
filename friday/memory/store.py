@@ -89,8 +89,21 @@ def looks_low_value(text: str) -> bool:
         return True
     if re.search(r"\bfor about \d+\s*(seconds?|minutes?|hours?)\b", t):
         return True
-    # Entertainment / web browsing telemetry.
-    if "youtube" in t or "firefox" in t or re.search(r"\(\d{3,}\)\s", t):
+    # Entertainment / web-browsing telemetry — flagged only with a telemetry SHAPE,
+    # so a real fact that merely names a browser ("completed the room via a Firefox
+    # cookie transplant", "Sutra can drive Firefox via xdotool") is NOT dropped. The
+    # old bare `"firefox" in t` / `"youtube" in t` over-matched and silently lost them.
+    if re.search(r"\bwas on\b.*\b(youtube|video|firefox|browser)\b", t):
+        return True
+    if re.search(
+        r"\b(watch(ed|ing)?|view(ed|ing)?|brows(ed|ing)?|scroll(ed|ing)?)\b"
+        r".*\b(youtube|video|firefox|browser)\b",
+        t,
+    ):
+        return True
+    if "youtube video" in t or "firefox-esr" in t or "mozilla firefox" in t:
+        return True
+    if re.search(r"\(\d[\d,]{2,}\)\s", t):  # "(388) " / "(12,345) " view counts in titles
         return True
     # Third-person dialogue narration the extractor wrote instead of a fact.
     if re.match(

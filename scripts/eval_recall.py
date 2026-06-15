@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
+from friday.core.secrets import load_into_env
 from friday.memory.store import get_store
 
 # (query, expected-substring) — substring matched case-insensitively against the
@@ -47,7 +48,7 @@ PROBES: list[tuple[str, str]] = [
     ("How many CPU cores does the machine have?", "20-core"),
     ("How big is the disk?", "151 gb"),
     ("What graph framework powers Sutra's memory?", "graphiti"),
-    ("What does the memory layer use to store vectors?", "qdrant"),
+    ("What model does Sutra use to turn text into vectors?", "nomic"),
     ("What model runs the voice handler?", "gemma"),
 ]
 
@@ -66,6 +67,9 @@ async def main() -> int:
     ap.add_argument("--limit", type=int, default=5, help="recall window (default: 5)")
     args = ap.parse_args()
     k_set = (1, 3, 5)
+
+    # Mirror keyring/.env secrets into the env so an enabled RECALL_RERANK can reach Groq.
+    load_into_env()
 
     store = get_store()
     if not await store.initialize():

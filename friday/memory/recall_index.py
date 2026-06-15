@@ -25,6 +25,8 @@ _HOST = os.getenv("FALKORDB_HOST", "localhost")
 _PORT = int(os.getenv("FALKORDB_PORT", "6379"))
 _GRAPH = os.getenv("MEMORY_GROUP_ID", "sarjan")
 _TTL = float(os.getenv("RECALL_INDEX_TTL", "180"))
+# When reranking, pull this many candidates by cosine, then let the LLM reorder → top-k.
+_RERANK_TOPN = int(os.getenv("RECALL_RERANK_TOPN", "12"))
 
 _lock = threading.Lock()
 
@@ -57,39 +59,66 @@ def _rebuild() -> None:
     _ix.built = time.time()
 
 
+def _topn_scored(query: str, n: int) -> list[tuple[str, float]]:
+    """Top-n (fact, cosine) by prefixed-nomic. MUST be called holding `_lock`.
+
+    Rebuilds the fact cache on a TTL lapse. Returns [] when the graph has no facts.
+    """
+    if _ix.vecs is None or (time.time() - _ix.built) > _TTL:
+        _rebuild()
+    if not _ix.facts or _ix.vecs is None:
+        return []
+    qv = embed([query], "query")[0]
+    scores = _ix.vecs @ qv
+    order = np.argsort(-scores)[: max(1, n)]
+    return [(_ix.facts[i], round(float(scores[i]), 3)) for i in order]
+
+
 def recall_facts(query: str, k: int = 5) -> list[str]:
-    """Top-k graph facts for `query` by prefixed-nomic cosine; [] on any failure."""
+    """Top-k graph facts for `query`; [] on any failure.
+
+    With RECALL_RERANK=1 the bi-encoder's wider top-N is handed to the LLM reranker,
+    which reorders by true relevance (hit@1 80→100% on the eval probes). The rerank
+    network call runs OUTSIDE `_lock` so it never serializes concurrent recalls.
+    """
     query = query.strip()
     if not query:
         return []
     try:
+        from friday.memory.rerank import rerank, rerank_enabled
+
+        do_rerank = rerank_enabled()
         with _lock:
-            if _ix.vecs is None or (time.time() - _ix.built) > _TTL:
-                _rebuild()
-            if not _ix.facts or _ix.vecs is None:
-                return []
-            qv = embed([query], "query")[0]
-            order = np.argsort(-(_ix.vecs @ qv))[: max(1, k)]
-            return [_ix.facts[i] for i in order]
+            cands = _topn_scored(query, max(k, _RERANK_TOPN) if do_rerank else k)
+        if not cands:
+            return []
+        facts = [f for f, _ in cands]
+        return rerank(query, facts, k) if do_rerank else facts[:k]
     except Exception:  # noqa: BLE001 — caller falls back to graphiti/keyword recall
         return []
 
 
 def recall_scored(query: str, k: int = 8) -> list[tuple[str, float]]:
-    """Like recall_facts but returns (fact, similarity) pairs — for the memory GUI."""
+    """Like recall_facts but returns (fact, cosine) pairs — for the memory GUI.
+
+    When reranking is on the LLM sets the ORDER while the cosine score is kept for
+    display, so a sharper-ranked fact can show a slightly lower number — that's the
+    cross-encoder overriding the bi-encoder, by design.
+    """
     query = query.strip()
     if not query:
         return []
     try:
+        from friday.memory.rerank import rerank, rerank_enabled
+
+        do_rerank = rerank_enabled()
         with _lock:
-            if _ix.vecs is None or (time.time() - _ix.built) > _TTL:
-                _rebuild()
-            if not _ix.facts or _ix.vecs is None:
-                return []
-            qv = embed([query], "query")[0]
-            scores = _ix.vecs @ qv
-            order = np.argsort(-scores)[: max(1, k)]
-            return [(_ix.facts[i], round(float(scores[i]), 3)) for i in order]
+            cands = _topn_scored(query, max(k, _RERANK_TOPN) if do_rerank else k)
+        if not cands or not do_rerank:
+            return cands[:k]
+        score_of = {f: s for f, s in cands}
+        ranked = rerank(query, [f for f, _ in cands], k)
+        return [(f, score_of.get(f, 0.0)) for f in ranked]
     except Exception:  # noqa: BLE001
         return []
 

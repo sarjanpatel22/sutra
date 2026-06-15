@@ -20,7 +20,7 @@ v1 target: ~6 months at 10 hrs/wk.
 - Council: Claude API (Sonnet default, Opus rare, Haiku for cheap)
 - Local: gemma3:4b (fast voice/chat, no tools), qwen2.5:7b (offline FUNCTION-CALLING fallback — quota-proof tool turns), gemma4:e4b (reasoning), qwen2.5:14b (memory extraction)
 - Voice: faster-whisper Large-v3 INT8 + Kokoro + Pipecat (Week 2)
-- Memory: Graphiti + FalkorDB + Qdrant (Week 3)
+- Memory: Graphiti + FalkorDB; vectors via nomic-embed-text in an in-process numpy cosine recall index (Qdrant dropped — see docs/SUTRA_PHASES.md)
 - Desktop automation: xdotool (X11 confirmed)
 - Screen vision: ImageMagick `import` (capture) + tesseract (OCR → real click coordinates) + free Groq vision (Llama-4-Scout)
 - Search: SearXNG self-hosted

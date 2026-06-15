@@ -65,7 +65,12 @@ def gather_facts() -> list[str]:
         f"Sarjan's machine has {ram_gb} GB of RAM, a {cores}-core CPU, "
         f"and a {disk_total} GB disk.",
         # --- the system Sarjan is building ---
-        "Sutra's memory layer is built on Graphiti and FalkorDB, with Qdrant for vectors.",
+        # Qdrant was dropped (see docs/SUTRA_PHASES.md): the graph lives in FalkorDB
+        # and vectors are computed in-process from nomic-embed-text — state the truth
+        # as two atomic facts so recall never tells Sarjan something false.
+        "Sutra's memory layer is built on Graphiti and FalkorDB.",
+        "Sutra turns text into vectors with the nomic-embed-text model, run locally "
+        "through Ollama.",
         "Sutra runs Ollama locally, using qwen2.5:14b for memory extraction "
         "and gemma3:4b as the fast voice handler.",
         "Sutra's voice loop uses faster-whisper for speech-to-text and Kokoro for "
