@@ -53,6 +53,9 @@ ambient = [
 mcp = [
     "mcp>=1.2",
 ]
+telegram = [
+    "python-telegram-bot>=21",
+]
 
 [project.scripts]
 sutra = "friday.cli:app"

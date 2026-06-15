@@ -322,13 +322,36 @@ All irreversible actions route through the confirm gate; deterministic + autonom
 
 | Work item | Done? |
 |-----------|-------|
-| Telegram bot registered + python-telegram-bot wired | ⬜ |
-| Text queries proxied to Friday agent | ⬜ |
-| Session state synced to Redis (shared with desktop) | ⬜ |
-| Photo/file pass-through to vision skill | ⬜ |
-| Irreversible action confirmations work over Telegram | ⬜ |
+| Telegram bot registered + python-telegram-bot wired | ✅ `friday/telegram/bot.py` — long-polling async bot via `python-telegram-bot>=21` |
+| Text queries proxied to Friday agent | ✅ `handle_message` → `agent.run()` with per-chat in-memory history |
+| Session state synced to Redis (shared with desktop) | ⬜ Follow-on (noted in code; in-memory dict for now) |
+| Photo/file pass-through to vision skill | ✅ `handle_photo` downloads + sends to free Groq vision (Llama-4-Scout) |
+| Irreversible action confirmations work over Telegram | ✅ `_make_confirm` sends inline Approve/Decline keyboard; asyncio.Future round-trip; default-decline on 120s timeout |
+| Access control (TELEGRAM_ALLOWED_CHAT_IDS) | ✅ Rejects unknown chat IDs; polite message; logs a warning when unset |
+| `sutra telegram` CLI command | ✅ Token from keyring / env; clear error when missing |
+| 7 unit tests (no token, no network) | ✅ `tests/test_telegram.py` — all offline |
 
-**Exit criteria:** Talk to Sutra from phone, state matches desktop.
+**Exit criteria:** Talk to Sutra from phone — text works; confirm gate works via buttons; photos described.
+Redis session sync (state matches desktop) is the one remaining follow-on.
+
+**How to run it live:**
+
+1. Message `@BotFather` on Telegram → `/newbot` → copy the token.
+2. Store the token (keyring preferred):
+   ```
+   python -m keyring set sutra TELEGRAM_BOT_TOKEN <your_token>
+   ```
+   Or add `TELEGRAM_BOT_TOKEN=<your_token>` to `.env`.
+3. Find your Telegram chat ID by messaging `@userinfobot`, then set:
+   ```
+   TELEGRAM_ALLOWED_CHAT_IDS=<your_chat_id>
+   ```
+4. Start the bot:
+   ```
+   sutra telegram
+   ```
+5. Send any message from your phone — Sutra replies. For irreversible skills
+   (run_command, write_file, etc.) you'll get an inline Approve / Decline button.
 
 ---
 

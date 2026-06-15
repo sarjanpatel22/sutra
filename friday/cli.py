@@ -718,5 +718,38 @@ def secrets(
     console.print(t)
 
 
+@app.command()
+def telegram() -> None:
+    """Run the Sutra Telegram bot (long-polling). Requires TELEGRAM_BOT_TOKEN.
+
+    Token resolution order: OS keyring (preferred) → TELEGRAM_BOT_TOKEN env var.
+    Get a token by messaging @BotFather on Telegram (use /newbot).
+    Restrict access to your own chat by setting TELEGRAM_ALLOWED_CHAT_IDS.
+    """
+    from friday.core.secrets import get_secret
+
+    token = get_secret("TELEGRAM_BOT_TOKEN")
+    if not token:
+        console.print(
+            "[red]No TELEGRAM_BOT_TOKEN found.[/red]\n"
+            "  Set it in the keyring:  sutra secrets --import  (after adding to .env)\n"
+            "  Or export TELEGRAM_BOT_TOKEN=<your_token> before running.\n"
+            "  Get a token from @BotFather on Telegram."
+        )
+        raise typer.Exit(1)
+
+    try:
+        from friday.telegram.bot import run_bot
+    except ImportError:
+        console.print(
+            "[red]python-telegram-bot is not installed.[/red]\n"
+            "  pip install 'friday-os[telegram]'"
+        )
+        raise typer.Exit(1)
+
+    console.print("[cyan]Sutra Telegram bridge starting…[/cyan] (Ctrl+C to stop)")
+    run_bot(token)
+
+
 if __name__ == "__main__":
     app()
