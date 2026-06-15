@@ -162,8 +162,8 @@ fine against `v1beta`.
 - STILL THEORETICAL: VAD voice mode (0 turns), Claude tiers (no `ANTHROPIC_API_KEY`,
   by design — opt-in/paid).
 
-**Flagged, not fixed (awaiting go):** `.env.example` line 58 `AUDIO_INPUT_DEVICE=`
-blank re-introduces the mic-crash trap on copy (fixed in the real `.env`).
+**Fixed:** `.env.example` now defaults `AUDIO_INPUT_DEVICE=pulse` (it was blank, which
+re-introduced the raw-ALSA `-9997` mic-crash trap on copy).
 
 ---
 

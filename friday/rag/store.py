@@ -78,14 +78,28 @@ class RagStore:
         np.save(self.dir / "vectors.npy", self.vecs)
 
     def add(self, chunks: list[Chunk]) -> int:
-        """Embed and append chunks; persist. Returns the number added."""
+        """Embed and append chunks; persist. Returns the number added.
+
+        Skips chunks whose exact text is already stored (and de-dups within the
+        incoming batch), so re-ingesting the same document doesn't pile up duplicate
+        chunks that then dominate retrieval. Only the fresh chunks are embedded.
+        """
         if not chunks:
             return 0
-        new = embed([c.text for c in chunks], "document")
+        existing = {c.text for c in self.chunks}
+        fresh: list[Chunk] = []
+        for c in chunks:
+            if c.text in existing:
+                continue
+            existing.add(c.text)  # also collapses duplicates inside this batch
+            fresh.append(c)
+        if not fresh:
+            return 0
+        new = embed([c.text for c in fresh], "document")
         self.vecs = new if self.vecs.size == 0 else np.vstack([self.vecs, new])
-        self.chunks.extend(chunks)
+        self.chunks.extend(fresh)
         self._save()
-        return len(chunks)
+        return len(fresh)
 
     def search(self, query: str, k: int = 5) -> list[dict[str, Any]]:
         """Top-k chunks by cosine similarity to the query."""

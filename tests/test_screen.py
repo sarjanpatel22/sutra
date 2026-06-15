@@ -17,6 +17,7 @@ def test_changed_no_baseline_or_failed_capture_looks() -> None:
     # First tick (prev=0) and any failed current capture (cur=0) must err toward looking.
     assert screen.changed(0, 12345) is True
     assert screen.changed(12345, 0) is True
+    assert screen.changed(0, 0) is True  # both unknown → still look (first-tick safety)
 
 
 def test_changed_threshold() -> None:

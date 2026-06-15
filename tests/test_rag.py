@@ -58,6 +58,14 @@ def test_add_and_search_ranks_by_topic(store: RagStore) -> None:
     assert hits[0]["score"] >= hits[1]["score"]  # sorted descending
 
 
+def test_add_dedups_repeated_chunks(store: RagStore) -> None:
+    store.add([Chunk("python is great", "a.md")])
+    # Re-ingesting the same chunk plus one new one: only the new one should land.
+    added = store.add([Chunk("python is great", "a.md"), Chunk("the weather is nice", "b.md")])
+    assert added == 1
+    assert len(store) == 2
+
+
 def test_search_empty_store_returns_empty(store: RagStore) -> None:
     assert store.search("anything") == []
 
