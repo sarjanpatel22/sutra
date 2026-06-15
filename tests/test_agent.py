@@ -187,3 +187,13 @@ async def test_unforced_text_reply_unchanged(_no_memory, monkeypatch):
     monkeypatch.setattr(agent, "complete", fake_complete)
     out = await agent.voice_agent_run("what's up", force_tool=False)
     assert out == "It's about three o'clock."
+
+
+def test_system_prompt_directs_code_for_hard_computation() -> None:
+    # Measured lever (2026-06-14): raw 70B reasoning fails hard combinatorics
+    # (coin-change), and self-consistency just amplifies the wrong answer — but the
+    # SAME model is right when it WRITES AND RUNS code. The prompt must keep steering
+    # quantitative turns to run_python rather than trusting mental math.
+    p = agent.SYSTEM_PROMPT.lower()
+    assert "run_python" in p
+    assert "in your head" in p or "mental math" in p
