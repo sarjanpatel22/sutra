@@ -577,6 +577,119 @@ def budget() -> None:
     console.print(t)
 
 
+@app.command(name="logs")
+def show_logs(
+    n: int = typer.Option(20, "--last", "-n", help="Number of recent turns to show"),
+    surface: str = typer.Option(
+        "", "--surface", "-s", help="Filter by surface (text/voice/telegram)"
+    ),
+) -> None:
+    """Recent agent turns + per-tier / per-surface latency and error breakdown.
+
+    Reads turns.jsonl (one record per turn, all surfaces). Build on top of
+    ``sutra stats`` which reads the narrower text-only turn_latency.jsonl.
+    """
+    from friday.core.turnlog import aggregate_turns, load_turns
+
+    turns = load_turns()
+    if not turns:
+        console.print(
+            "[dim]No turns logged yet. Run [cyan]sutra ask[/cyan] / [cyan]sutra chat[/cyan] "
+            "first.[/dim]"
+        )
+        return
+
+    # Filter if --surface specified
+    subset = [t for t in turns if t.get("surface") == surface] if surface else turns
+    if surface and not subset:
+        console.print(f"[yellow]No turns found for surface '{surface}'.[/yellow]")
+        return
+
+    # --- Recent turns table ---
+    recent = subset[-n:]
+    rt = Table(
+        title=f"Recent turns (last {len(recent)})",
+        show_header=True, header_style="bold cyan", box=None, padding=(0, 1),
+    )
+    rt.add_column("Time")
+    rt.add_column("Surface")
+    rt.add_column("Tier")
+    rt.add_column("Tools", justify="right")
+    rt.add_column("ms", justify="right")
+    rt.add_column("OK")
+    for t in recent:
+        ok_mark = "[green]✓[/green]" if t.get("ok", True) else "[red]✗[/red]"
+        tool_names = t.get("tool_calls") or []
+        tools_cell = f"{len(tool_names)}" + (
+            f" ({','.join(tool_names[:2])}{'…' if len(tool_names) > 2 else ''})"
+            if tool_names else ""
+        )
+        rt.add_row(
+            str(t.get("ts", ""))[-8:],
+            str(t.get("surface", "?")),
+            str(t.get("tier", "?")),
+            tools_cell,
+            str(t.get("latency_ms", "")),
+            ok_mark,
+        )
+    console.print(rt)
+
+    # --- Aggregated breakdown ---
+    agg = aggregate_turns(subset)
+
+    total = agg["total"]
+    console.print(
+        f"\n[bold]Total:[/bold] {total['n']} turns  "
+        f"p50 [cyan]{total['p50_ms']:.0f}ms[/cyan]  "
+        f"p95 [cyan]{total['p95_ms']:.0f}ms[/cyan]  "
+        f"cost [green]${total['cost_usd']:.4f}[/green]  "
+        f"errors [{'red' if total['errors'] else 'dim'}]{total['errors']} "
+        f"({total['error_rate']*100:.1f}%)[/{'red' if total['errors'] else 'dim'}]"
+    )
+
+    if agg["by_surface"]:
+        st = Table(
+            title="By surface", show_header=True, header_style="bold cyan",
+            box=None, padding=(0, 1),
+        )
+        st.add_column("Surface")
+        st.add_column("n", justify="right")
+        st.add_column("p50 ms", justify="right")
+        st.add_column("p95 ms", justify="right")
+        st.add_column("cost $", justify="right")
+        st.add_column("err%", justify="right")
+        for surf, m in agg["by_surface"].items():
+            st.add_row(
+                surf, str(m["n"]),
+                f"{m['p50_ms']:.0f}", f"{m['p95_ms']:.0f}",
+                f"{m['cost_usd']:.4f}",
+                f"[red]{m['error_rate']*100:.1f}%[/red]" if m["errors"]
+                else f"[dim]{m['error_rate']*100:.1f}%[/dim]",
+            )
+        console.print(st)
+
+    if agg["by_tier"]:
+        tt = Table(
+            title="By tier", show_header=True, header_style="bold cyan",
+            box=None, padding=(0, 1),
+        )
+        tt.add_column("Tier")
+        tt.add_column("n", justify="right")
+        tt.add_column("p50 ms", justify="right")
+        tt.add_column("p95 ms", justify="right")
+        tt.add_column("cost $", justify="right")
+        tt.add_column("err%", justify="right")
+        for tier_name, m in agg["by_tier"].items():
+            tt.add_row(
+                tier_name, str(m["n"]),
+                f"{m['p50_ms']:.0f}", f"{m['p95_ms']:.0f}",
+                f"{m['cost_usd']:.4f}",
+                f"[red]{m['error_rate']*100:.1f}%[/red]" if m["errors"]
+                else f"[dim]{m['error_rate']*100:.1f}%[/dim]",
+            )
+        console.print(tt)
+
+
 @app.command()
 def stats() -> None:
     """Latency p50/p95 (text per-tier, voice per-stage) + today's spend — shakedown dashboard."""

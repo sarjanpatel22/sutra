@@ -360,16 +360,22 @@ Redis session sync (state matches desktop) is the one remaining follow-on.
 
 | Work item | Done? |
 |-----------|-------|
-| Structured logging (JSON, every agent turn) | ⬜ |
-| OpenTelemetry traces wired | ⬜ |
-| Latency dashboard (p50/p95 per tier + skill) | ⬜ |
-| Cost dashboard (per-model, per-day rolling) | ⬜ |
-| Wazuh integration stub (v2 full integration) | ⬜ |
-| One full week of zero crashes | ⬜ |
+| Structured logging (JSON, every agent turn) | ✅ 2026-06-15 — `friday/core/turnlog.py`: `log_turn()` appends one JSON record per turn to `~/.local/share/friday/turns.jsonl` with ts/surface/tier/effort/tool_calls/tool_count/tokens_in/tokens_out/cost_usd/latency_ms/ok/error/model. Wired into `agent.run()` (text surface); legacy `turn_latency.jsonl` kept for `sutra stats` compat. Fire-and-forget — logging failure never breaks a turn. Error turns (raised exception) are captured too. `load_turns()` + `aggregate_turns()` are pure functions testable with tmp_path; 30 unit tests in `tests/test_turnlog.py`. |
+| `sutra logs` CLI command | ✅ 2026-06-15 — prints recent turns table + per-surface and per-tier p50/p95/cost/error-rate breakdown. Supports `--last N` and `--surface <text\|voice\|telegram>` filters. Reads `turns.jsonl`; reuses `aggregate_turns()`. |
+| Latency dashboard (p50/p95 per tier + skill) | ✅ exists via `sutra stats` (text per-tier + voice per-stage) and now also `sutra logs` (all surfaces, p50/p95 + error-rate). Per-skill breakdown is a follow-on (tool call names are captured in turns.jsonl already). |
+| Cost dashboard (per-model, per-day rolling) | ✅ `sutra stats` already shows rolling spend from `BudgetTracker`; `sutra logs` adds per-surface/per-tier cost aggregation from turns.jsonl. |
+| OpenTelemetry traces wired | ⬜ Follow-on. `opentelemetry-sdk` is installed on this box (system Python) but NOT in the `.venv` — adding it risks introducing the full OTel SDK + exporter dep chain. The no-dep structured JSON log is the real deliverable; OTel trace spans can be wired later by pip-installing `opentelemetry-sdk opentelemetry-exporter-otlp` into the venv and patching `log_turn()` to also emit a span. |
+| Wazuh integration stub (v2 full integration) | ⬜ Follow-on (v2 Phase 2.7 Watchdog). The JSON turns.jsonl is already consumable by a Wazuh file-based agent. |
+| One full week of zero crashes | ⬜ Behavioral / calendar gate — must run for a week and observe via `sutra logs` error-rate = 0%. |
 
 **Exit criteria:** One full week of zero crashes. All v1 success metrics holding.
 
 **Gate 3:** Did you hit the v1 exit criteria? If not — fix before starting v2.
+
+**Implementation notes (2026-06-15):**
+- `turns.jsonl` is the new unified log; `turn_latency.jsonl` remains for `sutra stats` backwards compat.
+- Voice path logs to `voice_latency.jsonl` (unchanged — do NOT touch `friday/voice/`). A future slice can wire `log_turn(surface="voice", …)` into `friday/voice/pipeline.py` to unify the shape.
+- OTel: add `opentelemetry-sdk opentelemetry-exporter-otlp` to pyproject.toml extras when ready, then call `log_turn()` and also emit a span — the structured fields map cleanly to OTel attributes.
 
 ---
 
