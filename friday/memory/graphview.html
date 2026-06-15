@@ -68,6 +68,28 @@
   #err code{color:var(--teal);background:rgba(0,0,0,.4);padding:2px 6px;border-radius:5px}
   .hint{position:fixed;bottom:18px;right:18px;z-index:10;color:var(--dim);font-size:10.5px;
     letter-spacing:.04em;text-align:right;line-height:1.7;pointer-events:none}
+
+  /* recall — ask what Sutra actually remembers (live, ranked) */
+  #recall{bottom:18px;left:50%;transform:translateX(-50%);width:min(580px,92vw);
+    padding:12px;display:flex;flex-direction:column;gap:10px}
+  #recall .q{display:flex;align-items:center;gap:9px}
+  #recall .q span{color:var(--violet);font-size:14px;filter:drop-shadow(0 0 6px var(--violet))}
+  #recall input{flex:1;padding:9px 13px;border-radius:10px;border:1px solid var(--line);
+    background:rgba(0,0,0,.4);color:var(--ink);font:inherit;font-size:13px;outline:none}
+  #recall input:focus{border-color:var(--violet);box-shadow:0 0 0 1px var(--violet)}
+  #recall .hits{display:flex;flex-direction:column;gap:7px;max-height:44vh;overflow:auto}
+  #recall .hits::-webkit-scrollbar{width:6px}
+  #recall .hits::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+  #recall .hit{padding:8px 11px;border-radius:9px;background:rgba(255,255,255,.025);
+    border:1px solid transparent;transition:.15s}
+  #recall .hit:hover{border-color:var(--line);background:rgba(167,139,250,.06)}
+  #recall .hit .fact{font-size:12.5px;line-height:1.45;color:#cdd9f2}
+  #recall .hit .sc{float:right;margin-left:8px;font-size:10px;color:var(--dim)}
+  #recall .hit .bar{margin-top:7px;height:3px;border-radius:3px;
+    background:rgba(255,255,255,.07);overflow:hidden}
+  #recall .hit .bar i{display:block;height:100%;
+    background:linear-gradient(90deg,var(--violet),var(--teal))}
+  #recall .empty{color:var(--dim);font-size:11.5px;text-align:center;padding:4px}
 </style>
 </head>
 <body>
@@ -95,6 +117,14 @@
     </div>
   </div>
 
+  <div id="recall" class="panel">
+    <div class="hits" id="rHits"></div>
+    <div class="q"><span>🧠</span>
+      <input id="rInput" autocomplete="off"
+        placeholder="ask what Sutra remembers…  e.g. who does Sarjan work for?"/>
+    </div>
+  </div>
+
   <div id="info" class="panel">
     <div class="head">
       <span class="badge" id="iBadge"></span>
@@ -110,6 +140,38 @@
       Is FalkorDB up? <code>sudo docker start sutra-falkordb</code></p></div></div>
 
   <div class="hint">drag · scroll-zoom · click node<br/>click legend to filter</div>
+
+<script>
+// Live recall: ask a question, see the ranked facts Sutra would actually remember
+// (the brain's real prefixed-nomic ranking), with relevance bars. Independent of the
+// graph module so it works even if the 3D bundle fails to load.
+(function(){
+  var input=document.getElementById('rInput'), box=document.getElementById('rHits'), t=null;
+  function esc(s){return String(s).replace(/[&<>]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+  function render(d){
+    var hits=(d&&d.hits)||[];
+    if(!hits.length){box.innerHTML=(d&&d.query)?'<div class="empty">nothing recalled</div>':'';return;}
+    var max=hits[0].score||1;
+    box.innerHTML=hits.map(function(h){
+      var pct=Math.max(5,Math.round(100*h.score/max));
+      return '<div class="hit"><span class="sc">'+(h.score).toFixed(2)+'</span>'+
+        '<div class="fact">'+esc(h.fact)+'</div>'+
+        '<div class="bar"><i style="width:'+pct+'%"></i></div></div>';
+    }).join('');
+  }
+  function go(){
+    var q=input.value.trim();
+    if(!q){box.innerHTML='';return;}
+    box.innerHTML='<div class="empty">recalling…</div>';
+    fetch('/api/recall?q='+encodeURIComponent(q)+'&k=8')
+      .then(function(r){return r.json();}).then(render)
+      .catch(function(){box.innerHTML='<div class="empty">recall failed</div>';});
+  }
+  input.addEventListener('keydown',function(e){if(e.key==='Enter')go();});
+  input.addEventListener('input',function(){clearTimeout(t);t=setTimeout(go,450);});
+})();
+</script>
 
 <script>
 // Surface any module/load error straight onto the HUD so failures are visible.

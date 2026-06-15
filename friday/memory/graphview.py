@@ -144,6 +144,33 @@ class _Handler(BaseHTTPRequestHandler):
                 payload = {"error": str(e), "nodes": [], "links": [], "stats": {}}
                 self._send(200, json.dumps(payload).encode(), "application/json")
             return
+        if path == "/api/recall":
+            # Live recall: what would Sutra actually remember for this question?
+            # Uses the prefixed-nomic index (the brain's real ranking), with scores.
+            from urllib.parse import parse_qs, urlparse
+
+            from friday.memory.recall_index import recall_scored
+
+            qs = parse_qs(urlparse(self.path).query)
+            q = (qs.get("q", [""])[0]).strip()
+            try:
+                k = max(1, min(25, int(qs.get("k", ["8"])[0])))
+            except ValueError:
+                k = 8
+            try:
+                hits = recall_scored(q, k) if q else []
+                payload = {"query": q, "hits": [{"fact": f, "score": s} for f, s in hits]}
+            except Exception as e:  # noqa: BLE001
+                payload = {"query": q, "hits": [], "error": str(e)}
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        if path == "/api/facts":
+            from friday.memory.recall_index import all_facts
+
+            facts = sorted(all_facts())
+            self._send(200, json.dumps({"facts": facts, "count": len(facts)}).encode(),
+                       "application/json")
+            return
         self._send(404, b"not found", "text/plain")
 
 

@@ -93,6 +93,9 @@ async def test_recall_formats_facts(monkeypatch):
             return [Edge("Sarjan works at Acme Corp"), Edge(""), Edge("Sutra is voice-native")]
 
     store._graphiti = FakeGraphiti()
+    # Isolate the graphiti path: stub the prefixed-nomic index (which would otherwise
+    # hit live FalkorDB) to empty so recall falls through to graphiti here.
+    monkeypatch.setattr("friday.memory.recall_index.recall_facts", lambda q, k=5: [])
     facts = await store.recall("sarjan")
     assert facts == ["Sarjan works at Acme Corp", "Sutra is voice-native"]
 
