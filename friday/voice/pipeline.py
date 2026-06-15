@@ -747,3 +747,66 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
         from friday.mcp.bridge import close_bridge
         await close_bridge()
         console.print("\n[dim]Voice mode off.[/dim]")
+
+
+async def wake_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
+    """Wake-word mode — dormant until the wake word, then one VAD turn, then dormant.
+
+    Opt-in (`sutra voice --mode wake`). Sits idle and silent until the wake word fires
+    (openWakeWord on the existing onnxruntime), then runs exactly the normal VAD
+    capture + process_audio turn and returns to dormant. PTT and plain VAD modes are
+    untouched. The orb shows idle while dormant and listening once woken.
+    """
+    from rich.console import Console
+
+    from friday.voice.audio import listen_for_wake, record_with_vad
+    from friday.voice.wakeword import WakeWord, make_detector
+
+    console = Console()
+    vad = SileroVAD(threshold=float(os.getenv("VAD_THRESHOLD", "0.5")))
+    if history is None:
+        history = []
+    phrase = os.getenv("WAKEWORD_MODEL", "hey_jarvis")
+
+    console.print(
+        f"[bold cyan]Sutra voice (wake)[/bold cyan] — say [bold]'{phrase}'[/bold] then talk  "
+        "[bold]Ctrl+C[/bold] to exit"
+    )
+    console.print("[dim]Pre-warming…[/dim]", end="\r")
+    await prewarm()
+    ww = WakeWord()
+    ww.warm()  # load the wake model now, not on the first frame
+    detector = make_detector(score_fn=ww.score)
+    await _connect_mcp(console)
+    console.print("[dim]Ready — dormant. Say the wake word.[/dim]")
+
+    try:
+        while True:
+            orb_push("idle")  # dormant presence until woken
+            console.print("[dim]· dormant — say the wake word[/dim]", end="\r")
+            if not listen_for_wake(detector):
+                break  # stopped
+            orb_push("listening")
+            console.print("[green]✦ woke — listening…[/green]            ")
+            silence_s = float(os.getenv("VAD_SILENCE_S", "0.8"))
+            audio = record_with_vad(
+                vad_fn=vad, silence_threshold_s=silence_s, max_duration_s=30.0
+            )
+            if len(audio) < 8000:
+                continue
+            console.print("[cyan]heard you…[/cyan]", end="\r")
+            reply, history, lat, _ = await process_audio(audio, history)
+            if reply:
+                transcript = history[-2]["content"] if len(history) >= 2 else ""
+                _log_latency(VoiceTurn(transcript=transcript, reply_text=reply[:80], latency=lat))
+                console.print(
+                    f"[dim]stt={lat.stt_ms:.0f}ms  ttft={lat.agent_ttft_ms:.0f}ms  "
+                    f"tts={lat.tts_first_ms:.0f}ms  total={lat.total_ms:.0f}ms[/dim]"
+                )
+            await asyncio.sleep(0.05)
+    except KeyboardInterrupt:
+        orb_push("idle")
+    finally:
+        from friday.mcp.bridge import close_bridge
+        await close_bridge()
+        console.print("\n[dim]Voice mode off.[/dim]")

@@ -272,11 +272,11 @@ All irreversible actions route through the confirm gate; deterministic + autonom
 
 | Work item | Done? |
 |-----------|-------|
-| openWakeWord installed | ⬜ |
-| Custom "Hey Sutra" model trained | ⬜ |
-| Always-listening mode (low CPU, GPU-idle path) | ⬜ |
+| openWakeWord installed | ✅ on the existing onnxruntime (no torch); pretrained models ship bundled |
+| Custom "Hey Sutra" model trained | ⬜ — pretrained "hey_jarvis" is the working default; a custom model needs a training pipeline (follow-on) |
+| Always-listening mode (low CPU, GPU-idle path) | ✅ `sutra voice --mode wake` — `friday/voice/wakeword.py` + `pipeline.wake_listen_loop`, opt-in, dormant→wake→VAD turn; gate unit-tested (`tests/test_wakeword.py`). Live-mic accuracy is Sarjan's to validate (far-field SNR caveat) |
 | Barge-in: Sutra stops speaking when you start | ✅ landed early with the voice loop (VAD barge-in + `scripts/barge_in_smoke.py`) |
-| Speaker verification (basic — reject strangers) | ⬜ |
+| Speaker verification (basic — reject strangers) | ⬜ — deferred: needs a speaker-embedding model (don't pull torch); openWakeWord's custom-verifier is a candidate path |
 
 **Exit criteria:** "Hey Sutra" wakes her from idle, barge-in interrupts cleanly.
 

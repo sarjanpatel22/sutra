@@ -279,7 +279,7 @@ def _audio_check() -> None:
 def voice(
     mode: str = typer.Option(
         "ptt", "--mode", "-m",
-        help="ptt (hold SPACE), vad (auto-detect), or text (type, mic-free)",
+        help="ptt (hold SPACE), vad (auto-detect), wake (wake word), or text (type, mic-free)",
     ),
     orb: bool = typer.Option(False, "--orb", help="Show the presence orb full-screen too"),
     verbose: bool = typer.Option(
@@ -290,7 +290,7 @@ def voice(
         False, "--check", help="Audio doctor: test speaker + mic, then exit (no session)",
     ),
 ) -> None:
-    """Start voice mode. ptt=hold SPACE, vad=always listening, text=type to her (mic-free)."""
+    """Start voice mode. ptt=hold SPACE, vad=always listening, wake=say the wake word, text=type."""
     if verbose:
         import logging
         logging.basicConfig(
@@ -307,6 +307,7 @@ def voice(
         push_to_talk_loop,
         text_presence_loop,
         vad_listen_loop,
+        wake_listen_loop,
     )
     httpd = browser = None
     if orb:
@@ -315,6 +316,8 @@ def voice(
     try:
         if mode == "vad":
             asyncio.run(vad_listen_loop())
+        elif mode == "wake":
+            asyncio.run(wake_listen_loop())
         elif mode == "text":
             asyncio.run(text_presence_loop())
         else:

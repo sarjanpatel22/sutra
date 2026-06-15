@@ -435,6 +435,45 @@ def record_with_vad_streaming(
         executor.shutdown(wait=False)
 
 
+def listen_for_wake(
+    feed: Callable[[np.ndarray], bool],
+    *,
+    stop_event: threading.Event | None = None,
+    sample_rate: int = SAMPLE_RATE,
+) -> bool:
+    """Read the mic and feed each int16 frame to `feed(frame) -> bool` until it fires.
+
+    `feed` consumes one BLOCK_SIZE frame (the wake-model score → gate) and returns
+    True the moment the wake word is detected. Returns True on wake, or False if
+    `stop_event` is set first. Mirrors record_with_vad's capture; a per-frame feed
+    error is logged, not fatal — a model hiccup must not kill the dormant loop.
+    """
+    audio_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def callback(indata: np.ndarray, frames: int, time_info: object, status: object) -> None:
+        audio_q.put(indata[:, 0].copy())
+
+    with sd.InputStream(
+        device=_INPUT_DEVICE,
+        samplerate=sample_rate,
+        channels=CHANNELS,
+        dtype=DTYPE,
+        blocksize=BLOCK_SIZE,
+        callback=callback,
+    ):
+        while not (stop_event is not None and stop_event.is_set()):
+            try:
+                frame = audio_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if feed(frame):
+                    return True
+            except Exception:  # noqa: BLE001 — a model hiccup must not kill the loop
+                _log.exception("wake feed failed")
+    return False
+
+
 def play_audio(
     audio: np.ndarray,
     sample_rate: int = 24000,
