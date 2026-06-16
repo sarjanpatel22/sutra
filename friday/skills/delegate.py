@@ -11,7 +11,8 @@ from friday.skills.registry import skill
         "Hand a focused sub-task to a specialist sub-agent that works it in isolated "
         "context and reports back. agent must be one of: architect (decomposition, "
         "trade-offs, a plan), researcher (gather + synthesize facts via search/memory), "
-        "watchdog (inspect system/health state). Use for self-contained sub-problems."
+        "creative (drafting, ideation, naming, prose), watchdog (inspect system/health "
+        "state). Use for self-contained sub-problems."
     ),
     auto_confirm=True,  # the sub-agent itself declines irreversible skills
     timeout_s=120,

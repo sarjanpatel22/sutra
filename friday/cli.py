@@ -740,7 +740,7 @@ def stats() -> None:
 
 @app.command()
 def delegate(
-    agent: str = typer.Argument(..., help="architect | researcher | watchdog"),
+    agent: str = typer.Argument(..., help="architect | researcher | creative | watchdog"),
     task: str = typer.Argument(..., help="The focused sub-task to hand off"),
 ) -> None:
     """Run a specialist sub-agent on a task in isolated context and print its report."""
@@ -768,6 +768,33 @@ def show_subagents() -> None:
     for name, role in list_subagents():
         t.add_row(name, role)
     console.print(t)
+
+
+@app.command()
+def council(
+    goal: str = typer.Argument(..., help="The multi-faceted goal to convene the council on"),
+    trace: bool = typer.Option(
+        False, "--trace", help="Also show each specialist's contribution and the review"
+    ),
+) -> None:
+    """Convene the specialist council on a goal and print the synthesized answer."""
+    from friday.core.council import convene
+
+    async def _run() -> None:
+        with console.status("[cyan]the council is convening…[/cyan]"):
+            r = await convene(goal)
+        if trace:
+            console.print(Panel(Markdown(r.plan or "(no plan)"),
+                                title="[dim]architect · plan[/dim]", border_style="dim"))
+            for role, out in r.contributions.items():
+                console.print(Panel(Markdown(out or "(empty)"),
+                                    title=f"[cyan]{role}[/cyan]", border_style="cyan"))
+            console.print(Panel(Markdown(r.critique or "(no critique)"),
+                                title="[yellow]review[/yellow]", border_style="yellow"))
+        console.print(Panel(Markdown(r.answer or "(no answer)"),
+                            title="[bold green]Sutra[/bold green]", border_style="green"))
+
+    asyncio.run(_run())
 
 
 @app.command()

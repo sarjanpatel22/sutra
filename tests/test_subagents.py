@@ -44,11 +44,12 @@ def _scripted_complete(*responses):
 
 
 # ── structure ────────────────────────────────────────────────────────────────
-def test_three_specialists_registered():
-    assert set(SUBAGENTS) == {"architect", "researcher", "watchdog"}
+def test_specialists_registered():
+    assert set(SUBAGENTS) == {"architect", "researcher", "creative", "watchdog"}
     assert all(a.tools is None or isinstance(a.tools, frozenset) for a in SUBAGENTS.values())
-    # No specialist can call `delegate` — prevents recursive delegation.
+    # No specialist can call `delegate`/`council` — prevents recursive delegation.
     assert all("delegate" not in (a.tools or set()) for a in SUBAGENTS.values())
+    assert all("council" not in (a.tools or set()) for a in SUBAGENTS.values())
 
 
 def test_list_subagents_pairs():

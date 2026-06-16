@@ -52,6 +52,17 @@ _RESEARCHER = SubAgent(
     tools=frozenset({"web_search", "recall", "current_time", "weather"}),
 )
 
+_CREATIVE = SubAgent(
+    name="creative",
+    role="creative — drafting, ideation, naming, prose",
+    system_prompt=(
+        "You are a creative specialist — drafting, ideation, naming, and prose. Generate "
+        "concrete, vivid options and commit to a strong one; don't hedge or list endless "
+        "alternatives. Match the asked-for intent and tone. No filler, no preamble."
+    ),
+    tools=frozenset({"recall"}),
+)
+
 _WATCHDOG = SubAgent(
     name="watchdog",
     role="systems watchdog — inspect machine/health state, report anomalies",
@@ -63,7 +74,9 @@ _WATCHDOG = SubAgent(
     tools=frozenset({"system_info", "battery"}),
 )
 
-SUBAGENTS: dict[str, SubAgent] = {a.name: a for a in (_ARCHITECT, _RESEARCHER, _WATCHDOG)}
+SUBAGENTS: dict[str, SubAgent] = {
+    a.name: a for a in (_ARCHITECT, _RESEARCHER, _CREATIVE, _WATCHDOG)
+}
 
 
 def _tools_for(sa: SubAgent) -> list[dict] | None:
