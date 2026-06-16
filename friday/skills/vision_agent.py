@@ -21,11 +21,12 @@ from typing import Any
 
 import litellm
 
+from friday.core.constants import GROQ_VISION_MODEL
 from friday.skills.browse import _NAV_TIMEOUT_MS, _http_url
 from friday.skills.browser_session import get_page
 from friday.skills.registry import skill
 
-_VISION_MODEL = "groq/meta-llama/llama-4-scout-17b-16e-instruct"  # free, fast, multimodal
+_VISION_MODEL = GROQ_VISION_MODEL  # free, fast, multimodal
 
 # Per-step settle: cap the wait so a busy SPA (ads/polling) can't burn 3.5s EVERY step.
 # Measured: the old networkidle=3500 was the worst-case sink behind the 71s spin.

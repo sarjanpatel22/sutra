@@ -11,7 +11,9 @@ import os
 from dataclasses import dataclass, field
 from datetime import date
 
-_DEFAULT_MODEL = "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+from friday.core.constants import GROQ_VISION_MODEL
+
+_DEFAULT_MODEL = GROQ_VISION_MODEL
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,9 @@ import re
 
 import litellm
 
-DEFAULT_MODEL = "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+from friday.core.constants import GROQ_VISION_MODEL
+
+DEFAULT_MODEL = GROQ_VISION_MODEL
 
 _SYS = (
     "You are Sutra, quietly watching Sarjan's screen to help him proactively, "

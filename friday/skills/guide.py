@@ -16,10 +16,11 @@ from typing import Any
 
 import litellm
 
+from friday.core.constants import GROQ_VISION_MODEL
 from friday.skills.registry import skill
 from friday.vision.screen import ScreenUnavailable, grab_jpeg, screen_available
 
-_VISION_MODEL = "groq/meta-llama/llama-4-scout-17b-16e-instruct"  # free, fast, multimodal
+_VISION_MODEL = GROQ_VISION_MODEL  # free, fast, multimodal
 
 _SYS = (
     "You are Sutra, looking at Sarjan's actual desktop screenshot to guide him. Given "

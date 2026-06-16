@@ -18,6 +18,8 @@ import os
 import tempfile
 from typing import Any
 
+from friday.core.constants import GROQ_VISION_MODEL
+
 _log = logging.getLogger("sutra.telegram")
 
 # Per-chat history kept in RAM. Redis sync is a follow-on (noted in Phase 1.11).
@@ -34,7 +36,7 @@ _CB_APPROVE = "sutra:approve:"
 _CB_DECLINE = "sutra:decline:"
 
 # Vision model (free Groq) — reuses the same model as guide_me / vision_agent
-_VISION_MODEL = "groq/meta-llama/llama-4-scout-17b-16e-instruct"
+_VISION_MODEL = GROQ_VISION_MODEL
 
 
 def _allowed_ids() -> set[int] | None:
