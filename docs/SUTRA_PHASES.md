@@ -396,9 +396,13 @@ Redis session sync (state matches desktop) is the one remaining follow-on.
 | **2.7** | Watchdog + Wazuh Symmetry — background monitoring, alert routing, anomaly narration | 25 |
 
 > **2026 updates to v2:** **2.1** — re-evaluate **Activepieces** (MCP-first) vs n8n
-> at phase start. **Sub-agents** (when added) — lean on the **Claude Agent SDK**
-> delegation pattern rather than hand-rolling orchestration. **2.6** — **HeadTTS**
-> over raw TalkingHead.js (Kokoro-native lip-sync cuts the alignment work).
+> at phase start. **Sub-agents — ✅ BUILT (2026-06-16):** the Claude Agent SDK delegation
+> pattern over our own router (no SDK dependency, stays free-by-default) — architect /
+> researcher / creative / watchdog specialists in isolated context with execution-enforced
+> tool whitelists; the **council** coordinator decomposes → fans out in parallel → reviews →
+> synthesizes (`sutra council`, the `council` skill, opt-in auto-routing via
+> `SUTRA_COUNCIL_AUTO`). **2.6** — **HeadTTS** over raw TalkingHead.js (Kokoro-native
+> lip-sync cuts the alignment work).
 
 **Gate 4:** Is Sutra a real colleague, not just a tool?
 

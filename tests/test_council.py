@@ -122,3 +122,27 @@ def test_coordinator_tier_paid_when_allowed_and_afforded(monkeypatch):
         council_mod, "get_budget", lambda: type("B", (), {"can_afford": lambda self, t: True})()
     )
     assert _coordinator_tier() is Tier.MAX
+
+
+# ── agent.run() dispatches a flagged turn to the council (Stage 3) ────────────
+async def test_run_dispatches_to_council_when_flagged(monkeypatch):
+    from friday.core import agent as agent_mod
+
+    class _D:
+        council = True
+
+    monkeypatch.setattr("friday.core.autoroute.decide", lambda *a, **k: _D())
+    monkeypatch.setattr(agent_mod, "persist_turn_async", lambda *a, **k: None)
+
+    captured = {}
+
+    async def _fake_convene(goal, context="", **kw):
+        captured["goal"] = goal
+        return CouncilResult(answer="council says hi", plan="", contributions={}, critique="")
+
+    monkeypatch.setattr("friday.core.council.convene", _fake_convene)
+
+    reply, hist = await agent_mod.run("research X, design Y, and draft Z")
+    assert reply == "council says hi"
+    assert captured["goal"] == "research X, design Y, and draft Z"
+    assert hist[-1] == {"role": "assistant", "content": "council says hi"}

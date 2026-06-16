@@ -156,6 +156,23 @@ async def run(
 
     Returns (assistant_reply, updated_history).
     """
+    # Council short-circuit: a multi-faceted, council-worthy turn (opt-in via
+    # SUTRA_COUNCIL_AUTO) is handled by the specialist council, not this single-agent
+    # loop. Off by default → this is a no-op and run() behaves exactly as before.
+    from friday.core import autoroute
+
+    if autoroute.decide(user_input).council:
+        from friday.core.council import convene
+
+        answer = (await convene(user_input)).answer
+        persist_turn_async(user_input, answer, source="conversation")
+        new_history = list(history or [])
+        new_history += [
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": answer},
+        ]
+        return answer, new_history
+
     registry.autodiscover()
     # Local Ollama models (gemma) emit tool calls as malformed text rather than
     # proper tool_calls — it leaked raw JSON as the answer. Only the cloud tiers,

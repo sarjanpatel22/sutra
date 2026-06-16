@@ -121,6 +121,15 @@ _NEEDS_TOOL = re.compile(
     re.I,
 )
 
+# Distinct "knowledge-work" verbs. Two or more in one ask ⇒ a multi-faceted goal the
+# council can fan out across specialists. Conservative on purpose — convening costs
+# several LLM calls, so a single-verb ask (however long) is NOT council-worthy.
+_COUNCIL_VERBS = re.compile(
+    r"\b(research|investigate|analy[sz]e|compare|evaluate|design|architect|plan|"
+    r"draft|write|compose|brainstorm|name|outline|implement|build|review|summari[sz]e)\b",
+    re.I,
+)
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -131,6 +140,7 @@ class Decision:
     effort: str        # "low" | "medium" | "high" — for the UI/feed
     reason: str        # one-line human explanation
     tool_required: bool = False  # a tool MUST run (open/show/go/search/URL) — force it
+    council: bool = False  # convene the multi-agent council (opt-in, multi-faceted goals)
 
 
 def _allow_paid() -> bool:
@@ -149,6 +159,19 @@ def _paid_ok() -> bool:
     except Exception:  # noqa: BLE001 — budget unavailable; assume ok, never crash routing
         pass
     return True
+
+
+def _council_auto() -> bool:
+    """Whether the brain may auto-convene the council on multi-faceted turns. OFF by
+    default — set SUTRA_COUNCIL_AUTO=1 to opt in. `sutra council` and the council tool
+    work regardless of this flag."""
+    return os.getenv("SUTRA_COUNCIL_AUTO", "0").strip().lower() not in ("", "0", "false", "no")
+
+
+def _is_council_worthy(t: str) -> bool:
+    """A genuinely multi-faceted goal: ≥2 distinct knowledge-work verbs, not tiny."""
+    verbs = {m.group(0).lower() for m in _COUNCIL_VERBS.finditer(t)}
+    return len(verbs) >= 2 and len(t.split()) >= 8
 
 
 def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
@@ -177,6 +200,10 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
             else "finish task" if task
             else "complex / multi-step"
         )
+        if _council_auto() and _is_council_worthy(t):
+            return Decision(
+                True, Tier.MEDIUM, "high", f"{why} → council", tool_required, council=True
+            )
         if paid:
             return Decision(True, Tier.HEAVY, "high", f"{why} → Claude", tool_required)
         if coding:

@@ -144,6 +144,35 @@ def test_tool_required_only_for_concrete_actions():
     assert decide("tell me a joke").tool_required is False
 
 
+# ── auto-council routing (Stage 3) — opt-in, conservative ────────────────────
+_MULTI = "research the top vector databases, design a schema, and draft a migration plan"
+
+
+def test_council_off_by_default(monkeypatch):
+    monkeypatch.delenv("SUTRA_COUNCIL_AUTO", raising=False)
+    assert decide(_MULTI).council is False  # available but never auto-fires by default
+
+
+def test_council_flags_multifaceted_when_enabled(monkeypatch):
+    monkeypatch.setenv("SUTRA_COUNCIL_AUTO", "1")
+    d = decide(_MULTI)
+    assert d.council is True and d.act is True and d.effort == "high"
+
+
+@pytest.mark.parametrize("text", ["hi", "what time is it?", "open tryhackme", "tell me a joke"])
+def test_council_not_triggered_for_simple_turns(monkeypatch, text):
+    monkeypatch.setenv("SUTRA_COUNCIL_AUTO", "1")
+    assert decide(text).council is False
+
+
+def test_council_needs_two_distinct_verbs(monkeypatch):
+    monkeypatch.setenv("SUTRA_COUNCIL_AUTO", "1")
+    # one work-verb, however verbose, is not council-worthy
+    assert decide(
+        "please research the entire history of the roman empire in great detail"
+    ).council is False
+
+
 @pytest.mark.parametrize("text", [
     "hi", "hey sutra", "hello", "good morning", "good night",
     "how are you", "what's up", "thanks", "thank you", "thanks so much",
