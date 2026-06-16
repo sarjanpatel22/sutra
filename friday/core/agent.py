@@ -540,12 +540,16 @@ async def _run_tool_calls(
     tool_calls: list[Any],
     confirm: ConfirmFn | None = None,
     observe: ObserveFn | None = None,
+    allowed: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute tool calls in parallel and return tool-result messages.
 
     Irreversible skills (auto_confirm=False) run only if `confirm` approves them;
     with no confirm hook they are declined rather than executed. `observe` gets a
     best-effort tool_start/tool_end stream for live surfaces (dashboard feed).
+    `allowed`, when set, is an execution-time whitelist: a tool whose name isn't in
+    it is blocked (never run) even if the model emits a call for it — defense-in-depth
+    for sub-agents, whose tool subset was previously enforced only in the schema.
     """
 
     def _emit(kind: str, data: dict[str, Any]) -> None:
@@ -561,6 +565,21 @@ async def _run_tool_calls(
             args = json.loads(tc.function.arguments or "{}")
         except json.JSONDecodeError:
             args = {}
+
+        # Execution-time whitelist (defense-in-depth): a sub-agent runs only the
+        # skills in its allowed set, even if the model emits a call it wasn't shown.
+        if allowed is not None and fn_name not in allowed:
+            _emit("tool_start", {"skill": fn_name, "args": args, "gated": False})
+            _emit("tool_end", {"skill": fn_name, "status": "blocked"})
+            return {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": fn_name,
+                "content": json.dumps(
+                    {"blocked": True, "skill": fn_name,
+                     "note": "Not run — outside this sub-agent's allowed tool set."}
+                ),
+            }
 
         try:
             meta = registry.get(fn_name)

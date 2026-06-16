@@ -102,8 +102,9 @@ async def run_subagent(name: str, task: str, context: str = "") -> str:
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
             return (msg.content or "").strip()
-        # No confirm hook → irreversible skills are declined inside the sub-agent.
-        messages.extend(await _run_tool_calls(tool_calls))
+        # No confirm hook → irreversible skills are declined; `allowed` enforces the
+        # tool whitelist at execution too, so an off-list call is blocked, not run.
+        messages.extend(await _run_tool_calls(tool_calls, allowed=sa.tools))
 
     # Out of rounds — force a final answer with no further tools.
     response = await complete(messages, tier=sa.tier, tools=None)

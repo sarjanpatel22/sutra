@@ -1,8 +1,24 @@
 """Tests for the sub-agent delegation layer (isolated context, tool subsetting)."""
 
+import json
+
 from friday.core import subagents
 from friday.core.subagents import SUBAGENTS, _tools_for, list_subagents, run_subagent
 from friday.skills import registry
+
+
+class _Fn:
+    def __init__(self, name, arguments="{}"):
+        self.name = name
+        self.arguments = arguments
+
+
+class _ToolCall:
+    """Minimal stand-in for an OpenAI tool_call (name / arguments / id)."""
+
+    def __init__(self, name, arguments="{}", id="tc"):
+        self.function = _Fn(name, arguments)
+        self.id = id
 
 
 # ── fakes for the router ─────────────────────────────────────────────────────
@@ -74,7 +90,7 @@ async def test_runs_a_tool_then_answers(monkeypatch):
         ),
     )
 
-    async def _fake_run_tool_calls(tool_calls, confirm=None):
+    async def _fake_run_tool_calls(tool_calls, confirm=None, allowed=None):
         return [{"role": "tool", "tool_call_id": "x", "name": "web_search", "content": "{}"}]
 
     monkeypatch.setattr("friday.core.agent._run_tool_calls", _fake_run_tool_calls)
@@ -86,3 +102,78 @@ def test_delegate_skill_registered():
     registry.autodiscover()
     assert "delegate" in registry.list_skills()
     assert registry.get("delegate").auto_confirm is True
+
+
+# ── execution-time tool whitelist (closes GAP M1) ────────────────────────────
+async def test_subagent_blocks_offlist_tool(monkeypatch):
+    """A sub-agent that emits a call for a skill outside its whitelist has it
+    blocked at execution — the skill is never actually invoked (defense-in-depth,
+    not just schema filtering)."""
+    ran: list[str] = []
+
+    async def _fake_call(name, **kw):
+        ran.append(name)
+        return {"ok": True}
+
+    monkeypatch.setattr(registry, "call", _fake_call)
+    # researcher may call web_search/recall/current_time/weather — never run_command.
+    monkeypatch.setattr(
+        subagents,
+        "complete",
+        _scripted_complete(
+            _Resp(_Msg(tool_calls=[_ToolCall("run_command", '{"cmd": "rm -rf /"}')])),
+            _Resp(_Msg(content="done")),
+        ),
+    )
+    out = await run_subagent("researcher", "do a thing")
+    assert out == "done"
+    assert "run_command" not in ran  # blocked before execution
+
+
+async def test_run_tool_calls_allowed_none_runs_anything(monkeypatch):
+    """allowed=None (the main-agent default) preserves old behaviour: any
+    registered skill runs."""
+    from friday.core.agent import _run_tool_calls
+
+    ran: list[str] = []
+
+    async def _fake_call(name, **kw):
+        ran.append(name)
+        return {"ok": True}
+
+    class _Meta:
+        auto_confirm = True
+        timeout_s = 5
+
+    monkeypatch.setattr(registry, "call", _fake_call)
+    monkeypatch.setattr(registry, "get", lambda n: _Meta())
+
+    res = await _run_tool_calls([_ToolCall("anything_at_all", "{}", "x")], allowed=None)
+    assert ran == ["anything_at_all"]
+    assert json.loads(res[0]["content"]) == {"ok": True}
+
+
+async def test_run_tool_calls_blocks_outside_allowed(monkeypatch):
+    """With an explicit allowed set, off-list calls are blocked, in-list ones run."""
+    from friday.core.agent import _run_tool_calls
+
+    ran: list[str] = []
+
+    async def _fake_call(name, **kw):
+        ran.append(name)
+        return {"ok": True}
+
+    class _Meta:
+        auto_confirm = True
+        timeout_s = 5
+
+    monkeypatch.setattr(registry, "call", _fake_call)
+    monkeypatch.setattr(registry, "get", lambda n: _Meta())
+
+    res = await _run_tool_calls(
+        [_ToolCall("current_time", "{}", "a"), _ToolCall("weather", "{}", "b")],
+        allowed=frozenset({"current_time"}),
+    )
+    assert ran == ["current_time"]
+    blocked = {r["name"]: json.loads(r["content"]).get("blocked") for r in res}
+    assert blocked == {"current_time": None, "weather": True}
