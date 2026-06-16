@@ -797,6 +797,61 @@ def council(
     asyncio.run(_run())
 
 
+def _engagement_observe(kind: str, data: dict[str, Any]) -> None:
+    """Stream each tool call as the autonomous loop fires it."""
+    if kind != "tool_start":
+        return
+    gated = " [yellow][gated][/yellow]" if data.get("gated") else ""
+    args = str(data.get("args", ""))[:90]
+    console.print(f"[dim]→[/dim] {data.get('skill')}{gated} [dim]{args}[/dim]")
+
+
+@app.command()
+def auto(
+    goal: str = typer.Argument(..., help="The objective to pursue autonomously"),
+    rounds: int = typer.Option(25, "--rounds", help="Max tool rounds"),
+) -> None:
+    """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1."""
+    from friday.core.agent import run_autonomous
+
+    console.print(f"[cyan]Sutra is working autonomously[/cyan] [dim](≤{rounds} rounds)[/dim]")
+
+    async def _run() -> None:
+        report, _ = await run_autonomous(goal, max_rounds=rounds, observe=_engagement_observe)
+        console.print(Panel(Markdown(report or "(no report)"),
+                            title="[bold green]Sutra — engagement report[/bold green]",
+                            border_style="green"))
+        console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
+
+    asyncio.run(_run())
+
+
+@app.command()
+def pwn(
+    target: str = typer.Argument(..., help="Target IP/host to enumerate and compromise"),
+    rounds: int = typer.Option(30, "--rounds", help="Max tool rounds"),
+) -> None:
+    """Autonomously enumerate, exploit, and report on a target box. Needs SUTRA_AUTONOMOUS=1."""
+    from friday.core.agent import run_autonomous
+
+    goal = (
+        f"Enumerate and compromise the box at {target}. Establish VPN reachability if needed, "
+        f"scan it, find a foothold, escalate to root, and capture the user and root flags. "
+        f"Report the findings, the flags, and how you got them."
+    )
+    console.print(f"[cyan]Working {target} autonomously[/cyan] [dim](≤{rounds} rounds)[/dim]")
+
+    async def _run() -> None:
+        report, _ = await run_autonomous(goal, max_rounds=rounds, observe=_engagement_observe)
+        console.print(Panel(
+            Markdown(report or "(no report)"),
+            title=f"[bold green]Sutra — {target}[/bold green]", border_style="green",
+        ))
+        console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
+
+    asyncio.run(_run())
+
+
 @app.command()
 def mcp() -> None:
     """Connect to configured MCP servers and list the tools they expose to Sutra."""

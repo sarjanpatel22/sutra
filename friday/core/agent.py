@@ -6,8 +6,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from friday.core import persona
@@ -273,6 +276,126 @@ async def run(
         raise
 
 
+# ── Autonomous run loop (front of Phase 2.3 "Bounty Mode") ────────────────────
+AUTONOMOUS_SYSTEM_PROMPT = f"""You are Sutra, operating AUTONOMOUSLY for {_USER_NAME} on an \
+authorized security engagement — his own machine and target (e.g. a TryHackMe box he has \
+started). No human is watching each step, so ACT: don't ask permission for steps that follow \
+from the goal.
+
+Work methodically: establish reachability (vpn_status, and connect_vpn if the tunnel is down), \
+enumerate before you exploit (nmap, service/version scans, directory busting), then exploit, \
+escalate, and capture the objective (the user and root flags). Use run_command for tooling \
+(nmap, gobuster, nikto, curl, ssh, …) and the web/browser skills for web targets.
+
+Hard rules:
+- Ground EVERY claim in actual tool output. Never invent a flag, a service, or a result — if \
+you have not seen it in a tool result this session, you do not know it.
+- One concrete next action per step; prefer a tool call over narrating what you would do.
+- If you are genuinely blocked — you need a credential, a human-gated step (a captcha, a "Start \
+Machine" click), or input only {_USER_NAME} can give — STOP and say exactly what you need.
+- When the objective is met, end with a short report: what you found, the flags, and how."""
+
+_AUTO_NUDGE = (
+    "[System: you are operating autonomously — no one will reply. If the objective isn't met, "
+    "take the next concrete step with a tool call; otherwise give your final report now.]"
+)
+_AUTO_WRAPUP = "[System: round limit reached — stop and give your final report now.]"
+
+_ENGAGE_DIR = Path.home() / ".local" / "share" / "friday" / "engagements"
+
+
+def _save_engagement(goal: str, messages: list[dict[str, Any]], report: str) -> Path:
+    """Persist the transcript + report to a per-engagement markdown file; return its path."""
+    slug = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:40] or "engagement"
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    _ENGAGE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _ENGAGE_DIR / f"{ts}-{slug}.md"
+    lines = [
+        f"# Engagement: {goal}", f"_{ts}_", "", "## Report", "", report,
+        "", "## Transcript", "",
+    ]
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        content = m.get("content") or ""
+        if role == "assistant" and m.get("tool_calls"):
+            names = ", ".join(
+                getattr(getattr(tc, "function", tc), "name", "?") for tc in m["tool_calls"]
+            )
+            lines.append(f"**assistant → {names}**")
+            if content:
+                lines.append(str(content))
+        elif role == "tool":
+            lines.append(f"**tool[{m.get('name', '?')}]** {str(content)[:1000]}")
+        else:
+            lines.append(f"**{role}:** {content}")
+        lines.append("")
+    path.write_text("\n".join(lines))
+    return path
+
+
+async def run_autonomous(
+    goal: str,
+    *,
+    max_rounds: int = 25,
+    tier: Tier = Tier.HEAVY,
+    observe: ObserveFn | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Hands-free agentic loop for authorized CTF/pentest work.
+
+    Auto-approves gated skills (run_command, connect_vpn, web_task, …) via the shared
+    autonomous confirm policy — but ONLY when SUTRA_AUTONOMOUS is set; the run_command
+    catastrophic floor stays the always-on hard net. Runs up to `max_rounds` tool rounds
+    (vs run()'s 5), nudges once if the model stops early, and writes a transcript + report
+    to an engagement file. Returns (report, transcript). Does NOT spam graph memory.
+    """
+    if not _autonomous():
+        return (
+            "Autonomous mode is OFF. This runs gated tools (commands, VPN, browser) "
+            "hands-free, so it is opt-in: set SUTRA_AUTONOMOUS=1 and re-run.",
+            [],
+        )
+
+    registry.autodiscover()
+    tools = registry.all_tools()
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": AUTONOMOUS_SYSTEM_PROMPT},
+        {"role": "user", "content": goal},
+    ]
+    nudged = False
+    reply = ""
+    for _ in range(max_rounds):
+        response = await complete(messages, tier=tier, tools=tools or None)
+        msg = response.choices[0].message
+        messages.append({
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": getattr(msg, "tool_calls", None),
+        })
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            messages.extend(
+                await _run_tool_calls(tool_calls, confirm=_autonomous_confirm, observe=observe)
+            )
+            nudged = False
+            continue
+        # No tool calls — text. If we already nudged once, take it as final; else nudge.
+        reply = (msg.content or "").strip()
+        if nudged:
+            break
+        messages.append({"role": "user", "content": _AUTO_NUDGE})
+        nudged = True
+    else:
+        # Exhausted the round budget — force a final report with no more tools.
+        messages.append({"role": "user", "content": _AUTO_WRAPUP})
+        response = await complete(messages, tier=tier, tools=None)
+        reply = (response.choices[0].message.content or "").strip()
+
+    _save_engagement(goal, messages, reply)
+    return reply, messages[1:]
+
+
 async def reason(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
@@ -442,8 +565,8 @@ def _autonomous() -> bool:
     return os.getenv("SUTRA_AUTONOMOUS", "0").strip().lower() not in ("", "0", "false", "no")
 
 
-async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
-    """Voice's confirmation policy.
+async def _autonomous_confirm(skill: str, args: dict[str, Any]) -> bool:
+    """The autonomous confirm policy — shared by the voice path and `run_autonomous`.
 
     Default: only the browsing family runs hands-free; everything irreversible is
     declined (you can't talk Sutra into shell/file ops). Autonomous mode (opt-in via
@@ -452,6 +575,10 @@ async def _voice_confirm(skill: str, args: dict[str, Any]) -> bool:
     if skill in _VOICE_AUTO_APPROVE:
         return True
     return _autonomous()
+
+
+# Back-compat name: the voice path and tests refer to `_voice_confirm`.
+_voice_confirm = _autonomous_confirm
 
 
 def _spoken(text: str | None) -> str:
