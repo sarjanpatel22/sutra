@@ -178,3 +178,17 @@ async def test_run_tool_calls_blocks_outside_allowed(monkeypatch):
     assert ran == ["current_time"]
     blocked = {r["name"]: json.loads(r["content"]).get("blocked") for r in res}
     assert blocked == {"current_time": None, "weather": True}
+
+
+async def test_worker_runs_free_only_to_hold_zero_cost(monkeypatch):
+    # A cheap worker must never escalate to a paid Claude tier — it requests free_only,
+    # so a rate-limited fan-out can't quietly run up Claude charges.
+    seen = {}
+
+    async def _capture(messages, tier=None, tools=None, free_only=False, **kw):
+        seen["free_only"] = free_only
+        return _Resp(_Msg(content="done"))
+
+    monkeypatch.setattr(subagents, "complete", _capture)
+    out = await run_subagent("researcher", "find X")
+    assert out == "done" and seen["free_only"] is True

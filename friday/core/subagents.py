@@ -28,6 +28,8 @@ class SubAgent:
     # Whitelist of skill names this specialist may call. None = all skills.
     tools: frozenset[str] | None = field(default=None)
     max_rounds: int = 4
+    # Cheap helper: never let a rate-limited worker escalate to a paid Claude tier ($0).
+    free_only: bool = True
 
 
 _ARCHITECT = SubAgent(
@@ -105,7 +107,7 @@ async def run_subagent(name: str, task: str, context: str = "") -> str:
     ]
 
     for _ in range(sa.max_rounds):
-        response = await complete(messages, tier=sa.tier, tools=tools)
+        response = await complete(messages, tier=sa.tier, tools=tools, free_only=sa.free_only)
         msg = response.choices[0].message
         messages.append({
             "role": "assistant",
@@ -120,7 +122,7 @@ async def run_subagent(name: str, task: str, context: str = "") -> str:
         messages.extend(await _run_tool_calls(tool_calls, allowed=sa.tools))
 
     # Out of rounds — force a final answer with no further tools.
-    response = await complete(messages, tier=sa.tier, tools=None)
+    response = await complete(messages, tier=sa.tier, tools=None, free_only=sa.free_only)
     return (response.choices[0].message.content or "").strip()
 
 

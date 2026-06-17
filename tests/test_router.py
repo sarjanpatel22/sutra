@@ -372,3 +372,28 @@ async def test_complete_strips_tools_for_gemma_when_qwen_also_down(monkeypatch):
     qwen_idx = models.index(qwen["model"])
     gemma_idx = models.index(gemma["model"])
     assert qwen_idx < gemma_idx, "qwen must be tried before gemma"
+
+
+@pytest.mark.asyncio
+async def test_free_only_never_escalates_to_paid(monkeypatch):
+    """A MEDIUM tool turn escalates to paid Claude when allow_paid + budget allow; a
+    free_only call (cheap sub-agent workers) must NEVER reach a paid model — the $0
+    guarantee under council fan-out, where parallel workers hammer the free tier."""
+    monkeypatch.setattr(router, "allow_paid", lambda: True)
+    monkeypatch.setattr(router._budget, "can_afford", lambda t: True)
+    calls: list[dict] = []
+    fake = _recording_acompletion(calls, fail_substrings=("groq/", "gemini/", "claude", "ollama"))
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+    msgs = [{"role": "user", "content": "hi"}]
+
+    # Default MEDIUM tool turn DOES reach Claude (the escalation this guards).
+    calls.clear()
+    with pytest.raises(RuntimeError):
+        await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL])
+    assert any("claude" in c["model"] for c in calls), "default should escalate to Claude"
+
+    # free_only stays entirely on free models — no paid tier anywhere in the chain.
+    calls.clear()
+    with pytest.raises(RuntimeError):
+        await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL], free_only=True)
+    assert calls and not any("claude" in c["model"] for c in calls), "free_only must stay $0"

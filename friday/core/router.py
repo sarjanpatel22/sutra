@@ -326,6 +326,7 @@ async def complete(
     temperature: float = 0.7,
     max_tokens: int = 2048,
     tools: list[dict[str, Any]] | None = None,
+    free_only: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Route a completion through the tier's model chain with automatic fallback.
@@ -336,11 +337,14 @@ async def complete(
     function-calling, budget-permitting) before the weaker local model.
     """
     primary = tier
-    if tier in (Tier.HEAVY, Tier.MAX) and not _budget.can_afford(tier):
+    # free_only (e.g. cheap sub-agent workers): never spend. A paid tier drops to free MEDIUM
+    # and the rate-limit escalation to Claude below is skipped, so $0 holds even under fan-out.
+    if tier in (Tier.HEAVY, Tier.MAX) and (free_only or not _budget.can_afford(tier)):
         primary = Tier.MEDIUM
 
     fallback = list(_FALLBACK_TIERS.get(primary, []))
-    if tools and primary == Tier.MEDIUM and allow_paid() and _budget.can_afford(Tier.HEAVY):
+    if (tools and primary == Tier.MEDIUM and not free_only
+            and allow_paid() and _budget.can_afford(Tier.HEAVY)):
         fallback = [Tier.HEAVY, *fallback]  # tool turn + rate limit → Claude (only if paid allowed)
     if tools:
         # ...then a tool-CAPABLE local model (qwen) before the chat-only one (gemma),
