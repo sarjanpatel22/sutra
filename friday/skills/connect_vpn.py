@@ -1,10 +1,11 @@
-"""VPN skills — bring up / check an OpenVPN tunnel (e.g. a TryHackMe access config).
+"""VPN skills — bring up / tear down / check an OpenVPN tunnel (e.g. a TryHackMe config).
 
 `connect_vpn` launches openvpn via `sudo -n` (non-interactive), so it NEVER hangs on
 or handles your password — it relies on a passwordless-sudo rule scoped to openvpn
-only, and prints the exact rule to add if it's missing. Gated (`auto_confirm=False`):
-it runs sudo and changes routing, so it asks first unless SUTRA_AUTONOMOUS is set.
-`vpn_status` is read-only.
+only, and prints the exact rule to add if it's missing. `disconnect_vpn` stops that
+root daemon the same way (a `sudo -n pkill` scoped to processes named exactly openvpn).
+Both are gated (`auto_confirm=False`): they run sudo and change routing, so they ask
+first unless SUTRA_AUTONOMOUS is set. `vpn_status` is read-only.
 """
 
 from __future__ import annotations
@@ -31,9 +32,26 @@ _SUDOERS_HINT = (
     "sudo chmod 440 /etc/sudoers.d/sutra-openvpn"
 )
 
+# disconnect_vpn stops the root daemon with a pkill scoped to processes named exactly
+# "openvpn"; this is the one-time rule that makes that teardown passwordless too.
+_TEARDOWN_HINT = (
+    "Add passwordless sudo to STOP openvpn (run once):\n"
+    "  echo 'sarjan ALL=(root) NOPASSWD: /usr/bin/pkill -x openvpn' | "
+    "sudo tee /etc/sudoers.d/sutra-openvpn-stop >/dev/null && "
+    "sudo chmod 440 /etc/sudoers.d/sutra-openvpn-stop"
+)
+
+# Poll cadence while the tunnel drops on disconnect (tests shrink these).
+_DOWN_TRIES = 10
+_DOWN_SLEEP = 0.5
+
 
 def _openvpn_bin() -> str:
     return shutil.which("openvpn") or "/usr/sbin/openvpn"
+
+
+def _pkill_bin() -> str:
+    return shutil.which("pkill") or "/usr/bin/pkill"
 
 
 async def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
@@ -59,6 +77,13 @@ async def _tun_info() -> tuple[str | None, str | None]:
             ip = parts[2].split("/")[0] if len(parts) >= 3 else None
             return parts[0], ip
     return None, None
+
+
+async def _openvpn_running() -> bool:
+    """True if an openvpn process exists — checked WITHOUT sudo (pgrep), so an idle
+    disconnect_vpn call never escalates to sudo just to find there is nothing to stop."""
+    rc, out, _ = await _run([shutil.which("pgrep") or "pgrep", "-x", "openvpn"], timeout=5)
+    return rc == 0 and bool(out.strip())
 
 
 def _resolve_config(config: str) -> str | None:
@@ -130,6 +155,51 @@ async def connect_vpn(config: str = "") -> dict[str, object]:
                     "config": os.path.basename(path)}
     return {"status": "starting", "config": os.path.basename(path),
             "note": "openvpn launched but the tunnel is not up yet — check vpn_status shortly.",
+            "log_tail": _log_tail()}
+
+
+@skill(
+    name="disconnect_vpn",
+    description=(
+        "Tear down the OpenVPN tunnel that connect_vpn started — stops the root openvpn "
+        "daemon via scoped passwordless sudo (pkill) and drops the tunnel. No-op if nothing "
+        "is connected; prints the one-time sudo rule to add if it is missing. Never handles "
+        "your password."
+    ),
+    auto_confirm=False,  # SIGTERMs a root daemon + drops routing — gated
+    timeout_s=20,
+)
+async def disconnect_vpn() -> dict[str, object]:
+    """Stop the OpenVPN tunnel and report what came down.
+
+    No-op (and no sudo) unless a tunnel is up or an openvpn process is running, so an
+    idle call never prompts you to set up sudo. Otherwise sends SIGTERM to the root
+    daemon via a pkill scoped to processes named exactly "openvpn".
+    """
+    iface, ip = await _tun_info()
+    if not iface and not await _openvpn_running():
+        cleaned = _PID.exists()
+        _PID.unlink(missing_ok=True)
+        return {"status": "not_connected", "cleaned_stale_pid": cleaned}
+
+    rc, out, err = await _run(["sudo", "-n", _pkill_bin(), "-x", "openvpn"], timeout=10)
+    blob = (err + out).lower()
+    # A sudo failure also exits 1, so screen for it BEFORE reading pkill's exit code.
+    if "password is required" in blob or "terminal is required" in blob or "sudo:" in blob:
+        return {"error": "passwordless sudo for pkill is not set up.", "fix": _TEARDOWN_HINT}
+    if rc not in (0, 1):  # 0 = signalled, 1 = nothing matched; anything else is a real error
+        return {"error": f"could not stop openvpn: {(err or out).strip()[:300]}"}
+
+    # Wait for the interface to actually drop.
+    for _ in range(_DOWN_TRIES):
+        cur, _cur_ip = await _tun_info()
+        if not cur:
+            _PID.unlink(missing_ok=True)
+            return {"status": "disconnected", "was": iface or "(daemon)", "ip": ip}
+        await asyncio.sleep(_DOWN_SLEEP)
+
+    return {"status": "still_up", "interface": iface,
+            "note": "sent SIGTERM but the tunnel is still up — re-run or check vpn_status.",
             "log_tail": _log_tail()}
 
 
