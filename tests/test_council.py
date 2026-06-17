@@ -146,3 +146,21 @@ async def test_run_dispatches_to_council_when_flagged(monkeypatch):
     assert reply == "council says hi"
     assert captured["goal"] == "research X, design Y, and draft Z"
     assert hist[-1] == {"role": "assistant", "content": "council says hi"}
+
+
+async def test_convene_degrades_when_coordinator_raises(monkeypatch):
+    # A rate-limited tier (normal under fan-out) must NOT crash the turn — convene
+    # degrades to the worker contributions instead of propagating.
+    async def _fake_run_subagent(name, task, context=""):
+        return '[{"role":"researcher","task":"a"}]' if name == "architect" else "worker output"
+
+    async def _boom(messages, tier=None, tools=None, **kw):
+        raise RuntimeError("all free tiers rate-limited")
+
+    monkeypatch.setattr(council_mod, "run_subagent", _fake_run_subagent)
+    monkeypatch.setattr(council_mod, "complete", _boom)
+
+    r = await convene("do a multi-part thing")  # must not raise
+    assert isinstance(r, CouncilResult)
+    assert r.contributions  # worker output captured before the critique blew up
+    assert r.answer  # degraded to a best-effort answer

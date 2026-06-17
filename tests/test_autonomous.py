@@ -35,6 +35,13 @@ BLOCKED = [
     "shutdown now",
     "reboot",
     "init 0",
+    # the operator's OWN home dir / its dotdirs / a home glob — must be blocked
+    "rm -rf /home/sarjan",
+    "rm -rf /home/sarjan/",
+    "rm -rf /home/sarjan/*",
+    "rm -rf /home/sarjan/.ssh",
+    "rm -rf ~/.ssh",
+    "rm -rf $HOME/.config",
 ]
 
 # --- ordinary CTF / dev commands: these must run -----------------------------

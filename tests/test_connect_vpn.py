@@ -167,3 +167,10 @@ async def test_vpn_status(monkeypatch):
 
     monkeypatch.setattr(cv, "_tun_info", _down)
     assert await cv.vpn_status() == {"connected": False}
+
+
+def test_resolve_config_never_globs_downloads(monkeypatch):
+    # Security: no auto-discovery — a malicious .ovpn in ~/Downloads must never be picked
+    # up (sudo openvpn runs its up/down scripts as root). Only explicit arg / env count.
+    monkeypatch.delenv("SUTRA_VPN_CONFIG", raising=False)
+    assert cv._resolve_config("") is None

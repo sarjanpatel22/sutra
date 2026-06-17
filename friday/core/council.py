@@ -137,51 +137,59 @@ async def convene(
             except Exception:  # noqa: BLE001 — an observer must never break the council
                 pass
 
-    # 1) Architect decomposes the goal into specialist sub-tasks.
-    _emit("plan")
-    plan_text = await run_subagent("architect", _PLAN_INSTRUCTION + goal, context)
-    delegations = _parse_delegations(plan_text, goal)
-
-    # 2) Fan out to specialists in parallel — isolated contexts, capped concurrency.
-    _emit("fanout", {"roles": [r for r, _ in delegations]})
-    sem = asyncio.Semaphore(_MAX_PARALLEL)
-    pairs = await asyncio.gather(*[_run_one(sem, r, t, context) for r, t in delegations])
+    plan_text, critique, answer = "", "", ""
     contributions: dict[str, str] = {}
-    counts: dict[str, int] = {}
-    for role, out in pairs:
-        counts[role] = counts.get(role, 0) + 1
-        key = role if counts[role] == 1 else f"{role}#{counts[role]}"
-        contributions[key] = out
+    try:
+        # 1) Architect decomposes the goal into specialist sub-tasks.
+        _emit("plan")
+        plan_text = await run_subagent("architect", _PLAN_INSTRUCTION + goal, context)
+        delegations = _parse_delegations(plan_text, goal)
 
-    joined = "\n\n".join(f"## {k}\n{v}" for k, v in contributions.items())
+        # 2) Fan out to specialists in parallel — isolated contexts, capped concurrency.
+        _emit("fanout", {"roles": [r for r, _ in delegations]})
+        sem = asyncio.Semaphore(_MAX_PARALLEL)
+        pairs = await asyncio.gather(*[_run_one(sem, r, t, context) for r, t in delegations])
+        counts: dict[str, int] = {}
+        for role, out in pairs:
+            counts[role] = counts.get(role, 0) + 1
+            key = role if counts[role] == 1 else f"{role}#{counts[role]}"
+            contributions[key] = out
+        joined = "\n\n".join(f"## {k}\n{v}" for k, v in contributions.items())
 
-    # 3) Critique (free tier, no tools).
-    _emit("critique")
-    critique = await _complete_text(
-        [
-            {"role": "system", "content": _CRITIC_SYSTEM},
-            {"role": "user", "content": f"Goal: {goal}\n\nContributions:\n{joined}"},
-        ],
-        Tier.MEDIUM,
-    )
+        # 3) Critique (free tier, no tools).
+        _emit("critique")
+        critique = await _complete_text(
+            [
+                {"role": "system", "content": _CRITIC_SYSTEM},
+                {"role": "user", "content": f"Goal: {goal}\n\nContributions:\n{joined}"},
+            ],
+            Tier.MEDIUM,
+        )
 
-    # 4) Synthesize one answer in Sutra's voice (paid coordinator only if allowed).
-    _emit("synthesize")
-    answer = await _complete_text(
-        [
-            {"role": "system", "content": _synth_system()},
-            {
-                "role": "user",
-                "content": (
-                    f"Goal: {goal}\n\nSpecialist work:\n{joined}\n\n"
-                    f"Reviewer notes:\n{critique}\n\nNow give the user one clear answer."
-                ),
-            },
-        ],
-        _coordinator_tier(),
-        max_tokens=1024,
-    )
-    _emit("done")
+        # 4) Synthesize one answer in Sutra's voice (paid coordinator only if allowed).
+        _emit("synthesize")
+        answer = await _complete_text(
+            [
+                {"role": "system", "content": _synth_system()},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Goal: {goal}\n\nSpecialist work:\n{joined}\n\n"
+                        f"Reviewer notes:\n{critique}\n\nNow give the user one clear answer."
+                    ),
+                },
+            ],
+            _coordinator_tier(),
+            max_tokens=1024,
+        )
+        _emit("done")
+    except Exception as e:  # noqa: BLE001 — a rate-limit/model error must not crash the turn
+        _log.warning("council convene degraded: %s", e)
+        answer = answer or (
+            "\n\n".join(f"## {k}\n{v}" for k, v in contributions.items())
+            or "The council couldn't finish (models are rate-limited). Try again shortly."
+        )
+
     return CouncilResult(
         answer=answer.strip(),
         plan=plan_text.strip(),

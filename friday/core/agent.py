@@ -303,6 +303,32 @@ _AUTO_WRAPUP = "[System: round limit reached — stop and give your final report
 
 _ENGAGE_DIR = Path.home() / ".local" / "share" / "friday" / "engagements"
 
+# Skills the autonomous loop may run hands-free (recon + browse). run_command is here too
+# but is additionally screened by _looks_risky; everything NOT in this set (run_python,
+# write_file, forget, connect_vpn, desktop input, …) is escalated to the operator.
+_AUTO_HANDS_FREE = frozenset({"run_command", "web_task", "web_task_vision", "fill_form"})
+
+# A shell command that could harm THIS machine (delete/overwrite, escalate privilege, or
+# spawn an interpreter to dodge the run_command floor). These get confirmed by the operator;
+# ordinary recon/exploit tooling (nmap, gobuster, curl, ssh, nc, …) does not match → auto-runs.
+_RISKY_CMD = re.compile(
+    r"""
+    \brm\b | \brmdir\b | \bdd\b | mkfs | wipefs | \bmv\b | \bchmod\b | \bchown\b
+    | >{1,2}\s*[^&\s]                       # redirect to a file (skips 2>&1 / >&2)
+    | :\s*\(\s*\)\s*\{                      # fork bomb
+    | \bshutdown\b | \breboot\b | \bpoweroff\b | \bhalt\b | \bsudo\b
+    | python\S*\s+-c | perl\s+-e | ruby\s+-e | bash\s+-c | \bsh\s+-c
+    | \|\s*(?:ba)?sh\b                      # piping into a shell (curl … | sh)
+    | \beval\b | \bbase64\b | \bxxd\b
+    """,
+    re.I | re.X,
+)
+
+
+def _looks_risky(cmd: str) -> bool:
+    """True if a shell command could harm the local machine (so the loop confirms it)."""
+    return bool(_RISKY_CMD.search(cmd or ""))
+
 
 def _save_engagement(goal: str, messages: list[dict[str, Any]], report: str) -> Path:
     """Persist the transcript + report to a per-engagement markdown file; return its path."""
@@ -331,7 +357,10 @@ def _save_engagement(goal: str, messages: list[dict[str, Any]], report: str) -> 
         else:
             lines.append(f"**{role}:** {content}")
         lines.append("")
-    path.write_text("\n".join(lines))
+    try:
+        path.write_text("\n".join(lines))
+    except Exception as e:  # noqa: BLE001 — a save failure must not discard the report
+        _log.warning("could not save engagement file %s: %s", path, e)
     return path
 
 
@@ -340,15 +369,20 @@ async def run_autonomous(
     *,
     max_rounds: int = 25,
     tier: Tier = Tier.HEAVY,
+    confirm: ConfirmFn | None = None,
     observe: ObserveFn | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Hands-free agentic loop for authorized CTF/pentest work.
 
-    Auto-approves gated skills (run_command, connect_vpn, web_task, …) via the shared
-    autonomous confirm policy — but ONLY when SUTRA_AUTONOMOUS is set; the run_command
-    catastrophic floor stays the always-on hard net. Runs up to `max_rounds` tool rounds
-    (vs run()'s 5), nudges once if the model stops early, and writes a transcript + report
-    to an engagement file. Returns (report, transcript). Does NOT spam graph memory.
+    Hybrid confirm policy: clean recon (a run_command that isn't _looks_risky, plus the
+    web/browse family) runs hands-free; anything that could harm THIS machine — run_python,
+    file writes, forget, connect_vpn, desktop input, or a risky-looking run_command — is
+    escalated to `confirm`, the interactive operator prompt the CLI supplies (auto-approved
+    when the operator passed --yes; declined when no hook is given). run_command's
+    is_catastrophic floor stays the always-on hard net. Runs up to `max_rounds` rounds,
+    nudges once if the model stops early, writes a transcript+report to an engagement file,
+    and never crashes the turn (a mid-loop error still saves the transcript). Requires
+    SUTRA_AUTONOMOUS=1. Does NOT spam graph memory.
     """
     if not _autonomous():
         return (
@@ -356,6 +390,15 @@ async def run_autonomous(
             "hands-free, so it is opt-in: set SUTRA_AUTONOMOUS=1 and re-run.",
             [],
         )
+
+    async def _loop_confirm(skill: str, args: dict[str, Any]) -> bool:
+        # Clean recon runs hands-free; machine-risky actions ask the operator (or are
+        # declined when the CLI passed no confirm hook).
+        if skill == "run_command" and not _looks_risky(args.get("command", "")):
+            return True
+        if skill in _AUTO_HANDS_FREE and skill != "run_command":
+            return True
+        return bool(confirm and await confirm(skill, args))
 
     registry.autodiscover()
     tools = registry.all_tools()
@@ -365,32 +408,36 @@ async def run_autonomous(
     ]
     nudged = False
     reply = ""
-    for _ in range(max_rounds):
-        response = await complete(messages, tier=tier, tools=tools or None)
-        msg = response.choices[0].message
-        messages.append({
-            "role": "assistant",
-            "content": msg.content,
-            "tool_calls": getattr(msg, "tool_calls", None),
-        })
-        tool_calls = getattr(msg, "tool_calls", None)
-        if tool_calls:
-            messages.extend(
-                await _run_tool_calls(tool_calls, confirm=_autonomous_confirm, observe=observe)
-            )
-            nudged = False
-            continue
-        # No tool calls — text. If we already nudged once, take it as final; else nudge.
-        reply = (msg.content or "").strip()
-        if nudged:
-            break
-        messages.append({"role": "user", "content": _AUTO_NUDGE})
-        nudged = True
-    else:
-        # Exhausted the round budget — force a final report with no more tools.
-        messages.append({"role": "user", "content": _AUTO_WRAPUP})
-        response = await complete(messages, tier=tier, tools=None)
-        reply = (response.choices[0].message.content or "").strip()
+    try:
+        for _ in range(max_rounds):
+            response = await complete(messages, tier=tier, tools=tools or None)
+            msg = response.choices[0].message
+            messages.append({
+                "role": "assistant",
+                "content": msg.content,
+                "tool_calls": getattr(msg, "tool_calls", None),
+            })
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                messages.extend(
+                    await _run_tool_calls(tool_calls, confirm=_loop_confirm, observe=observe)
+                )
+                nudged = False
+                continue
+            # No tool calls — text. If we already nudged once, take it as final; else nudge.
+            reply = (msg.content or "").strip()
+            if nudged:
+                break
+            messages.append({"role": "user", "content": _AUTO_NUDGE})
+            nudged = True
+        else:
+            # Exhausted the round budget — force a final report with no more tools.
+            messages.append({"role": "user", "content": _AUTO_WRAPUP})
+            response = await complete(messages, tier=tier, tools=None)
+            reply = (response.choices[0].message.content or "").strip()
+    except Exception as e:  # noqa: BLE001 — never crash the turn or lose the transcript
+        _log.warning("run_autonomous aborted: %s", e)
+        reply = reply or f"The engagement stopped early due to an error: {e}"
 
     _save_engagement(goal, messages, reply)
     return reply, messages[1:]

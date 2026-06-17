@@ -812,8 +812,8 @@ def _default_auto_tier() -> str:
     return os.getenv("SUTRA_AUTO_TIER", "heavy")
 
 
-def _run_engagement(goal: str, rounds: int, tier_str: str, title: str) -> None:
-    """Drive one autonomous engagement: pick the tier, stream tools, print the report."""
+def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool = False) -> None:
+    """Drive one autonomous engagement: pick the tier, stream tools, confirm risky steps."""
     from friday.core.agent import run_autonomous
 
     tier = _tier_from_str(tier_str)
@@ -823,13 +823,26 @@ def _run_engagement(goal: str, rounds: int, tier_str: str, title: str) -> None:
             f"[yellow]Note:[/yellow] [dim]ROUTER_ALLOW_PAID is off — '{tier_str}' falls back "
             f"to the free tier. Set ROUTER_ALLOW_PAID=1 to use {model}.[/dim]"
         )
+    mode = "full auto" if yes else "asks before risky actions"
     console.print(
-        f"[cyan]Sutra is working autonomously[/cyan] [dim](≤{rounds} rounds · {tier_str})[/dim]"
+        f"[cyan]Sutra is working autonomously[/cyan] "
+        f"[dim](≤{rounds} rounds · {tier_str} · {mode})[/dim]"
     )
+
+    async def _confirm(skill: str, args: dict[str, Any]) -> bool:
+        if yes:
+            return True
+        console.print(Panel(
+            f"[bold]{skill}[/bold]\n[dim]{str(args)[:300]}[/dim]",
+            title="[yellow]Confirm risky action[/yellow]", border_style="yellow",
+        ))
+        return await asyncio.get_running_loop().run_in_executor(
+            None, lambda: Confirm.ask("  Run this?", default=False)
+        )
 
     async def _run() -> None:
         report, _ = await run_autonomous(
-            goal, max_rounds=rounds, tier=tier, observe=_engagement_observe
+            goal, max_rounds=rounds, tier=tier, confirm=_confirm, observe=_engagement_observe
         )
         console.print(Panel(Markdown(report or "(no report)"), title=title, border_style="green"))
         console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
@@ -845,9 +858,15 @@ def auto(
         _default_auto_tier(), "--tier",
         help="Model tier: medium (free 70B) / heavy (Sonnet 4.6) / max (Opus 4.8)",
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Full auto: run everything without confirming risky actions (you accept the risk)",
+    ),
 ) -> None:
     """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1."""
-    _run_engagement(goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]")
+    _run_engagement(
+        goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]", yes=yes
+    )
 
 
 @app.command()
@@ -858,6 +877,10 @@ def pwn(
         _default_auto_tier(), "--tier",
         help="Model tier: medium (free 70B) / heavy (Sonnet 4.6) / max (Opus 4.8)",
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Full auto: run everything without confirming risky actions (you accept the risk)",
+    ),
 ) -> None:
     """Autonomously enumerate, exploit, and report on a target box. Needs SUTRA_AUTONOMOUS=1."""
     goal = (
@@ -865,7 +888,7 @@ def pwn(
         f"scan it, find a foothold, escalate to root, and capture the user and root flags. "
         f"Report the findings, the flags, and how you got them."
     )
-    _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]")
+    _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]", yes=yes)
 
 
 @app.command()

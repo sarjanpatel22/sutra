@@ -62,21 +62,17 @@ async def _tun_info() -> tuple[str | None, str | None]:
 
 
 def _resolve_config(config: str) -> str | None:
-    """A .ovpn path: explicit arg → SUTRA_VPN_CONFIG → first .ovpn in ~/Downloads/~."""
+    """A trusted .ovpn path: an explicit `config=` arg, else SUTRA_VPN_CONFIG. Nothing is
+    auto-discovered — `sudo openvpn` runs the config's up/down scripts as root (NOPASSWD),
+    so a config is NEVER picked up from a globbed dir (e.g. ~/Downloads); the operator names
+    the file. Only point it at .ovpn files you trust."""
     if config:
         p = Path(config).expanduser()
         return str(p) if p.is_file() else None
     env = os.getenv("SUTRA_VPN_CONFIG", "").strip()
     if env and Path(env).expanduser().is_file():
         return str(Path(env).expanduser())
-    found: list[Path] = []
-    for d in (Path.home() / "Downloads", Path.home(), Path.home() / ".config" / "sutra"):
-        if d.is_dir():
-            found += sorted(d.glob("*.ovpn"))
-    if not found:
-        return None
-    thm = [p for p in found if any(k in p.name.lower() for k in ("tryhackme", "thm"))]
-    return str((thm or found)[0])
+    return None
 
 
 def _log_tail(n: int = 12) -> str:
@@ -90,9 +86,10 @@ def _log_tail(n: int = 12) -> str:
     name="connect_vpn",
     description=(
         "Bring up the OpenVPN tunnel (e.g. your TryHackMe access config) and return the "
-        "assigned VPN IP. Pass config=<path to .ovpn>, or it uses SUTRA_VPN_CONFIG / the "
-        "first .ovpn in ~/Downloads. Needs scoped passwordless sudo for openvpn (it tells "
-        "you the rule if missing) and never handles your password. No-op if already connected."
+        "assigned VPN IP. Pass config=<path to .ovpn>, or set SUTRA_VPN_CONFIG; nothing is "
+        "auto-discovered (openvpn runs the config's scripts as root, so only a trusted, named "
+        "file is used). Needs scoped passwordless sudo for openvpn (it tells you the rule if "
+        "missing) and never handles your password. No-op if already connected."
     ),
     auto_confirm=False,  # runs sudo + changes routing — gated
     timeout_s=40,
@@ -100,8 +97,8 @@ def _log_tail(n: int = 12) -> str:
 async def connect_vpn(config: str = "") -> dict[str, object]:
     """Connect the OpenVPN tunnel.
 
-    config: path to a .ovpn file. Empty → SUTRA_VPN_CONFIG, else the first .ovpn in
-            ~/Downloads (a TryHackMe-named one is preferred).
+    config: path to a .ovpn file. Empty → SUTRA_VPN_CONFIG. Nothing is auto-discovered —
+            openvpn runs the config's up/down scripts as root, so name a trusted file.
     """
     iface, ip = await _tun_info()
     if iface:
@@ -109,8 +106,9 @@ async def connect_vpn(config: str = "") -> dict[str, object]:
 
     path = _resolve_config(config)
     if not path:
-        return {"error": "No .ovpn config found. Download your THM VPN config to ~/Downloads, "
-                         "set SUTRA_VPN_CONFIG=<path>, or pass config=<path>."}
+        return {"error": "No .ovpn config found. Set SUTRA_VPN_CONFIG=<path> or pass "
+                         "config=<path> — a trusted config only (openvpn runs its scripts "
+                         "as root)."}
 
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     cmd = ["sudo", "-n", _openvpn_bin(), "--config", path, "--daemon",

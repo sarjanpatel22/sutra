@@ -36,6 +36,14 @@ _RM_TARGET = re.compile(
     r"|(?:\s|'|\")/(?:etc|usr|var|bin|sbin|boot|lib\w*|sys)(?:/\S*)?(?:\s|'|\"|$)",
     re.I,
 )
+# The user's OWN home dir, or a dotdir/glob inside it (~/.ssh, $HOME, /home/me, /home/me/*)
+# — wiping it destroys SSH keys, configs, the repo. A NON-dot subpath (/home/me/ctf/loot)
+# stays allowed for normal CTF cleanup; only the home root itself, its dotdirs, and a /* glob
+# are blocked.
+_RM_HOME = re.compile(
+    r"(?:\s|=|'|\")(?:~|\$HOME|/home/[^/\s'\"]+)(?:/?(?:\s|'|\"|$)|/\.[^\s'\"]*|/\*)",
+    re.I,
+)
 
 
 def is_catastrophic(command: str) -> bool:
@@ -52,7 +60,7 @@ def is_catastrophic(command: str) -> bool:
     if re.search(r"\brm\b", c, re.I):  # rm needs BOTH recursive and force AND a whole-target
         recursive = re.search(r"(?:^|\s)-\S*r|--recursive\b", c, re.I)
         force = re.search(r"(?:^|\s)-\S*f|--force\b", c, re.I)
-        if recursive and force and _RM_TARGET.search(c):
+        if recursive and force and (_RM_TARGET.search(c) or _RM_HOME.search(c)):
             return True
     return False
 

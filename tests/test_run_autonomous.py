@@ -106,3 +106,71 @@ async def test_voice_confirm_alias_preserved(monkeypatch):
     monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
     assert agent._voice_confirm is agent._autonomous_confirm
     assert await agent._voice_confirm("run_command", {"command": "ls"}) is True
+
+
+# ── hybrid confirm policy (auto-run recon, ask before risky) ──────────────────
+async def test_hybrid_auto_runs_recon_escalates_risky(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    captured = {}
+
+    async def _fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        captured["confirm"] = confirm
+        return [{"role": "tool", "tool_call_id": "x", "name": "run_command", "content": "{}"}]
+
+    monkeypatch.setattr(agent, "_run_tool_calls", _fake_rtc)
+    monkeypatch.setattr(agent, "complete", _scripted(
+        _Resp(_Msg(tool_calls=[_tc("run_command", {"command": "nmap x"})])),
+        _Resp(_Msg(content="still")),
+        _Resp(_Msg(content="done")),
+    ))
+    asked = []
+
+    async def _operator(skill, args):
+        asked.append(skill)
+        return True
+
+    await agent.run_autonomous("scan", confirm=_operator, max_rounds=4)
+    lc = captured["confirm"]  # the loop's hybrid-confirm closure
+    assert await lc("run_command", {"command": "nmap -sV 10.10.10.10"}) is True  # clean → auto
+    assert await lc("web_task", {}) is True
+    assert await lc("run_command", {"command": "rm -rf ~"}) is True   # risky → operator said yes
+    assert await lc("run_python", {"code": "x"}) is True
+    assert await lc("connect_vpn", {"config": "/x.ovpn"}) is True
+    assert set(asked) == {"run_command", "run_python", "connect_vpn"}  # only risky escalated
+
+
+async def test_hybrid_declines_risky_without_hook(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    captured = {}
+
+    async def _fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        captured["confirm"] = confirm
+        return []
+
+    monkeypatch.setattr(agent, "_run_tool_calls", _fake_rtc)
+    monkeypatch.setattr(agent, "complete", _scripted(
+        _Resp(_Msg(tool_calls=[_tc("run_command", {"command": "nmap x"})])),
+        _Resp(_Msg(content="still")),
+        _Resp(_Msg(content="done")),
+    ))
+    await agent.run_autonomous("scan", confirm=None, max_rounds=4)
+    lc = captured["confirm"]
+    assert await lc("run_command", {"command": "nmap x"}) is True              # clean still runs
+    assert await lc("run_command", {"command": "rm -rf /home/sarjan"}) is False  # risky declined
+    assert await lc("run_python", {"code": "x"}) is False
+    assert await lc("forget", {"query": "x"}) is False
+
+
+async def test_run_autonomous_survives_error_and_saves(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+
+    async def _boom(*a, **k):
+        raise RuntimeError("all tiers rate-limited")
+
+    monkeypatch.setattr(agent, "complete", _boom)
+    report, _ = await agent.run_autonomous("scan", max_rounds=3)
+    assert "stopped early" in report
+    assert list(tmp_path.glob("*.md"))  # transcript still saved despite the crash
