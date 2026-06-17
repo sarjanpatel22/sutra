@@ -838,7 +838,8 @@ def _default_auto_tier() -> str:
     return os.getenv("SUTRA_AUTO_TIER", "heavy")
 
 
-def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool = False) -> None:
+def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool = False,
+                    scope: str | None = None) -> None:
     """Drive one autonomous engagement: pick the tier, stream tools, confirm risky steps."""
     from friday.core.agent import run_autonomous
 
@@ -850,9 +851,10 @@ def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool
             f"to the free tier. Set ROUTER_ALLOW_PAID=1 to use {model}.[/dim]"
         )
     mode = "full auto" if yes else "asks before risky actions"
+    scope_note = f" · scope {scope}" if scope else ""
     console.print(
         f"[cyan]Sutra is working autonomously[/cyan] "
-        f"[dim](≤{rounds} rounds · {tier_str} · {mode})[/dim]"
+        f"[dim](≤{rounds} rounds · {tier_str} · {mode}{scope_note})[/dim]"
     )
 
     async def _confirm(skill: str, args: dict[str, Any]) -> bool:
@@ -868,7 +870,8 @@ def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool
 
     async def _run() -> None:
         report, _ = await run_autonomous(
-            goal, max_rounds=rounds, tier=tier, confirm=_confirm, observe=_engagement_observe
+            goal, max_rounds=rounds, tier=tier, confirm=_confirm,
+            observe=_engagement_observe, scope=scope,
         )
         console.print(Panel(Markdown(report or "(no report)"), title=title, border_style="green"))
         console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
@@ -888,10 +891,15 @@ def auto(
         False, "--yes", "-y",
         help="Full auto: run everything without confirming risky actions (you accept the risk)",
     ),
+    scope: str = typer.Option(
+        "", "--scope",
+        help="Authorized targets (IPs/CIDRs/hosts, comma-separated); off-scope commands ask first",
+    ),
 ) -> None:
     """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1."""
     _run_engagement(
-        goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]", yes=yes
+        goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]", yes=yes,
+        scope=scope or os.getenv("SUTRA_SCOPE") or None,
     )
 
 
@@ -914,7 +922,8 @@ def pwn(
         f"scan it, find a foothold, escalate to root, and capture the user and root flags. "
         f"Report the findings, the flags, and how you got them."
     )
-    _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]", yes=yes)
+    _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]", yes=yes,
+                    scope=target)
 
 
 @app.command()

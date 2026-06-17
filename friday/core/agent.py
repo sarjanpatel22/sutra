@@ -378,6 +378,7 @@ async def run_autonomous(
     tier: Tier = Tier.HEAVY,
     confirm: ConfirmFn | None = None,
     observe: ObserveFn | None = None,
+    scope: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Hands-free agentic loop for authorized CTF/pentest work.
 
@@ -386,10 +387,12 @@ async def run_autonomous(
     file writes, forget, connect_vpn, desktop input, or a risky-looking run_command — is
     escalated to `confirm`, the interactive operator prompt the CLI supplies (auto-approved
     when the operator passed --yes; declined when no hook is given). run_command's
-    is_catastrophic floor stays the always-on hard net. Runs up to `max_rounds` rounds,
-    nudges once if the model stops early, writes a transcript+report to an engagement file,
-    and never crashes the turn (a mid-loop error still saves the transcript). Requires
-    SUTRA_AUTONOMOUS=1. Does NOT spam graph memory.
+    is_catastrophic floor stays the always-on hard net. When `scope` is set (a comma/space
+    list of IPs/CIDRs/hosts; `pwn` auto-scopes to its target), a run_command that targets a
+    host outside scope is escalated to the operator too — so injected output can't redirect
+    the engagement at an unauthorized box. Runs up to `max_rounds` rounds, nudges once if the
+    model stops early, writes a transcript+report to an engagement file, and never crashes the
+    turn (a mid-loop error still saves the transcript). Requires SUTRA_AUTONOMOUS=1.
     """
     if not _autonomous():
         return (
@@ -398,11 +401,18 @@ async def run_autonomous(
             [],
         )
 
+    from friday.core.scope import command_in_scope, parse_scope
+    scope_rules = parse_scope(scope)
+
     async def _loop_confirm(skill: str, args: dict[str, Any]) -> bool:
-        # Clean recon runs hands-free; machine-risky actions ask the operator (or are
-        # declined when the CLI passed no confirm hook).
-        if skill == "run_command" and not _looks_risky(args.get("command", "")):
-            return True
+        # Clean, IN-SCOPE recon runs hands-free; an off-scope target or a machine-risky
+        # action asks the operator (or is declined when the CLI passed no confirm hook).
+        if skill == "run_command":
+            cmd = args.get("command", "")
+            off_scope = scope_rules is not None and not command_in_scope(cmd, scope_rules)
+            if not off_scope and not _looks_risky(cmd):
+                return True
+            return bool(confirm and await confirm(skill, args))
         if skill in _AUTO_HANDS_FREE and skill != "run_command":
             return True
         return bool(confirm and await confirm(skill, args))

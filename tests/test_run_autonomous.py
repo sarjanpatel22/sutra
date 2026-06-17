@@ -176,6 +176,36 @@ async def test_run_autonomous_survives_error_and_saves(monkeypatch, tmp_path):
     assert list(tmp_path.glob("*.md"))  # transcript still saved despite the crash
 
 
+async def test_scope_guard_escalates_offscope_targets(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    captured = {}
+
+    async def _fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        captured["confirm"] = confirm
+        return [{"role": "tool", "tool_call_id": "x", "name": "run_command", "content": "{}"}]
+
+    monkeypatch.setattr(agent, "_run_tool_calls", _fake_rtc)
+    monkeypatch.setattr(agent, "complete", _scripted(
+        _Resp(_Msg(tool_calls=[_tc("run_command", {"command": "nmap 10.10.10.5"})])),
+        _Resp(_Msg(content="still")),
+        _Resp(_Msg(content="done")),
+    ))
+    asked = []
+
+    async def _operator(skill, args):
+        asked.append(args.get("command"))
+        return True
+
+    await agent.run_autonomous("scan", confirm=_operator, scope="10.10.10.5", max_rounds=4)
+    lc = captured["confirm"]
+    assert await lc("run_command", {"command": "nmap -sV 10.10.10.5"}) is True  # in scope → auto
+    assert await lc("run_command", {"command": "nmap 8.8.8.8"}) is True         # off-scope → asked
+    assert await lc("run_command", {"command": "curl http://evil.com"}) is True  # off-scope → asked
+    assert "nmap 8.8.8.8" in asked and "curl http://evil.com" in asked
+    assert "nmap -sV 10.10.10.5" not in asked  # in-scope recon never escalates
+
+
 def test_looks_risky_flags_persistence_and_spares_recon():
     # The hybrid loop auto-runs only CLEAN recon; persistence/wipe commands that carry no
     # rm and no redirect (the audit's blind spot) must still escalate to the operator.
