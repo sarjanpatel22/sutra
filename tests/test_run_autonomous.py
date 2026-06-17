@@ -85,6 +85,22 @@ async def test_round_cap_forces_final_report(monkeypatch, tmp_path):
     assert calls["n"] == 4  # 3 tool rounds + 1 final wrap-up
 
 
+async def test_tier_flows_through_to_complete(monkeypatch, tmp_path):
+    from friday.core.router import Tier
+
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    seen = {}
+
+    async def _complete(messages, tier=None, tools=None, **kw):
+        seen["tier"] = tier
+        return _Resp(_Msg(content="done"))
+
+    monkeypatch.setattr(agent, "complete", _complete)
+    await agent.run_autonomous("scan it", tier=Tier.MAX)
+    assert seen["tier"] is Tier.MAX  # the chosen tier reaches the router
+
+
 async def test_voice_confirm_alias_preserved(monkeypatch):
     # The rename kept the old name as an alias (voice path + test_autonomous import it).
     monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import typer
@@ -12,7 +13,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from friday.core.router import Tier, get_budget
+from friday.core.router import Tier, allow_paid, get_budget
 
 app = typer.Typer(name="sutra", help="Sutra — voice-native ambient AI assistant")
 console = Console()
@@ -806,50 +807,65 @@ def _engagement_observe(kind: str, data: dict[str, Any]) -> None:
     console.print(f"[dim]→[/dim] {data.get('skill')}{gated} [dim]{args}[/dim]")
 
 
+def _default_auto_tier() -> str:
+    """Default model tier for the autonomous loop (env-overridable)."""
+    return os.getenv("SUTRA_AUTO_TIER", "heavy")
+
+
+def _run_engagement(goal: str, rounds: int, tier_str: str, title: str) -> None:
+    """Drive one autonomous engagement: pick the tier, stream tools, print the report."""
+    from friday.core.agent import run_autonomous
+
+    tier = _tier_from_str(tier_str)
+    if tier in (Tier.HEAVY, Tier.MAX) and not allow_paid():
+        model = "Opus" if tier is Tier.MAX else "Sonnet"
+        console.print(
+            f"[yellow]Note:[/yellow] [dim]ROUTER_ALLOW_PAID is off — '{tier_str}' falls back "
+            f"to the free tier. Set ROUTER_ALLOW_PAID=1 to use {model}.[/dim]"
+        )
+    console.print(
+        f"[cyan]Sutra is working autonomously[/cyan] [dim](≤{rounds} rounds · {tier_str})[/dim]"
+    )
+
+    async def _run() -> None:
+        report, _ = await run_autonomous(
+            goal, max_rounds=rounds, tier=tier, observe=_engagement_observe
+        )
+        console.print(Panel(Markdown(report or "(no report)"), title=title, border_style="green"))
+        console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
+
+    asyncio.run(_run())
+
+
 @app.command()
 def auto(
     goal: str = typer.Argument(..., help="The objective to pursue autonomously"),
     rounds: int = typer.Option(25, "--rounds", help="Max tool rounds"),
+    tier: str = typer.Option(
+        _default_auto_tier(), "--tier",
+        help="Model tier: medium (free 70B) / heavy (Sonnet 4.6) / max (Opus 4.8)",
+    ),
 ) -> None:
     """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1."""
-    from friday.core.agent import run_autonomous
-
-    console.print(f"[cyan]Sutra is working autonomously[/cyan] [dim](≤{rounds} rounds)[/dim]")
-
-    async def _run() -> None:
-        report, _ = await run_autonomous(goal, max_rounds=rounds, observe=_engagement_observe)
-        console.print(Panel(Markdown(report or "(no report)"),
-                            title="[bold green]Sutra — engagement report[/bold green]",
-                            border_style="green"))
-        console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
-
-    asyncio.run(_run())
+    _run_engagement(goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]")
 
 
 @app.command()
 def pwn(
     target: str = typer.Argument(..., help="Target IP/host to enumerate and compromise"),
     rounds: int = typer.Option(30, "--rounds", help="Max tool rounds"),
+    tier: str = typer.Option(
+        _default_auto_tier(), "--tier",
+        help="Model tier: medium (free 70B) / heavy (Sonnet 4.6) / max (Opus 4.8)",
+    ),
 ) -> None:
     """Autonomously enumerate, exploit, and report on a target box. Needs SUTRA_AUTONOMOUS=1."""
-    from friday.core.agent import run_autonomous
-
     goal = (
         f"Enumerate and compromise the box at {target}. Establish VPN reachability if needed, "
         f"scan it, find a foothold, escalate to root, and capture the user and root flags. "
         f"Report the findings, the flags, and how you got them."
     )
-    console.print(f"[cyan]Working {target} autonomously[/cyan] [dim](≤{rounds} rounds)[/dim]")
-
-    async def _run() -> None:
-        report, _ = await run_autonomous(goal, max_rounds=rounds, observe=_engagement_observe)
-        console.print(Panel(
-            Markdown(report or "(no report)"),
-            title=f"[bold green]Sutra — {target}[/bold green]", border_style="green",
-        ))
-        console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
-
-    asyncio.run(_run())
+    _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]")
 
 
 @app.command()
