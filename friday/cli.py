@@ -528,15 +528,25 @@ def rag_ask(
              "say so plainly — don't invent."},
             {"role": "user", "content": f"Context:\n{ctx}\n\nQuestion: {query}"},
         ]
-        # Stream the answer so the first words land in ~0.3s rather than blocking for the
-        # whole completion — same model and context, so the answer itself is unchanged.
+        # Stream the answer so the first words land in ~0.7s rather than blocking for the
+        # whole completion — same model and context, so the answer itself is unchanged. The
+        # live region is transient (cropped to the viewport while generating); the full
+        # Markdown prints once on completion so a long answer renders cleanly in scrollback.
         answer = ""
-        with Live(console=console, refresh_per_second=12, vertical_overflow="visible") as live:
-            async for tok in stream_complete(msgs, tier=Tier.MEDIUM, tools=None, max_tokens=400):
-                answer += tok
-                live.update(Markdown(answer))
+        try:
+            with Live(console=console, refresh_per_second=12, transient=True,
+                      vertical_overflow="crop") as live:
+                async for tok in stream_complete(msgs, tier=Tier.MEDIUM, tools=None,
+                                                 max_tokens=400):
+                    answer += tok
+                    live.update(Markdown(answer))
+        except Exception as e:  # noqa: BLE001 — every model tier failed; show it, don't traceback
+            console.print(f"[red]Could not get an answer:[/red] [dim]{e}[/dim]")
+            return
         if not answer.strip():
             console.print("[yellow](no answer returned)[/yellow]")
+            return
+        console.print(Markdown(answer))
         console.print("[dim]sources: " + ", ".join(sorted({h["source"] for h in hits})) + "[/dim]")
 
     asyncio.run(_run())

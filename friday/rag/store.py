@@ -10,7 +10,9 @@ measurably sharpen retrieval.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,8 @@ _OLLAMA = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 _EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", os.getenv("EMBED_MODEL", "nomic-embed-text"))
 _RAG_DIR = Path(os.getenv("RAG_DIR", str(Path.home() / ".local" / "share" / "friday" / "rag")))
 
+_log = logging.getLogger(__name__)
+
 
 class EmbedUnavailable(RuntimeError):
     """Ollama embedding endpoint unreachable — retrieval can't run."""
@@ -32,11 +36,14 @@ def _keepalive() -> int | str:
     never unload, so a query skips nomic's ~3s cold reload every time (the model is
     ~275MB). Set RAG_EMBED_KEEPALIVE to a seconds int or a duration like "30m" to bound
     it. Memory recall reuses embed() too, so this warms RAG *and* recall."""
-    v = os.getenv("RAG_EMBED_KEEPALIVE", "-1")
+    v = os.getenv("RAG_EMBED_KEEPALIVE", "-1").strip()
     try:
         return int(v)
     except ValueError:
-        return v
+        if re.fullmatch(r"\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h)", v):
+            return v  # a valid Ollama duration like "30m" / "90s"
+        _log.warning("RAG_EMBED_KEEPALIVE=%r is not an int or a duration like '30m'; using -1", v)
+        return -1
 
 
 def embed(texts: list[str], kind: str = "document") -> np.ndarray:
@@ -61,12 +68,12 @@ def embed(texts: list[str], kind: str = "document") -> np.ndarray:
 
 def warm() -> bool:
     """Pre-load and pin the embedding model so the first real query skips nomic's ~3s
-    cold load. Best-effort — returns False if Ollama is unreachable. Safe to call at
-    startup (e.g. in a background thread) and idempotent."""
+    cold load. Best-effort — returns False on ANY failure (Ollama down, a bad response),
+    so it is safe to fire from a startup background thread without a stray traceback."""
     try:
         embed(["warm"], "query")
         return True
-    except EmbedUnavailable:
+    except Exception:  # noqa: BLE001 — best-effort warm; must never raise from a bg thread
         return False
 
 

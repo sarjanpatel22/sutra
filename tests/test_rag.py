@@ -164,3 +164,23 @@ def test_warm_true_on_success_false_when_down(monkeypatch) -> None:
 
     monkeypatch.setattr(rag_store, "embed", _boom)
     assert rag_store.warm() is False
+
+
+def test_keepalive_bad_value_falls_back_to_pin(monkeypatch) -> None:
+    # A misconfigured value must NOT silently break every embed() (RAG + recall) by
+    # passing junk to Ollama — fall back to -1 instead.
+    for bad in ("forever", "30min", "", "  ", "-1m"):
+        monkeypatch.setenv("RAG_EMBED_KEEPALIVE", bad)
+        assert rag_store._keepalive() == -1, bad
+    monkeypatch.setenv("RAG_EMBED_KEEPALIVE", "90s")  # a valid duration still passes
+    assert rag_store._keepalive() == "90s"
+
+
+def test_warm_swallows_any_error_not_just_embed_unavailable(monkeypatch) -> None:
+    # warm() runs in a startup background thread; a non-EmbedUnavailable error (e.g. a
+    # malformed-embeddings ValueError) must not escape as a stray thread traceback.
+    def _boom(texts, kind="document"):
+        raise ValueError("ragged embeddings")
+
+    monkeypatch.setattr(rag_store, "embed", _boom)
+    assert rag_store.warm() is False
