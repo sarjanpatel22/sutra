@@ -314,7 +314,14 @@ _AUTO_HANDS_FREE = frozenset({"run_command", "web_task", "web_task_vision", "fil
 _RISKY_CMD = re.compile(
     r"""
     \brm\b | \brmdir\b | \bdd\b | mkfs | wipefs | \bmv\b | \bchmod\b | \bchown\b
+    | \btruncate\b | \bshred\b | \btee\b | \bchattr\b   # blank / overwrite / lock a file
+    | \bcp\b | \bln\b                       # copy or symlink can clobber an existing file
     | >{1,2}\s*[^&\s]                       # redirect to a file (skips 2>&1 / >&2)
+    | (?:curl|wget)\b[^|]*\s-[oO]\b         # curl/wget writing to a file (-o / -O)
+    | \bfind\b[^|]*-delete | \bfind\b[^|]*-exec   # find that deletes / executes
+    | git\s+clean\b                         # wipes untracked files (-fdx)
+    | \bcrontab\b                           # persistence via cron
+    | \b(?:pip|pip3|npm|yarn|apt|apt-get|gem|cargo)\b[^|]*\binstall\b  # installs code
     | :\s*\(\s*\)\s*\{                      # fork bomb
     | \bshutdown\b | \breboot\b | \bpoweroff\b | \bhalt\b | \bsudo\b
     | python\S*\s+-c | perl\s+-e | ruby\s+-e | bash\s+-c | \bsh\s+-c

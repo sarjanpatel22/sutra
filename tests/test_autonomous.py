@@ -42,6 +42,12 @@ BLOCKED = [
     "rm -rf /home/sarjan/.ssh",
     "rm -rf ~/.ssh",
     "rm -rf $HOME/.config",
+    # bare current-dir / parent / glob targets — wipe the cwd (home or the repo), name no path
+    "rm -rf .",
+    "rm -rf ./",
+    "rm -rf *",
+    "rm -rf ./*",
+    "rm -rf .[!.]* ..?*",
 ]
 
 # --- ordinary CTF / dev commands: these must run -----------------------------
@@ -57,6 +63,9 @@ ALLOWED = [
     "grep -rf patterns.txt .",  # -rf here are grep flags, not rm
     "df -h",
     "curl http://10.10.10.10/robots.txt",
+    "rm -rf loot/*",            # path-qualified glob — names a subdir, not the cwd
+    "rm -rf /tmp/scratch/*",
+    "rm -rf *.txt",             # a specific extension glob, not a whole-dir wipe
 ]
 
 

@@ -44,6 +44,15 @@ _RM_HOME = re.compile(
     r"(?:\s|=|'|\")(?:~|\$HOME|/home/[^/\s'\"]+)(?:/?(?:\s|'|\"|$)|/\.[^\s'\"]*|/\*)",
     re.I,
 )
+# A current-dir / parent-dir / bare-glob rm target (rm -rf .  ./  ..  *  ./*  .[!.]*).
+# These wipe the WHOLE working directory — usually $HOME or the repo — yet name no path,
+# so unlike `rm -rf ./build`, `/tmp/loot`, or a path-qualified `loot/*` they are never
+# legitimate scratch cleanup. A regex floor can't resolve `$VAR` indirection
+# (`X=$HOME; rm -rf $X`); that stays a documented gap — this is a net, not a sandbox.
+_RM_CWD = re.compile(
+    r"(?:^|\s|;|&|\|)(?:\.\.?/?|\./\*|\*|\.\*|\.\[[^\]]*\][^\s]*)(?=\s|$|;|&|\|)",
+    re.I,
+)
 
 
 def is_catastrophic(command: str) -> bool:
@@ -60,7 +69,9 @@ def is_catastrophic(command: str) -> bool:
     if re.search(r"\brm\b", c, re.I):  # rm needs BOTH recursive and force AND a whole-target
         recursive = re.search(r"(?:^|\s)-\S*r|--recursive\b", c, re.I)
         force = re.search(r"(?:^|\s)-\S*f|--force\b", c, re.I)
-        if recursive and force and (_RM_TARGET.search(c) or _RM_HOME.search(c)):
+        if recursive and force and (
+            _RM_TARGET.search(c) or _RM_HOME.search(c) or _RM_CWD.search(c)
+        ):
             return True
     return False
 
