@@ -27,13 +27,26 @@ class EmbedUnavailable(RuntimeError):
     """Ollama embedding endpoint unreachable — retrieval can't run."""
 
 
+def _keepalive() -> int | str:
+    """How long Ollama keeps the embedding model resident after a call. Default -1 =
+    never unload, so a query skips nomic's ~3s cold reload every time (the model is
+    ~275MB). Set RAG_EMBED_KEEPALIVE to a seconds int or a duration like "30m" to bound
+    it. Memory recall reuses embed() too, so this warms RAG *and* recall."""
+    v = os.getenv("RAG_EMBED_KEEPALIVE", "-1")
+    try:
+        return int(v)
+    except ValueError:
+        return v
+
+
 def embed(texts: list[str], kind: str = "document") -> np.ndarray:
     """Embed texts via Ollama nomic-embed-text → L2-normalized (n, dim) float32 matrix.
 
     kind="query" for a search query, "document" for stored chunks (nomic prefixes).
     """
     prefix = "search_query: " if kind == "query" else "search_document: "
-    payload = {"model": _EMBED_MODEL, "input": [prefix + t for t in texts]}
+    payload = {"model": _EMBED_MODEL, "input": [prefix + t for t in texts],
+               "keep_alive": _keepalive()}
     try:
         r = httpx.post(f"{_OLLAMA}/api/embed", json=payload, timeout=120)
         r.raise_for_status()
@@ -44,6 +57,17 @@ def embed(texts: list[str], kind: str = "document") -> np.ndarray:
         raise EmbedUnavailable("no embeddings returned")
     m = np.asarray(embs, dtype=np.float32)
     return m / np.clip(np.linalg.norm(m, axis=1, keepdims=True), 1e-8, None)
+
+
+def warm() -> bool:
+    """Pre-load and pin the embedding model so the first real query skips nomic's ~3s
+    cold load. Best-effort — returns False if Ollama is unreachable. Safe to call at
+    startup (e.g. in a background thread) and idempotent."""
+    try:
+        embed(["warm"], "query")
+        return True
+    except EmbedUnavailable:
+        return False
 
 
 @dataclass

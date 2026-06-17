@@ -118,3 +118,49 @@ async def test_rag_search_embed_unavailable(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(rag_store, "embed", boom)
     out = await rag_search("python")
     assert "error" in out and "unavailable" in out["error"]
+
+
+# ── keep model warm (skip nomic's ~3s cold reload) ───────────────────────────
+class _PostResp:
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return {"embeddings": [[1.0, 0.0, 0.0]]}
+
+
+def test_embed_payload_pins_model_keepalive(monkeypatch) -> None:
+    # embed() must ask Ollama to keep nomic resident, or every query re-pays the load.
+    captured: dict = {}
+
+    def _fake_post(url, json, timeout):
+        captured["payload"] = json
+        return _PostResp()
+
+    monkeypatch.delenv("RAG_EMBED_KEEPALIVE", raising=False)
+    monkeypatch.setattr(rag_store.httpx, "post", _fake_post)
+    rag_store.embed(["hello"], "query")
+    assert captured["payload"]["keep_alive"] == -1  # default: never unload
+
+
+def test_keepalive_env_accepts_seconds_or_duration(monkeypatch) -> None:
+    monkeypatch.setenv("RAG_EMBED_KEEPALIVE", "1800")
+    assert rag_store._keepalive() == 1800           # numeric → seconds
+    monkeypatch.setenv("RAG_EMBED_KEEPALIVE", "30m")
+    assert rag_store._keepalive() == "30m"          # duration string passes through
+    monkeypatch.delenv("RAG_EMBED_KEEPALIVE", raising=False)
+    assert rag_store._keepalive() == -1             # default
+
+
+def test_warm_true_on_success_false_when_down(monkeypatch) -> None:
+    def _ok(texts, kind="document"):
+        return np.zeros((1, 3), np.float32)
+
+    monkeypatch.setattr(rag_store, "embed", _ok)
+    assert rag_store.warm() is True
+
+    def _boom(texts, kind="document"):
+        raise EmbedUnavailable("connection refused")
+
+    monkeypatch.setattr(rag_store, "embed", _boom)
+    assert rag_store.warm() is False

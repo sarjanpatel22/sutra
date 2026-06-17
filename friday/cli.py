@@ -56,6 +56,13 @@ async def _chat_loop(tier: Tier) -> None:
     except Exception as e:  # noqa: BLE001 — MCP must never block chat
         console.print(f"[yellow]MCP connect failed: {e}[/yellow]")
 
+    # Background-warm the embedding model so the first memory recall / rag_search skips
+    # nomic's ~3s cold load (both reuse friday.rag.store.embed). Fire-and-forget.
+    import threading
+
+    from friday.rag.store import warm as _rag_warm
+    threading.Thread(target=_rag_warm, daemon=True, name="rag-warm").start()
+
     console.print(Panel(
         "[bold cyan]Sutra[/bold cyan] — ready.\n"
         f"[dim]tier: {tier.value}  |  /tier <name>  /skills  /budget  /status  /clear  /quit[/dim]",
@@ -503,7 +510,9 @@ def rag_ask(
     collection: str = typer.Option("default", "--collection", "-c", help="Collection name"),
 ) -> None:
     """Retrieve relevant passages and answer grounded in them, citing sources."""
-    from friday.core.router import Tier, complete
+    from rich.live import Live
+
+    from friday.core.router import Tier, stream_complete
     from friday.rag.store import RagStore
 
     async def _run() -> None:
@@ -519,8 +528,15 @@ def rag_ask(
              "say so plainly — don't invent."},
             {"role": "user", "content": f"Context:\n{ctx}\n\nQuestion: {query}"},
         ]
-        r = await complete(msgs, tier=Tier.MEDIUM, tools=None, max_tokens=400)
-        console.print(Markdown(r.choices[0].message.content or ""))
+        # Stream the answer so the first words land in ~0.3s rather than blocking for the
+        # whole completion — same model and context, so the answer itself is unchanged.
+        answer = ""
+        with Live(console=console, refresh_per_second=12, vertical_overflow="visible") as live:
+            async for tok in stream_complete(msgs, tier=Tier.MEDIUM, tools=None, max_tokens=400):
+                answer += tok
+                live.update(Markdown(answer))
+        if not answer.strip():
+            console.print("[yellow](no answer returned)[/yellow]")
         console.print("[dim]sources: " + ", ".join(sorted({h["source"] for h in hits})) + "[/dim]")
 
     asyncio.run(_run())
