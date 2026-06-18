@@ -945,6 +945,96 @@ def tutor(
     asyncio.run(_run())
 
 
+skill_app = typer.Typer(help="Self-extending skills — Sutra drafts a skill, you review + approve.")
+app.add_typer(skill_app, name="skill")
+
+
+def _code_panel(name: str, code: str) -> Panel:
+    return Panel(Markdown(f"```python\n{code}\n```"), title=f"[bold]{name}[/bold]",
+                 border_style="cyan")
+
+
+def _print_flags(flags: list[str]) -> None:
+    if flags:
+        console.print("[yellow]⚠ review these before approving:[/yellow]")
+        for fl in flags:
+            console.print(f"  [yellow]•[/yellow] {fl}")
+    else:
+        console.print("[green]✓ no risky patterns flagged[/green]")
+
+
+@skill_app.command("draft")
+def skill_draft(
+    description: str = typer.Argument(..., help="What the new skill should do"),
+    tier: str = typer.Option("medium", "--tier", help="medium (free 70B) / heavy / max"),
+) -> None:
+    """Draft a new skill from a description. Writes an INERT file — it never runs the code."""
+    from friday.core.skillsmith import draft_skill
+
+    async def _run() -> None:
+        with console.status("[cyan]drafting a skill…[/cyan]"):
+            out = await draft_skill(description, tier=_tier_from_str(tier))
+        if "error" in out:
+            console.print(f"[red]{out['error']}[/red]")
+            return
+        console.print(_code_panel(f"draft: {out['name']}", out["code"]))
+        _print_flags(out["flags"])
+        console.print(
+            f"[dim]review: sutra skill show {out['name']}  ·  approve: sutra skill approve "
+            f"{out['name']}  ·  discard: sutra skill reject {out['name']}[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@skill_app.command("list")
+def skill_list() -> None:
+    """List pending drafts and approved (loaded) self-extended skills."""
+    from friday.core.skillsmith import list_pending
+    from friday.skills.registry import USER_SKILLS_DIR
+
+    approved = (
+        sorted(p.stem for p in USER_SKILLS_DIR.glob("*.py")) if USER_SKILLS_DIR.is_dir() else []
+    )
+    pending = ", ".join(list_pending()) or "(none)"
+    console.print(f"[bold]pending (awaiting approval):[/bold] {pending}")
+    console.print(f"[bold]approved (loaded):[/bold] {', '.join(approved) or '(none)'}")
+
+
+@skill_app.command("show")
+def skill_show(name: str = typer.Argument(..., help="Pending skill name")) -> None:
+    """Show a pending draft's code and its safety flags."""
+    from friday.core.skillsmith import read_pending, scan_code
+
+    code = read_pending(name)
+    if code is None:
+        console.print(f"[red]no pending skill named '{name}'[/red]")
+        return
+    console.print(_code_panel(name, code))
+    _print_flags(scan_code(code))
+
+
+@skill_app.command("approve")
+def skill_approve(name: str = typer.Argument(..., help="Pending skill to approve")) -> None:
+    """Approve a drafted skill — promotes it so it loads on the next run. Your explicit go."""
+    from friday.core.skillsmith import approve_skill
+
+    dst = approve_skill(name)
+    if dst is None:
+        console.print(f"[red]no pending skill named '{name}'[/red]")
+        return
+    console.print(f"[green]✓ approved[/green] [dim]{dst}[/dim] — loads on the next `sutra` run.")
+
+
+@skill_app.command("reject")
+def skill_reject(name: str = typer.Argument(..., help="Pending skill to discard")) -> None:
+    """Discard a pending draft."""
+    from friday.core.skillsmith import reject_skill
+
+    console.print("[green]✓ discarded[/green]" if reject_skill(name)
+                  else f"[red]no pending skill named '{name}'[/red]")
+
+
 @app.command()
 def mcp() -> None:
     """Connect to configured MCP servers and list the tools they expose to Sutra."""

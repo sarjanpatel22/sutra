@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import inspect
 import json
+import logging
+import os
 import pkgutil
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -27,6 +30,15 @@ class SkillMeta:
 
 
 _registry: dict[str, SkillMeta] = {}
+_log = logging.getLogger(__name__)
+
+# Approved self-extended (Sutra-authored) skills live OUTSIDE the source tree and load on the
+# next run. Written only by `sutra skill approve`; see friday/core/skillsmith.py.
+USER_SKILLS_DIR = Path(os.getenv(
+    "SUTRA_USER_SKILLS_DIR",
+    str(Path.home() / ".local" / "share" / "friday" / "user_skills"),
+))
+_loaded_user: set[str] = set()
 
 
 def skill(
@@ -173,6 +185,28 @@ def autodiscover(package: str = "friday.skills") -> None:
         if module_name.startswith("_"):
             continue
         importlib.import_module(f"{package}.{module_name}")
+    _load_user_skills()
+
+
+def _load_user_skills() -> None:
+    """Load APPROVED self-extended skills from USER_SKILLS_DIR (once per file, per process).
+
+    These are skills Sutra drafted and the user explicitly approved via `sutra skill approve`,
+    kept outside the source tree. A broken one is skipped, never crashing discovery.
+    """
+    if not USER_SKILLS_DIR.is_dir():
+        return
+    for f in sorted(USER_SKILLS_DIR.glob("*.py")):
+        if f.name.startswith("_") or str(f) in _loaded_user:
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(f"friday.skills.user_{f.stem}", f)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)  # runs @skill registration
+                _loaded_user.add(str(f))
+        except Exception as e:  # noqa: BLE001 — a bad user skill must not break discovery
+            _log.warning("could not load user skill %s: %s", f, e)
 
 
 def dump_registry() -> str:
