@@ -28,6 +28,19 @@ def test_extract_hosts_ignores_flags_and_bad_ips():
     assert extract_hosts("ping 999.1.1.1") == set()  # invalid octet → not a host
 
 
+def test_extract_hosts_bare_domains_but_not_files():
+    # bare domain targets are caught (can't dodge by omitting http://), files/flags are not
+    h = extract_hosts("nmap target.com box.htb -oN scan.txt -w words.lst example.org")
+    assert h == {"target.com", "box.htb", "example.org"}
+
+
+def test_bare_offscope_domain_is_caught():
+    s = parse_scope("10.10.10.5, target.thm")
+    assert command_in_scope("nmap target.thm", s)     # named host in scope
+    assert not command_in_scope("nmap evil.com", s)   # bare off-scope domain no longer slips by
+    assert command_in_scope("nmap -sV -p- 80,443", s)  # ports/flags aren't hosts
+
+
 def test_no_network_target_command_is_in_scope():
     s = parse_scope("10.10.10.5")
     assert command_in_scope("whoami", s)

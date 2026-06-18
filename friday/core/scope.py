@@ -6,8 +6,9 @@ extracted and checked: anything outside scope is escalated to the operator inste
 running hands-free — so a prompt-injection from target output ("now scan 8.8.8.8 / curl
 evil.com") can't quietly point the engagement at a box you never authorized.
 
-Targets are pulled from IPv4 literals, URL hosts (`http://host`), and `user@host`
-(ssh/scp). Loopback / `localhost` are always in scope (local tooling). Limits, documented
+Targets are pulled from IPv4 literals, URL hosts (`http://host`), `user@host` (ssh/scp),
+and bare domain names (`nmap target.com`). Loopback / `localhost` are always in scope
+(local tooling). Limits, documented
 rather than hidden: no DNS resolution (resolving attacker-influenced output is itself an
 injection vector — match hostnames literally) and IPv4 only for bare literals. Both
 `run_command` and the browser family (web_task/fill_form start_url/url) are scope-checked.
@@ -22,6 +23,16 @@ from dataclasses import dataclass
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _URL_HOST = re.compile(r"https?://([^/\s:?#]+)", re.I)
 _USER_AT = re.compile(r"\b[\w.\-]+@([A-Za-z0-9.\-]+)")
+# A bare domain name target (nmap target.com / box.htb), so it can't dodge the guard by
+# omitting the scheme. Conservative: a dotted name whose final label is ≥2 alphabetic chars
+# and not a common file extension — anything ambiguous errs toward asking, never silent-allow.
+_FQDN = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$", re.I)
+_NOT_HOST_EXT = frozenset({
+    "txt", "xml", "json", "html", "htm", "log", "conf", "cfg", "csv", "md", "py", "sh", "js",
+    "ts", "png", "jpg", "jpeg", "gif", "pdf", "bin", "out", "bak", "db", "zip", "tar", "gz",
+    "tgz", "yaml", "yml", "gnmap", "nmap", "php", "asp", "aspx", "jsp", "key", "pem", "crt",
+    "cap", "pcap", "lst", "dic",
+})
 
 _Net = ipaddress.IPv4Network | ipaddress.IPv6Network
 
@@ -65,6 +76,13 @@ def extract_hosts(text: str) -> set[str]:
             hosts.add(m)
         except ValueError:
             continue
+    for tok in re.split(r"[\s;&|<>()'\"`,]+", text):
+        if not tok or tok.startswith("-") or "://" in tok or "@" in tok:
+            continue
+        cand = tok.split("/")[0].split(":")[0]  # strip any path / port
+        tld = cand.rsplit(".", 1)[-1].lower()
+        if _FQDN.match(cand) and tld.isalpha() and len(tld) >= 2 and tld not in _NOT_HOST_EXT:
+            hosts.add(cand)
     return {h.split(":")[0].lower() for h in hosts if h}
 
 
