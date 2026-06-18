@@ -9,6 +9,7 @@ jobs:
   verify:
     name: ruff · gate-audit · tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # backstop: never let a hung step (e.g. a stalled apt mirror) run for hours
     steps:
       - uses: actions/checkout@v4
 
@@ -22,8 +23,14 @@ jobs:
       # other heavy dep (faster-whisper, onnxruntime, playwright, falkordb, graphiti, mcp,
       # telegram, …) is lazy-imported and mocked in tests, so the base + dev install plus
       # sounddevice is enough to collect and run the whole suite hermetically.
-      - name: Install PortAudio
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      # Install from the runner's existing package cache first (fast — the lib is in the
+      # base Ubuntu repos); only refresh mirror lists if that misses. `timeout` turns a hung
+      # apt mirror into a quick retry instead of a 20-minute stall — the slow `apt-get update`
+      # is what hangs, so we avoid it in the common case.
+      - name: Install PortAudio (for sounddevice)
+        run: |
+          sudo timeout 100 apt-get install -y libportaudio2 \
+            || (sudo timeout 150 apt-get update && sudo timeout 150 apt-get install -y libportaudio2)
 
       # sounddevice: the one system-lib import a test transitively needs (voice/audio.py).
       # python-telegram-bot: pure-python, lets the Telegram-bridge tests run in CI rather
