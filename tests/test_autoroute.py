@@ -43,6 +43,33 @@ def test_action_intent_routes_agentic(text):
 
 
 @pytest.mark.parametrize("text", [
+    "what do you see on my screen",
+    "see the screen",
+    "look at my screen",
+    "read the screen",
+    "describe my screen",
+    "take a screenshot",
+    "what am i looking at",
+])
+def test_screen_vision_intent_routes_agentic(text):
+    # Live bug: "can't see the screen" — these were classified as chit-chat so the
+    # screen-capture tool was never reached. Must act with a tool now.
+    d = decide(text)
+    assert d.act is True and d.tool_required is True
+
+
+@pytest.mark.parametrize("text", [
+    "I see what you mean",
+    "look, can you explain recursion",
+    "I see",
+    "that looks great",
+])
+def test_screen_lookalikes_stay_chat(text):
+    # 'see'/'look' are chat words — must NOT trip the screen-vision action path.
+    assert decide(text).act is False
+
+
+@pytest.mark.parametrize("text", [
     "go to tryhackme.com and start the first room",
     "open https://news.ycombinator.com and tell me the top story",
     "log in to my account and book the appointment",

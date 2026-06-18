@@ -68,6 +68,22 @@ _ACTION = re.compile(
     re.I,
 )
 
+# Looking at the real desktop — "see/look at my screen", "what do you see", "what's on
+# my screen", "read/describe the screen". 'see'/'look' alone are chat words, so each
+# alternative is anchored to a screen/vision context to avoid firing on "I see" / "look,
+# the thing is...". This is an action (it needs the screen-capture tool), but it carried
+# no open/go verb so it fell to chit-chat and Sutra just said it couldn't see (live bug).
+_SCREEN = re.compile(
+    r"\b(?:"
+    r"(?:see|look at|read|describe|check|analyz?e|capture|screenshot|what'?s on)\b"
+    r"[^.?!]*\b(?:screen|desktop|display|monitor)\b"
+    r"|what (?:do|can) you see"
+    r"|what am i (?:looking at|seeing)"
+    r"|take a screenshot"
+    r")",
+    re.I,
+)
+
 # Continuing or finishing an in-progress task — especially a CTF room/box/lab.
 # "finish this room", "let's solve it", "keep going", "why aren't you finishing the
 # room". Real agentic work that carries no open/go verb, so it used to fall to
@@ -180,7 +196,7 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
     paid = _paid_ok()
 
     coding = bool(_CODE.search(t))
-    action = bool(_ACTION.search(t))
+    action = bool(_ACTION.search(t) or _SCREEN.search(t))
     is_url = bool(_URL.search(t))
     task = bool(_TASK.search(t))
     high = bool(
