@@ -37,10 +37,8 @@ It's the assistant you'd build for yourself if you had the time. So one engineer
 
 ```bash
 git clone <your-repo-url> sutra && cd sutra
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,search]"
-cp .env.example .env          # optional: add free Groq/Gemini keys for cloud fallback
-docker compose up -d          # FalkorDB (memory), SearXNG (search)
+./setup.sh                    # venv + deps + services + local models (idempotent)
+source .venv/bin/activate
 sutra chat                    # talk to it
 ```
 
