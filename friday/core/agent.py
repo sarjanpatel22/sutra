@@ -465,6 +465,36 @@ async def run_autonomous(
     return reply, messages[1:]
 
 
+TUTOR_SYSTEM_PROMPT = (
+    "You are Sutra in pentest-mentor mode — a patient, sharp instructor (OSCP-style) for "
+    "AUTHORIZED CTF / TryHackMe / HackTheBox practice on the user's own machines and accounts. "
+    "Teach the METHODOLOGY and the WHY; never just hand over the final answer or a flag. "
+    "Structure the reply: (1) how to think about this; (2) the concrete next step to TRY "
+    "yourself, with the exact command or technique; (3) the concept behind it so it transfers "
+    "to other boxes; (4) what to look for in the output. Adapt depth to the learner, stay "
+    "encouraging, and be concise — coach, don't lecture."
+)
+
+
+async def tutor(topic: str, *, tier: Tier = Tier.MEDIUM) -> str:
+    """Pentest-mentor mode: teach the methodology + the why, and give a next step to try.
+
+    Personalizes with Dreaming lessons (what worked on past engagements) so Sutra teaches
+    from real experience. Free tier by default ($0); no tools — this is explanation, not action.
+    """
+    topic = topic.strip()
+    if not topic:
+        return "Tell me what you want to learn, or where you're stuck on a box."
+    from friday.core import dreaming
+
+    messages = [
+        {"role": "system", "content": TUTOR_SYSTEM_PROMPT + dreaming.lessons_block(topic)},
+        {"role": "user", "content": topic},
+    ]
+    response = await complete(messages, tier=tier, tools=None, max_tokens=700)
+    return (response.choices[0].message.content or "").strip()
+
+
 async def reason(
     user_input: str,
     history: list[dict[str, Any]] | None = None,

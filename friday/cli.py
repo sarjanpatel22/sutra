@@ -927,6 +927,25 @@ def pwn(
 
 
 @app.command()
+def tutor(
+    topic: str = typer.Argument(..., help="What to learn, or where you're stuck on a box"),
+    tier: str = typer.Option("medium", "--tier", help="medium (free 70B) / heavy / max"),
+) -> None:
+    """Pentest mentor — Sutra teaches the methodology and the WHY, not just the answer."""
+    from friday.core.agent import tutor as _tutor
+
+    async def _run() -> None:
+        with console.status("[cyan]thinking like a mentor…[/cyan]"):
+            answer = await _tutor(topic, tier=_tier_from_str(tier))
+        console.print(Panel(
+            Markdown(answer or "(no answer)"),
+            title="[bold green]Sutra — pentest tutor[/bold green]", border_style="green",
+        ))
+
+    asyncio.run(_run())
+
+
+@app.command()
 def mcp() -> None:
     """Connect to configured MCP servers and list the tools they expose to Sutra."""
     from friday.mcp import get_bridge, mcp_configured
