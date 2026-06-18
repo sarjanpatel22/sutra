@@ -6,6 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "friday-os"
 version = "0.1.0"
 requires-python = ">=3.11"
+# Base = what's needed to import friday and run the core agent + text CLI. numpy and
+# psutil were previously buried in optional extras, yet the CORE path imports them
+# (core/dreaming.py, and skills/system_info.py which autodiscover() always imports) —
+# so a base `pip install -e .` produced a Sutra that couldn't import its own agent or
+# register a single skill. They belong here. Heavy ML/voice/browser stacks stay opt-in.
 dependencies = [
     "litellm>=1.40",
     "anthropic>=0.40",
@@ -15,6 +20,8 @@ dependencies = [
     "keyring>=25",
     "rich>=13",
     "typer>=0.12",
+    "numpy>=1.26",   # core: recall index, dreaming, rag, voice ndarray ops
+    "psutil>=5.9",   # core: system_info skill (CPU/RAM/disk/GPU) — imported at autodiscover
 ]
 
 [project.optional-dependencies]
@@ -32,22 +39,17 @@ voice = [
     "sounddevice>=0.4",
     "webrtcvad-wheels>=2.0",
     "pynput>=1.7",
-    "numpy>=1.26",
-    "scipy>=1.13",
     "openwakeword>=0.4",
 ]
 memory = [
     "graphiti-core>=0.29",
     "falkordb>=1.1",
-    "qdrant-client>=1.9",
     "redis>=5",
 ]
 action = [
     "playwright>=1.44",
-    "open-interpreter>=0.3",
 ]
 ambient = [
-    "psutil>=5.9",
     "pynput>=1.7",
 ]
 mcp = [
@@ -55,6 +57,10 @@ mcp = [
 ]
 telegram = [
     "python-telegram-bot>=21",
+]
+# Everything, for a full install: pip install -e ".[all]"
+all = [
+    "friday-os[dev,search,voice,memory,action,ambient,mcp,telegram]",
 ]
 
 [project.scripts]

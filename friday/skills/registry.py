@@ -40,6 +40,16 @@ USER_SKILLS_DIR = Path(os.getenv(
 ))
 _loaded_user: set[str] = set()
 
+# Builtin skill modules that failed to import on the last autodiscover (usually a missing
+# optional dependency — playwright, faster-whisper, …). Recorded so `sutra doctor` can say
+# exactly which skills are unavailable and why, instead of them silently never existing.
+_failed_imports: list[tuple[str, str]] = []
+
+
+def failed_imports() -> list[tuple[str, str]]:
+    """(module_name, error) for each builtin skill that couldn't import last discovery."""
+    return list(_failed_imports)
+
 
 def skill(
     name: str,
@@ -178,13 +188,27 @@ def _extract_param_doc(docstring: str, param_name: str) -> str:
 
 
 def autodiscover(package: str = "friday.skills") -> None:
-    """Import all modules in the skills package to trigger @skill registration."""
+    """Import all modules in the skills package to trigger @skill registration.
+
+    A module that fails to import — typically a missing optional dependency for a
+    feature skill (playwright, faster-whisper, …) — is skipped with a warning and
+    recorded in failed_imports(), NEVER allowed to crash discovery. One unavailable
+    skill must not take the whole registry, and the rest of Sutra, down with it.
+    (The user-skill loader below already worked this way; the builtin loop did not.)
+    """
     pkg = importlib.import_module(package)
     pkg_path = Path(pkg.__file__).parent  # type: ignore[arg-type]
+    failed: list[tuple[str, str]] = []
     for _, module_name, _ in pkgutil.iter_modules([str(pkg_path)]):
         if module_name.startswith("_"):
             continue
-        importlib.import_module(f"{package}.{module_name}")
+        try:
+            importlib.import_module(f"{package}.{module_name}")
+        except Exception as e:  # noqa: BLE001 — a broken/optional skill must not break discovery
+            summary = f"{type(e).__name__}: {e}"
+            failed.append((module_name, summary))
+            _log.warning("skill module %r unavailable, skipping: %s", module_name, summary)
+    _failed_imports[:] = failed  # replace in place so failed_imports() stays current
     _load_user_skills()
 
 
