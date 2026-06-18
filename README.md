@@ -39,8 +39,13 @@ It's the assistant you'd build for yourself if you had the time. So one engineer
 git clone <your-repo-url> sutra && cd sutra
 ./setup.sh                    # venv + deps + services + local models (idempotent)
 source .venv/bin/activate
+sutra doctor                  # preflight: what's installed, what's missing, how to fix it
 sutra chat                    # talk to it
 ```
+
+`sutra doctor` is the first thing to run if something doesn't work — it checks every
+dependency, system binary, skill, and service, and prints the exact command to fix anything
+missing. For a full install (voice, browser, memory, …): `pip install -e ".[all]"`.
 
 Then try:
 ```bash
