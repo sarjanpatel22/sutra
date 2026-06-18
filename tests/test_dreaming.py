@@ -61,3 +61,24 @@ def test_lessons_block_empty_then_formatted(monkeypatch, tmp_path):
     monkeypatch.setattr(dreaming, "recall_lessons", lambda q, k=3: dreaming._load())
     block = dreaming.lessons_block("x")
     assert "Lessons from past engagements" in block and "do the thing" in block
+
+
+def test_record_lesson_caps_growth(monkeypatch, tmp_path):
+    # Long-term: the lessons log must stay bounded (which also bounds recall's embed cost).
+    monkeypatch.setattr(dreaming, "_LESSONS", tmp_path / "lessons.jsonl")
+    monkeypatch.setattr(dreaming, "_MAX_LESSONS", 5)
+    for i in range(9):
+        dreaming.record_lesson(f"box{i}", f"lesson {i}")
+    rows = dreaming._load()
+    assert len(rows) == 5                        # capped, not 9
+    assert rows[-1]["lesson"] == "lesson 8"      # keeps the most recent
+    assert rows[0]["lesson"] == "lesson 4"
+
+
+def test_append_capped_keeps_last_n(tmp_path):
+    from friday.core.turnlog import append_capped
+
+    p = tmp_path / "log.jsonl"
+    for i in range(10):
+        append_capped(p, f"line{i}", max_lines=3)
+    assert p.read_text().splitlines() == ["line7", "line8", "line9"]  # bounded to the last 3

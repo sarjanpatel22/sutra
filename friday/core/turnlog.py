@@ -24,6 +24,27 @@ TEXT_LATENCY_LOG = Path.home() / ".local" / "share" / "friday" / "turn_latency.j
 # Rich structured log — one record per turn across all surfaces.
 TURNS_LOG = Path.home() / ".local" / "share" / "friday" / "turns.jsonl"
 
+# Keep append-only logs bounded so they can't grow without limit over months of use.
+_MAX_LOG_LINES = 5000
+
+
+def append_capped(path: Path, line: str, max_lines: int = _MAX_LOG_LINES) -> None:
+    """Append `line` to `path`, then keep only its last `max_lines` lines.
+
+    Bounds an append-only log so it can't grow forever. Writes here are infrequent (per
+    turn / per engagement) and the files small, so the rewrite cost is negligible.
+    Best-effort: a logging failure must never break the caller.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = path.read_text().splitlines() if path.exists() else []
+        lines.append(line.rstrip("\n"))
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        path.write_text("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Writers
@@ -45,23 +66,16 @@ def log_text_turn(
     Swallows all errors — observability is never fatal.
     """
     try:
-        TEXT_LATENCY_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(TEXT_LATENCY_LOG, "a") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "tier": tier,
-                        "model": model,
-                        "tool_rounds": tool_rounds,
-                        "total_ms": round(total_ms),
-                        "in_tokens": in_tokens,
-                        "out_tokens": out_tokens,
-                        "preview": preview[:80],
-                    }
-                )
-                + "\n"
-            )
+        append_capped(TEXT_LATENCY_LOG, json.dumps({
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "tier": tier,
+            "model": model,
+            "tool_rounds": tool_rounds,
+            "total_ms": round(total_ms),
+            "in_tokens": in_tokens,
+            "out_tokens": out_tokens,
+            "preview": preview[:80],
+        }))
     except Exception:  # noqa: BLE001 — a logging failure must never break a reply
         pass
 
@@ -114,8 +128,7 @@ def log_turn(
             "error": error[:200] if error else "",
             "model": model,
         }
-        with open(TURNS_LOG, "a") as f:
-            f.write(json.dumps(record) + "\n")
+        append_capped(TURNS_LOG, json.dumps(record))
     except Exception:  # noqa: BLE001
         pass
 

@@ -18,7 +18,12 @@ from typing import Any
 
 import numpy as np
 
+from friday.core.turnlog import append_capped
+
 _LESSONS = Path.home() / ".local" / "share" / "friday" / "lessons.jsonl"
+# Keep the lessons log bounded — this also bounds recall_lessons, which embeds every kept row,
+# so Dreaming stays fast no matter how many engagements you run.
+_MAX_LESSONS = 500
 _log = logging.getLogger(__name__)
 
 
@@ -34,9 +39,7 @@ def record_lesson(topic: str, lesson: str, tags: tuple[str, ...] = ()) -> None:
         "tags": list(tags),
     }
     try:
-        _LESSONS.parent.mkdir(parents=True, exist_ok=True)
-        with open(_LESSONS, "a") as f:
-            f.write(json.dumps(rec) + "\n")
+        append_capped(_LESSONS, json.dumps(rec), _MAX_LESSONS)
     except Exception as e:  # noqa: BLE001 — a logging failure must never break the task
         _log.warning("could not record lesson: %s", e)
 
