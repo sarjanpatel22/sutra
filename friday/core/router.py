@@ -337,9 +337,14 @@ async def complete(
     function-calling, budget-permitting) before the weaker local model.
     """
     primary = tier
-    # free_only (e.g. cheap sub-agent workers): never spend. A paid tier drops to free MEDIUM
-    # and the rate-limit escalation to Claude below is skipped, so $0 holds even under fan-out.
-    if tier in (Tier.HEAVY, Tier.MAX) and (free_only or not _budget.can_afford(tier)):
+    # The $0 chokepoint: a paid tier (HEAVY/MAX) drops to the free MEDIUM tier UNLESS paid
+    # is explicitly enabled AND affordable AND not a free_only worker. This enforces the
+    # ROUTER_ALLOW_PAID guarantee here, structurally — not just by trusting every caller to
+    # pre-pick the tier. So even `ask --tier heavy` or run_autonomous's HEAVY default stays
+    # $0 until ROUTER_ALLOW_PAID=1. (The fallback escalation below already checks allow_paid.)
+    if tier in (Tier.HEAVY, Tier.MAX) and (
+        free_only or not allow_paid() or not _budget.can_afford(tier)
+    ):
         primary = Tier.MEDIUM
 
     fallback = list(_FALLBACK_TIERS.get(primary, []))

@@ -397,3 +397,37 @@ async def test_free_only_never_escalates_to_paid(monkeypatch):
     with pytest.raises(RuntimeError):
         await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL], free_only=True)
     assert calls and not any("claude" in c["model"] for c in calls), "free_only must stay $0"
+
+
+@pytest.mark.asyncio
+async def test_heavy_tier_stays_free_when_paid_disabled(monkeypatch):
+    """$0 chokepoint: with paid disabled, even an EXPLICIT HEAVY tier (e.g. `ask --tier
+    heavy`, or run_autonomous's HEAVY default) must never call a paid Claude model — the
+    router drops it to the free MEDIUM tier itself, not trusting the caller to pre-pick."""
+    monkeypatch.setattr(router, "allow_paid", lambda: False)
+    monkeypatch.setattr(router._budget, "can_afford", lambda t: True)  # budget is fine
+    calls: list[dict] = []
+    fake = _recording_acompletion(calls, fail_substrings=())  # first model succeeds
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    await router.complete([{"role": "user", "content": "hi"}], tier=Tier.HEAVY)
+
+    assert calls, "expected a model call"
+    assert not any("claude" in c["model"] for c in calls), \
+        f"billed a paid model at the $0 default: {[c['model'] for c in calls]}"
+    assert calls[0]["model"].startswith(("groq/", "gemini/")), "should use a free MEDIUM model"
+
+
+@pytest.mark.asyncio
+async def test_heavy_tier_uses_claude_when_paid_enabled(monkeypatch):
+    """The opt-in path: with paid explicitly enabled AND budget available, HEAVY uses the
+    paid model first — proving the gate isn't just always-off."""
+    monkeypatch.setattr(router, "allow_paid", lambda: True)
+    monkeypatch.setattr(router._budget, "can_afford", lambda t: True)
+    calls: list[dict] = []
+    fake = _recording_acompletion(calls, fail_substrings=())
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    await router.complete([{"role": "user", "content": "hi"}], tier=Tier.HEAVY)
+    assert "claude" in calls[0]["model"], \
+        f"expected Claude first when paid is on, got {calls[0]['model']}"
