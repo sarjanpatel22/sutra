@@ -70,6 +70,16 @@ async def test_open_url_for_domain(fakes: dict[str, _Recorder]) -> None:
     assert fakes["open_app"].calls == []
 
 
+async def test_known_site_name_opens_browser_not_app(fakes: dict[str, _Recorder]) -> None:
+    # "open youtube" is a WEBSITE, not a desktop app — must hit open_url, never
+    # gtk-launch a non-existent 'youtube' app (the live failure that opened nothing).
+    out = await commands.try_command("open youtube")
+    assert out is not None
+    assert out["skill"] == "open_url"
+    assert fakes["open_url"].calls == [("https://youtube.com",)]
+    assert fakes["open_app"].calls == []
+
+
 async def test_open_url_keeps_existing_scheme(fakes: dict[str, _Recorder]) -> None:
     out = await commands.try_command("open https://example.org/path")
     assert out is not None

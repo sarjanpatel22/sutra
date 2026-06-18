@@ -38,6 +38,36 @@ _URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Spoken site names that are WEBSITES, not desktop apps — "open youtube" must hit the
+# browser, not gtk-launch a non-existent 'youtube' app (the live failure: it claimed
+# success and opened nothing). Maps the bare word to the URL to open.
+KNOWN_SITES: dict[str, str] = {
+    "youtube": "https://youtube.com",
+    "yt": "https://youtube.com",
+    "gmail": "https://mail.google.com",
+    "google": "https://google.com",
+    "maps": "https://maps.google.com",
+    "google maps": "https://maps.google.com",
+    "drive": "https://drive.google.com",
+    "calendar": "https://calendar.google.com",
+    "twitter": "https://twitter.com",
+    "x": "https://x.com",
+    "reddit": "https://reddit.com",
+    "github": "https://github.com",
+    "linkedin": "https://linkedin.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "chatgpt": "https://chatgpt.com",
+    "claude": "https://claude.ai",
+    "netflix": "https://netflix.com",
+    "spotify": "https://open.spotify.com",
+    "amazon": "https://amazon.com",
+    "wikipedia": "https://wikipedia.org",
+    "tryhackme": "https://tryhackme.com",
+    "hackthebox": "https://hackthebox.com",
+    "stackoverflow": "https://stackoverflow.com",
+    "stack overflow": "https://stackoverflow.com",
+}
+
 # Command verbs, anchored at the start of the cleaned text.
 _OPEN_RE = re.compile(r"^(?:open|launch|start|fire\s+up)\s+(.+)$", re.IGNORECASE)
 _CLOSE_RE = re.compile(r"^close\s+(.+)$", re.IGNORECASE)
@@ -153,6 +183,9 @@ async def try_command(text: str) -> dict[str, Any] | None:
         if _looks_like_url(obj):
             url = _normalize_url(obj)
             result = await _safe(open_url, url)
+            return _result(f"Opening {obj}.", "open_url", result)
+        if site := KNOWN_SITES.get(obj.lower()):
+            result = await _safe(open_url, site)
             return _result(f"Opening {obj}.", "open_url", result)
         result = await _safe(open_app, obj)
         if isinstance(result, dict) and result.get("error"):

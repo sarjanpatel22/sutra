@@ -64,15 +64,32 @@ async def test_literal_name_when_alias_misses(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_gtk_launch_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Only gtk-launch exists; the literal candidate is not on PATH.
+async def test_gtk_launch_fallback_when_desktop_entry_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only gtk-launch exists, and a real .desktop entry resolves for the name.
     monkeypatch.setattr(apps.shutil, "which", _which_only("gtk-launch"))
+    monkeypatch.setattr(apps, "_desktop_id_for", lambda name: "obscureapp")
     result = await apps.open_app("obscureapp")
     assert result["status"] == "launched"
     assert result["command"] == "gtk-launch obscureapp"
     args, kwargs = _FakePopen.calls[0]
     assert args == ["gtk-launch", "obscureapp"]
     assert kwargs["start_new_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_gtk_launch_no_false_success_when_no_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # gtk-launch exists but NO .desktop entry matches — must report an honest error,
+    # never a phantom 'launched' (the live 'Opening notepad' that opened nothing).
+    monkeypatch.setattr(apps.shutil, "which", _which_only("gtk-launch"))
+    monkeypatch.setattr(apps, "_desktop_id_for", lambda name: None)
+    result = await apps.open_app("notepad")
+    assert "error" in result
+    assert "status" not in result
+    assert _FakePopen.calls == []
 
 
 def test_open_app_registered_auto_confirm() -> None:
