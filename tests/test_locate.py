@@ -132,6 +132,7 @@ async def test_ocr_image_raises_without_tesseract(monkeypatch: pytest.MonkeyPatc
 def test_ocr_available_true_when_both_present(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(locate, "_TESSERACT", "/usr/bin/tesseract")
     monkeypatch.setattr(locate, "_IMPORT", "/usr/bin/import")
+    monkeypatch.setenv("DISPLAY", ":0")  # ocr_available() also needs a display (headless CI)
     assert ocr_available() is True
 
 
