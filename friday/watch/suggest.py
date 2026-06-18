@@ -36,6 +36,22 @@ _USER = (
     "reply SILENT."
 )
 
+# Stuck mode: fired when he's been on the SAME screen a while. Bias toward a concrete
+# next step (not silence) IF he looks stuck — but still SILENT when he's clearly fine.
+_SYS_STUCK = (
+    "You are Sutra, watching Sarjan's screen. He has been on this SAME screen for a while "
+    "and may be STUCK. Look at the screenshot. If he genuinely looks stuck — an error or "
+    "traceback, a failing command, a test that won't pass, a form he can't get past, or a "
+    "problem with no obvious next move — reply with ONE concrete, specific thing to try next "
+    "(max ~22 words, spoken-style, no markdown), like a sharp teammate leaning over. If he "
+    "looks fine — reading, watching, thinking, or just idle — reply with exactly: SILENT. "
+    "When unsure, reply SILENT."
+)
+_USER_STUCK = (
+    "Sarjan has been on this screen a while. If he looks stuck, give ONE concrete next thing "
+    "to try; otherwise reply SILENT."
+)
+
 # Leading "SILENT" the model sometimes prepends before talking anyway.
 _LEAD_SILENT = re.compile(r"^\s*silent\b[\s:.,;!-]*", re.IGNORECASE)
 # A reply that is only whitespace/punctuation carries no suggestion.
@@ -61,22 +77,25 @@ def clean_suggestion(text: str | None) -> str | None:
     return s
 
 
-async def suggest_from_screen(jpeg_bytes: bytes, model: str = DEFAULT_MODEL) -> str | None:
+async def suggest_from_screen(
+    jpeg_bytes: bytes, model: str = DEFAULT_MODEL, *, stuck: bool = False
+) -> str | None:
     """Ask the vision model for one suggestion about this screenshot, or None.
 
-    `jpeg_bytes` come from `friday.vision.screen.grab_jpeg()`. Any model/transport
-    error is allowed to propagate; the loop wraps the call so a failed tick never
-    crashes the watcher.
+    `jpeg_bytes` come from `friday.vision.screen.grab_jpeg()`. `stuck=True` swaps in the
+    "you've been here a while — are you stuck?" prompt (used when the screen has dwelled).
+    Any model/transport error is allowed to propagate; the loop wraps the call so a failed
+    tick never crashes the watcher.
     """
     shot = base64.b64encode(jpeg_bytes).decode()
     r = await litellm.acompletion(
         model=model,
         messages=[
-            {"role": "system", "content": _SYS},
+            {"role": "system", "content": _SYS_STUCK if stuck else _SYS},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": _USER},
+                    {"type": "text", "text": _USER_STUCK if stuck else _USER},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/jpeg;base64,{shot}"},

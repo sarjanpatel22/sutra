@@ -24,6 +24,9 @@ class WatchConfig:
     cooldown_s: float = 90.0
     change_threshold: int = 8
     daily_cap: int = 40
+    # Seconds on the SAME (unchanged) screen before Sutra checks "are you stuck?".
+    # 0 disables stuck-detection (back to change-only behaviour).
+    dwell_s: float = 60.0
     speak: bool = False
     vision_model: str = _DEFAULT_MODEL
 
@@ -35,6 +38,7 @@ class WatchConfig:
             cooldown_s=_env_float("WATCH_COOLDOWN_S", 90.0),
             change_threshold=_env_int("WATCH_CHANGE_THRESHOLD", 8),
             daily_cap=_env_int("WATCH_DAILY_CAP", 40),
+            dwell_s=_env_float("WATCH_DWELL_S", 60.0),
             speak=_env_bool("WATCH_SPEAK", False),
             vision_model=os.getenv("WATCH_VISION_MODEL", _DEFAULT_MODEL),
         )
@@ -49,6 +53,8 @@ class WatchState:
     count_today: int = 0
     day: date = field(default_factory=date.today)
     recent: list[str] = field(default_factory=list)
+    last_change_ts: float = 0.0       # when the screen last changed (for dwell/stuck timing)
+    stuck_hash: int | None = None     # the screen we've already offered stuck-help for
 
 
 def _env_float(name: str, default: float) -> float:

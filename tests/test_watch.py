@@ -79,6 +79,51 @@ def test_decide_midnight_rollover_resets_count() -> None:
     assert state.day == dt.date.today()
 
 
+# ── stuck / dwell detection (the upgrade: help when you're STUCK, not just when active) ──
+
+def test_decide_stuck_after_dwelling_on_same_screen() -> None:
+    # Unchanged screen, parked here 120s (> 60 dwell) → offer help instead of staying silent.
+    state = WatchState(last_hash=HASH_A, last_change_ts=NOON - 120, last_suggest_ts=NOON - 1000)
+    assert decide_action(state, HASH_A, NOON, CFG) == "stuck"
+
+
+def test_decide_not_stuck_before_dwell_elapses() -> None:
+    # Same screen, but only 20s in (< 60 dwell) → still quiet.
+    state = WatchState(last_hash=HASH_A, last_change_ts=NOON - 20, last_suggest_ts=NOON - 1000)
+    assert decide_action(state, HASH_A, NOON, CFG) == "skip_no_change"
+
+
+def test_decide_stuck_fires_once_per_screen() -> None:
+    # Already offered help for this exact stuck screen → don't nag again.
+    state = WatchState(last_hash=HASH_A, last_change_ts=NOON - 120, last_suggest_ts=NOON - 1000,
+                       stuck_hash=HASH_A)
+    assert decide_action(state, HASH_A, NOON, CFG) == "skip_no_change"
+
+
+def test_decide_change_resets_dwell_and_stuck_latch() -> None:
+    state = WatchState(last_hash=HASH_A, last_change_ts=NOON - 500, stuck_hash=HASH_A,
+                       last_suggest_ts=NOON - 1000)
+    assert decide_action(state, HASH_B, NOON, CFG) == "look"  # activity → normal path
+    assert state.last_change_ts == NOON and state.stuck_hash is None
+
+
+async def test_tick_stuck_uses_stuck_prompt_and_latches() -> None:
+    seen: dict[str, bool] = {}
+
+    async def sug(jpeg: bytes, _model: str, *, stuck: bool = False) -> str | None:
+        seen["stuck"] = stuck
+        return "Try `pip install -e .` — the import fails because the pkg isn't installed."
+
+    notify = _notifier()
+    # same screen as fake_ahash (0b1111_0000), parked 120s → stuck; under cooldown/cap
+    state = WatchState(last_hash=0b1111_0000, last_change_ts=NOON - 120,
+                       last_suggest_ts=NOON - 1000, count_today=0)
+    out = await tick(state, CFG, NOON, suggest_fn=sug, notify_fn=notify)
+    assert seen["stuck"] is True                # used the "are you stuck?" prompt
+    assert out and "pip install" in out         # surfaced concrete help
+    assert state.stuck_hash == 0b1111_0000      # latched — won't nag about this same screen
+
+
 # ── full tick (suggest + notify injected) ───────────────────────────────────────
 
 def _suggester(value: str | None):

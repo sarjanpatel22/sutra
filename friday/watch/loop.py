@@ -2,8 +2,9 @@
 when it genuinely helps, surfaces ONE proactive suggestion.
 
 How it stays useful instead of annoying:
-  • It only looks when the screen actually CHANGED (cheap average-hash gate), so a
-    static/idle screen costs $0 and burns no vision quota.
+  • It looks when the screen CHANGED (cheap average-hash gate) — and ALSO when you've
+    dwelled on the SAME screen too long (WATCH_DWELL_S), which is how it catches you
+    being STUCK (staring at an error) rather than only reacting to activity.
   • A cooldown spaces suggestions out; a daily cap bounds them; a rolling recent
     list drops near-duplicates.
   • The vision prompt is heavily silence-biased — most ticks return SILENT and
@@ -19,6 +20,7 @@ Config (env vars, read at startup; defaults in parens):
   WATCH_COOLDOWN_S (90)        minimum seconds between two surfaced suggestions
   WATCH_CHANGE_THRESHOLD (8)   ahash hamming distance that counts as "changed"
   WATCH_DAILY_CAP (40)         max suggestions per day (resets at local midnight)
+  WATCH_DWELL_S (60)           seconds on the SAME screen before checking "are you stuck?"
   WATCH_SPEAK (0)              if truthy, also speak the suggestion via spd-say
   WATCH_VISION_MODEL           free Groq vision model id
 
@@ -46,7 +48,7 @@ log = logging.getLogger("sutra.watch")
 
 _RECENT_KEEP = 5  # how many past suggestions we compare against for dedupe
 
-SuggestFn = Callable[[bytes, str], Awaitable[str | None]]
+SuggestFn = Callable[..., Awaitable[str | None]]  # (jpeg, model, *, stuck=False) -> suggestion
 NotifyFn = Callable[[str, str], None]
 
 
@@ -66,21 +68,37 @@ def decide_action(state: WatchState, cur_hash: int, now: float, cfg: WatchConfig
     """Decide what this tick should do — pure, no I/O.
 
     Returns one of:
-      "skip_no_change" — screen is static / user idle (don't even look)
-      "skip_cooldown"  — changed, but too soon since the last suggestion
-      "skip_cap"       — changed, but today's suggestion cap is reached
-      "look"           — changed, past cooldown, under cap → grab + ask the model
+      "skip_no_change" — static screen, not dwelled long enough to look "stuck"
+      "skip_cooldown"  — would act, but too soon since the last suggestion
+      "skip_cap"       — would act, but today's suggestion cap is reached
+      "look"           — screen CHANGED → grab + ask for a proactive suggestion
+      "stuck"          — screen UNCHANGED for >= dwell_s → grab + ask "are you stuck?"
 
     Rolls the daily counter over at midnight as a side effect on `state`.
     """
     _roll_day(state, date.fromtimestamp(now))
-    if not screen.changed(state.last_hash, cur_hash, cfg.change_threshold):
+    if screen.changed(state.last_hash, cur_hash, cfg.change_threshold):
+        state.last_change_ts = now  # fresh activity — reset the dwell clock + stuck latch
+        state.stuck_hash = None
+        return _gate(state, now, cfg, "look")
+    # Screen UNCHANGED — has he been parked here long enough to maybe be stuck?
+    if state.last_change_ts == 0.0:
+        state.last_change_ts = now  # first static observation — start the dwell clock
         return "skip_no_change"
+    if cfg.dwell_s <= 0 or now - state.last_change_ts < cfg.dwell_s:
+        return "skip_no_change"
+    if state.stuck_hash == cur_hash:
+        return "skip_no_change"  # already offered help for this exact stuck screen
+    return _gate(state, now, cfg, "stuck")
+
+
+def _gate(state: WatchState, now: float, cfg: WatchConfig, action: str) -> str:
+    """Apply the shared cooldown + daily-cap gate to a would-be action."""
     if now - state.last_suggest_ts < cfg.cooldown_s:
         return "skip_cooldown"
     if state.count_today >= cfg.daily_cap:
         return "skip_cap"
-    return "look"
+    return action
 
 
 def _is_duplicate(state: WatchState, suggestion: str) -> bool:
@@ -114,14 +132,17 @@ async def tick(
     """
     cur = await screen.ahash()
     action = decide_action(state, cur, now, cfg)
-    if action != "look":
+    if action not in ("look", "stuck"):
         state.last_hash = cur
         return None
 
     surfaced: str | None = None
     try:
         jpeg = await screen.grab_jpeg()
-        suggestion = await suggest_fn(jpeg, cfg.vision_model)
+        if action == "stuck":
+            suggestion = await suggest_fn(jpeg, cfg.vision_model, stuck=True)
+        else:
+            suggestion = await suggest_fn(jpeg, cfg.vision_model)
         if suggestion and not _is_duplicate(state, suggestion):
             notify_fn("Sutra", suggestion)
             if cfg.speak:
@@ -137,6 +158,8 @@ async def tick(
         log.warning("watch tick failed", exc_info=True)
     finally:
         state.last_hash = cur
+        if action == "stuck":
+            state.stuck_hash = cur  # don't re-ask about this same stuck screen
     return surfaced
 
 
