@@ -566,7 +566,15 @@ async def push_to_talk_loop(history: list[dict[str, Any]] | None = None) -> None
                 continue
 
             console.print("[cyan]processing…  [/cyan]", end="\r")
-            reply, history, lat, _ = await process_audio(audio, history)
+            try:
+                reply, history, lat, _ = await process_audio(audio, history)
+            except Exception:  # noqa: BLE001 — a transient model/stream error (e.g. a provider
+                # 503 mid-stream) must skip ONE turn, never crash the whole voice session.
+                console.print(
+                    "[yellow]⚠ that turn hiccuped (model busy) — still listening[/yellow]"
+                )
+                await asyncio.sleep(0.3)
+                continue
 
             if reply:
                 # process_audio appends (user transcript, assistant reply) to history,
@@ -803,7 +811,15 @@ async def wake_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
             if len(audio) < 8000:
                 continue
             console.print("[cyan]heard you…[/cyan]", end="\r")
-            reply, history, lat, _ = await process_audio(audio, history)
+            try:
+                reply, history, lat, _ = await process_audio(audio, history)
+            except Exception:  # noqa: BLE001 — a transient model/stream error (e.g. a provider
+                # 503 mid-stream) must skip ONE turn, never crash the whole voice session.
+                console.print(
+                    "[yellow]⚠ that turn hiccuped (model busy) — still listening[/yellow]"
+                )
+                await asyncio.sleep(0.3)
+                continue
             if reply:
                 transcript = history[-2]["content"] if len(history) >= 2 else ""
                 _log_latency(VoiceTurn(transcript=transcript, reply_text=reply[:80], latency=lat))
