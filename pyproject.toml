@@ -66,6 +66,13 @@ all = [
 [project.scripts]
 sutra = "friday.cli:app"
 
+# Without this, setuptools' flat-layout auto-discovery sees friday/, infra/ (SearXNG +
+# systemd config — not Python) and scripts/ as competing top-level packages and refuses
+# to build ("Multiple top-level packages discovered"). A clean `pip install -e .` failed;
+# it only worked locally because the package was already installed. Package just friday*.
+[tool.setuptools.packages.find]
+include = ["friday*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
