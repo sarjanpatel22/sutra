@@ -44,3 +44,13 @@ def test_any_offscope_target_taints_a_compound_command():
     s = parse_scope("10.10.10.5")
     # one in-scope and one out-of-scope host in a single command → the whole thing is off-scope
     assert not command_in_scope("nmap 10.10.10.5 && curl http://evil.com", s)
+
+
+def test_args_in_scope_checks_browser_urls():
+    from friday.core.scope import args_in_scope
+
+    s = parse_scope("10.10.10.5")
+    assert args_in_scope({"goal": "open the room", "start_url": "http://10.10.10.5/"}, s)
+    assert not args_in_scope({"goal": "go", "start_url": "http://evil.com/"}, s)
+    assert not args_in_scope({"url": "https://evil.com/login", "fields": {"a": "b"}}, s)
+    assert args_in_scope({"goal": "no url here"}, s)  # no host referenced → in scope

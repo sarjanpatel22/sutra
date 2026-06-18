@@ -401,7 +401,7 @@ async def run_autonomous(
             [],
         )
 
-    from friday.core.scope import command_in_scope, parse_scope
+    from friday.core.scope import args_in_scope, command_in_scope, parse_scope
     scope_rules = parse_scope(scope)
 
     async def _loop_confirm(skill: str, args: dict[str, Any]) -> bool:
@@ -414,6 +414,9 @@ async def run_autonomous(
                 return True
             return bool(confirm and await confirm(skill, args))
         if skill in _AUTO_HANDS_FREE and skill != "run_command":
+            # The browser family auto-runs too — but not at an off-scope URL.
+            if scope_rules is not None and not args_in_scope(args, scope_rules):
+                return bool(confirm and await confirm(skill, args))
             return True
         return bool(confirm and await confirm(skill, args))
 

@@ -9,8 +9,8 @@ evil.com") can't quietly point the engagement at a box you never authorized.
 Targets are pulled from IPv4 literals, URL hosts (`http://host`), and `user@host`
 (ssh/scp). Loopback / `localhost` are always in scope (local tooling). Limits, documented
 rather than hidden: no DNS resolution (resolving attacker-influenced output is itself an
-injection vector — match hostnames literally), IPv4 only for bare literals, and only the
-`run_command` surface is guarded in v1 (browser-nav targets are a follow-up).
+injection vector — match hostnames literally) and IPv4 only for bare literals. Both
+`run_command` and the browser family (web_task/fill_form start_url/url) are scope-checked.
 """
 
 from __future__ import annotations
@@ -85,3 +85,11 @@ def command_in_scope(command: str, scope: Scope) -> bool:
     target (whoami, cat /etc/passwd) is in scope — there's nothing to leave it for."""
     hosts = extract_hosts(command or "")
     return all(_host_in_scope(h, scope) for h in hosts)
+
+
+def args_in_scope(args: dict[str, object], scope: Scope) -> bool:
+    """True if every host referenced by a skill's STRING arguments is in scope — scope-checks
+    the browser family (web_task/web_task_vision start_url, fill_form url, and any URL in the
+    goal text)."""
+    text = " ".join(v for v in args.values() if isinstance(v, str))
+    return command_in_scope(text, scope)

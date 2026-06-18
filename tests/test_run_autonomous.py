@@ -194,7 +194,7 @@ async def test_scope_guard_escalates_offscope_targets(monkeypatch, tmp_path):
     asked = []
 
     async def _operator(skill, args):
-        asked.append(args.get("command"))
+        asked.append(args.get("command") or args.get("start_url"))
         return True
 
     await agent.run_autonomous("scan", confirm=_operator, scope="10.10.10.5", max_rounds=4)
@@ -202,7 +202,11 @@ async def test_scope_guard_escalates_offscope_targets(monkeypatch, tmp_path):
     assert await lc("run_command", {"command": "nmap -sV 10.10.10.5"}) is True  # in scope → auto
     assert await lc("run_command", {"command": "nmap 8.8.8.8"}) is True         # off-scope → asked
     assert await lc("run_command", {"command": "curl http://evil.com"}) is True  # off-scope → asked
+    # the browser family is scope-checked too, not just run_command (in → auto, off → ask)
+    assert await lc("web_task", {"goal": "x", "start_url": "http://10.10.10.5/"}) is True
+    assert await lc("web_task", {"goal": "x", "start_url": "http://evil.com/"}) is True
     assert "nmap 8.8.8.8" in asked and "curl http://evil.com" in asked
+    assert "http://evil.com/" in asked
     assert "nmap -sV 10.10.10.5" not in asked  # in-scope recon never escalates
 
 
