@@ -401,6 +401,7 @@ async def run_autonomous(
             [],
         )
 
+    from friday.core import dreaming
     from friday.core.scope import args_in_scope, command_in_scope, parse_scope
     scope_rules = parse_scope(scope)
 
@@ -423,7 +424,7 @@ async def run_autonomous(
     registry.autodiscover()
     tools = registry.all_tools()
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": AUTONOMOUS_SYSTEM_PROMPT},
+        {"role": "system", "content": AUTONOMOUS_SYSTEM_PROMPT + dreaming.lessons_block(goal)},
         {"role": "user", "content": goal},
     ]
     nudged = False
@@ -460,6 +461,7 @@ async def run_autonomous(
         reply = reply or f"The engagement stopped early due to an error: {e}"
 
     _save_engagement(goal, messages, reply)
+    dreaming.record_lesson(goal, reply)
     return reply, messages[1:]
 
 

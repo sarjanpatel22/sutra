@@ -3,7 +3,18 @@
 import json
 import types
 
+import pytest
+
 from friday.core import agent
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dreaming(monkeypatch, tmp_path):
+    """Keep run_autonomous's Dreaming off Ollama and out of the real lessons log in tests."""
+    from friday.core import dreaming
+
+    monkeypatch.setattr(dreaming, "_LESSONS", tmp_path / "lessons.jsonl")
+    monkeypatch.setattr(dreaming, "recall_lessons", lambda *a, **k: [])
 
 
 class _Msg:
@@ -223,3 +234,18 @@ def test_looks_risky_flags_persistence_and_spares_recon():
               "ssh -o StrictHostKeyChecking=no t@h", "curl http://target/robots.txt",
               "nmap -oN scan.txt 10.10.10.10", "whoami", "cat /etc/passwd", "nc -lvnp 4444"]:
         assert not agent._looks_risky(c), f"recon should stay clean: {c!r}"
+
+
+async def test_autonomous_records_a_dreaming_lesson(monkeypatch, tmp_path):
+    # Dreaming: a finished engagement leaves a lesson behind for the next similar one.
+    from friday.core import dreaming
+
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    monkeypatch.setattr(agent, "complete", _scripted(
+        _Resp(_Msg(content="enumerating")),
+        _Resp(_Msg(content="rooted via the vsftpd backdoor; flag THM-x")),
+    ))
+    await agent.run_autonomous("pwn 10.10.10.5", max_rounds=3)
+    rows = dreaming._load()
+    assert rows and "vsftpd" in rows[-1]["lesson"]  # the engagement left a lesson for next time
