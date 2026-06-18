@@ -565,6 +565,21 @@ def status() -> None:
 
 
 @app.command()
+def doctor(
+    services: bool = typer.Option(
+        True, "--services/--no-services",
+        help="Also probe live services (Ollama, SearXNG, Redis, …)",
+    ),
+) -> None:
+    """Preflight: check Python deps, system binaries, skills, and services — and print
+    the exact command to fix anything missing. Run this first if something won't work."""
+    from friday.core.doctor import run_doctor
+
+    ok = asyncio.run(run_doctor(services=services))
+    raise typer.Exit(0 if ok else 1)
+
+
+@app.command()
 def monitor(
     interval: int = typer.Option(300, "--interval", "-i", help="Check interval in seconds"),
 ) -> None:
