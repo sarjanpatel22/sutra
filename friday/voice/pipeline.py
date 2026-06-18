@@ -716,9 +716,17 @@ async def vad_listen_loop(history: list[dict[str, Any]] | None = None) -> None:
                 continue
 
             console.print("[cyan]heard you…[/cyan]", end="\r")
-            reply, history, lat, interrupted = await process_audio(
-                audio, history, barge_in=barge_in, stt_result=stt_result
-            )
+            try:
+                reply, history, lat, interrupted = await process_audio(
+                    audio, history, barge_in=barge_in, stt_result=stt_result
+                )
+            except Exception:  # noqa: BLE001 — a transient model/stream error (e.g. a provider
+                # 503 mid-stream) must skip ONE turn, never crash the whole voice session.
+                console.print(
+                    "[yellow]⚠ that turn hiccuped (model busy) — still listening[/yellow]"
+                )
+                await asyncio.sleep(0.3)
+                continue
             if interrupted:
                 console.print("[yellow]⊘ barge-in — stopped speaking[/yellow]")
 
