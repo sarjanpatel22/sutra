@@ -247,6 +247,20 @@ async def process_audio(
     if not transcript:
         return "", history, lat, False
 
+    # Speech-presence gate. Whisper happily transcribes background noise — a TV, music,
+    # a conversation across the room — into plausible-looking text. In VAD/wake mode that
+    # garbage would then fire the deterministic command layer AND a cloud LLM call,
+    # burning rate-limited free-tier quota on nothing (the live "the football kept
+    # triggering it" storm). no_speech_prob is whisper's own "this isn't real speech"
+    # estimate; drop the turn here, before it costs anything, when it's high. Conservative
+    # default (0.85) — well above the 0.6 persistence cutoff — so a real but slightly noisy
+    # command is still processed; VOICE_DROP_NOSPEECH tunes it (>=1.0 disables the gate).
+    drop_nospeech = float(os.getenv("VOICE_DROP_NOSPEECH", "0.85"))
+    if result.no_speech_prob > drop_nospeech:
+        _log.info("STT [%.0fms] dropped non-speech (no_speech=%.2f): %s",
+                  lat.stt_ms, result.no_speech_prob, transcript)
+        return "", history, lat, False
+
     _log.info("STT [%.0fms]: %s", lat.stt_ms, transcript)
 
     # One brain decides: act (cloud function-calling) vs chit-chat (fast local path),

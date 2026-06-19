@@ -66,3 +66,82 @@ async def test_process_text_ignores_blank(local_path):
     history: list[dict] = []
     assert await pipeline.process_text("   ", history) == ""
     assert history == []  # nothing recorded for empty input
+
+
+# --- speech-presence gate: background noise must never reach the LLM ---------------
+
+class _FakeSTT:
+    """Returns a fixed TranscribeResult so process_audio's gate can be exercised offline."""
+
+    def __init__(self, text, no_speech_prob):
+        from friday.voice.stt import TranscribeResult
+
+        self._res = TranscribeResult(
+            text=text, language="en", latency_ms=1.0, segments=[],
+            avg_logprob=-0.3, no_speech_prob=no_speech_prob,
+        )
+
+    def transcribe(self, audio):
+        return self._res
+
+
+@pytest.fixture
+def _spy_agent(monkeypatch):
+    """Record whether the agent / command layer is reached during process_audio."""
+    from friday.core import agent, commands
+
+    reached: list[str] = []
+
+    async def fake_try_command(text, confirm=None):
+        reached.append("try_command")
+        return None
+
+    async def fake_voice_agent_run(*a, **k):
+        reached.append("voice_agent_run")
+        return "should not run"
+
+    async def fake_voice_stream(*a, **k):
+        reached.append("voice_stream")
+        if False:  # make it an async generator
+            yield ""
+
+    monkeypatch.setattr(commands, "try_command", fake_try_command)
+    monkeypatch.setattr(agent, "voice_agent_run", fake_voice_agent_run)
+    monkeypatch.setattr(agent, "voice_stream", fake_voice_stream)
+    monkeypatch.setattr(agent, "cloud_tools_available", lambda: False)
+    monkeypatch.setattr(pipeline, "_get_tts", lambda: _FakeTTS())
+    monkeypatch.setattr(pipeline, "_drive_orb_speaking", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "play_audio", lambda audio, **k: None)
+    return reached
+
+
+@pytest.mark.asyncio
+async def test_process_audio_drops_background_noise(_spy_agent, monkeypatch):
+    """High no_speech_prob (a TV in the background) is dropped BEFORE the command layer or
+    the LLM — the root-cause fix for the rate-limit storm during the live test."""
+    monkeypatch.setattr(pipeline, "_get_stt", lambda: _FakeSTT("crowd cheering noise", 0.96))
+    history: list[dict] = []
+    reply, hist, _lat, interrupted = await pipeline.process_audio(np.zeros(16000), history)
+    assert reply == "" and interrupted is False
+    assert hist == []                 # nothing recorded
+    assert _spy_agent == []           # neither try_command nor the LLM was reached
+
+
+@pytest.mark.asyncio
+async def test_process_audio_processes_real_speech(_spy_agent, monkeypatch):
+    """A confident transcript (low no_speech_prob) passes the gate and reaches the command
+    layer — proving the gate isn't over-eager. A sentinel exception stops execution right
+    at try_command, so the heavy TTS machinery never runs in the test."""
+    monkeypatch.setattr(pipeline, "_get_stt", lambda: _FakeSTT("open firefox", 0.05))
+
+    class _Reached(Exception):
+        pass
+
+    async def boom(text, confirm=None):
+        raise _Reached  # "open firefox" → decide(act=True) → try_command reached past the gate
+
+    from friday.core import commands
+    monkeypatch.setattr(commands, "try_command", boom)
+
+    with pytest.raises(_Reached):
+        await pipeline.process_audio(np.zeros(16000), [])
