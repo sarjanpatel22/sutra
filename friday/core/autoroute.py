@@ -90,8 +90,21 @@ _SCREEN = re.compile(
 # extension) so a verb alone can't fire it: "write a poem", "read a book", "make dinner"
 # stay chat — only a real file target acts. ('open … file' already acts via _ACTION.)
 _FILEOP = re.compile(
-    r"\b(?:read|create|make|write|save|delete|remove|edit|append|rename)\b"
-    r"[^.?!]*\b(?:files?|folders?|director(?:y|ies)|\.txt|\.md|\.py|\.json|\.csv|\.log)\b",
+    r"\b(?:read|create|make|write|save|delete|remove|edit|append|rename|list)\b"
+    r"[^.?!]*\b(?:files?|folders?|director(?:y|ies)|contents|\.txt|\.md|\.py|\.json|\.csv|\.log)\b"
+    r"|\bwhat\s+files?\b",  # "what files are in my downloads" → list_directory
+    re.I,
+)
+
+# Dev / tooling commands with strong, unambiguous anchors. 'vpn' and 'git' in a sentence
+# almost always mean a command (his pentest/dev workflow), so they act on their own;
+# 'commit'/'review' act only with a code/changes object, so "I committed to it" and
+# "review the menu" stay chat. These verbs aren't in _ACTION, so they fell to chit-chat.
+_DEV = re.compile(
+    r"\bvpn\b"
+    r"|\bgit\s+(?:status|diff|log|commit|push|pull|add|stash|branch|checkout|clone|show)\b"
+    r"|\bcommit\b[^.?!]*\b(?:changes?|code|files?|work|repo|staged)\b"
+    r"|\breview\b[^.?!]*\b(?:code|diff|changes?|commit|repo|pull request)\b",
     re.I,
 )
 
@@ -207,7 +220,9 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
     paid = _paid_ok()
 
     coding = bool(_CODE.search(t))
-    action = bool(_ACTION.search(t) or _SCREEN.search(t) or _FILEOP.search(t))
+    action = bool(
+        _ACTION.search(t) or _SCREEN.search(t) or _FILEOP.search(t) or _DEV.search(t)
+    )
     is_url = bool(_URL.search(t))
     task = bool(_TASK.search(t))
     high = bool(

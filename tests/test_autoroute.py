@@ -104,6 +104,39 @@ def test_file_operation_lookalikes_stay_chat(text):
 
 
 @pytest.mark.parametrize("text", [
+    # vpn (his pentest workflow) — strong unambiguous anchor
+    "disconnect the vpn", "is the vpn up", "what's the vpn status",
+    # git / dev — anchored to a subcommand or a code/changes object
+    "what's my git status", "show me the git diff", "commit my changes",
+    "commit all my code", "review my code changes", "review the diff",
+    # list-directory
+    "list the files in this folder", "what files are in my downloads",
+    "list the contents of this directory",
+])
+def test_dev_and_listing_commands_route_agentic(text):
+    # These need vpn/git/code_review/list_directory but carry no open/go verb, so they
+    # used to fall to chit-chat. Must act now.
+    d = decide(text)
+    assert d.act is True and d.tool_required is True
+
+
+@pytest.mark.parametrize("text", [
+    "I committed to the gym this year",
+    "let's review the menu",
+    "review what we discussed",
+    "the git was confusing",
+    "git is hard to learn",
+    "list your favorite movies",
+    "I need to commit to studying",
+    "review my essay for grammar",
+])
+def test_dev_lookalikes_stay_chat(text):
+    # 'commit'/'review' without a code object, and 'git' not followed by a subcommand,
+    # must stay chat — no false action.
+    assert decide(text).act is False
+
+
+@pytest.mark.parametrize("text", [
     "go to tryhackme.com and start the first room",
     "open https://news.ycombinator.com and tell me the top story",
     "log in to my account and book the appointment",
