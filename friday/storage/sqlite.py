@@ -61,8 +61,12 @@ class Store:
             return cur.rowcount > 0
 
     def keys(self, prefix: str = "") -> list[str]:
+        # Escape LIKE metacharacters so a prefix containing _ or % (common in keys like
+        # "user_pref") matches literally instead of as a wildcard. The trailing % is the
+        # only real wildcard — the actual prefix match.
+        esc = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         cur = self._conn.execute(
-            "SELECT key FROM kv WHERE key LIKE ? ORDER BY key", (f"{prefix}%",)
+            "SELECT key FROM kv WHERE key LIKE ? ESCAPE '\\' ORDER BY key", (f"{esc}%",)
         )
         return [r[0] for r in cur.fetchall()]
 
