@@ -61,6 +61,32 @@ def test_unknown_paid_model_uses_default_rate():
     assert cost == pytest.approx(0.020)
 
 
+def test_record_accounts_for_cache_read_discount():
+    # A mostly-cached Claude turn bills the cached reads at ~10%, so it costs far less
+    # than the same token count at full price (the budget must match the real console).
+    b = _tracker()
+    cached = b.record("claude-sonnet-4-6", 10_000, 100, cache_read=9_000)
+    full = _tracker().record("claude-sonnet-4-6", 10_000, 100)
+    # full: 10k in @0.003 + 100 out @0.015 = 0.0315
+    assert full == pytest.approx(0.0315)
+    # cached: 1k normal @0.003 + 9k @10%*0.003 + 100 out @0.015 = (3 + 2.7 + 1.5)/1000
+    assert cached == pytest.approx(0.0072)
+    assert cached < full
+
+
+def test_record_cache_write_billed_at_premium():
+    b = _tracker()
+    # cache WRITE bills at 125%: 2k normal @0.003 + 8k @1.25*0.003 = (6 + 30)/1000
+    cost = b.record("claude-sonnet-4-6", 10_000, 0, cache_write=8_000)
+    assert cost == pytest.approx(0.036)
+
+
+def test_record_without_cache_args_is_unchanged():
+    # Back-compat: the old (model, in, out) call path bills exactly as before.
+    b = _tracker()
+    assert b.record("claude-sonnet-4-6", 1000, 100) == pytest.approx(0.0045)
+
+
 def test_model_name_typo_is_safe():
     """A model-name typo must never throw, and must never silently fake $0.
 

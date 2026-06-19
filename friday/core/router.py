@@ -112,6 +112,15 @@ _COST_PER_1K: dict[str, tuple[float, float]] = {
 # Guards against silently charging the default rate on a model-name typo.
 _FREE_PREFIXES = ("ollama/", "ollama_chat/", "groq/", "gemini/")
 
+
+def _cache_token_counts(usage: Any) -> tuple[int, int]:
+    """(cache_read, cache_write) token counts from a litellm usage object — non-zero only
+    for Anthropic prompt-cached calls. Used to bill cached tokens at their real (discounted)
+    rate instead of full price, so the budget tracker matches the provider console."""
+    read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    return int(read), int(write)
+
 # Local models that cannot accept a tools array AT ALL — Ollama hard-rejects the
 # request ("does not support tools"). Matched as a substring of the model id. Every
 # OTHER local model (qwen2.5, llama3.x) emits real tool_calls, so it KEEPS its tools
@@ -272,14 +281,30 @@ class BudgetTracker:
             self._month_start = time.time()
             self._monthly_alert_fired = False
 
-    def record(self, model: str, input_tokens: int, output_tokens: int) -> float:
+    def record(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read: int = 0,
+        cache_write: int = 0,
+    ) -> float:
         self._reset_day_if_needed()
         self._reset_month_if_needed()
         if model.startswith(_FREE_PREFIXES):
             cost_in, cost_out = 0.0, 0.0
         else:
             cost_in, cost_out = _COST_PER_1K.get(model, (0.005, 0.015))
-        cost = (input_tokens / 1000) * cost_in + (output_tokens / 1000) * cost_out
+        # Anthropic prompt caching: cached READS bill at ~10% and cache WRITES at 125%, the
+        # rest at full rate. prompt_tokens is inclusive of both, so split it out — otherwise
+        # the tracker over-bills a cached agentic turn vs. the real console spend.
+        normal_in = max(0, input_tokens - cache_read - cache_write)
+        cost = (
+            normal_in * cost_in
+            + cache_write * cost_in * 1.25
+            + cache_read * cost_in * 0.10
+            + output_tokens * cost_out
+        ) / 1000
         total_tokens = input_tokens + output_tokens
         self._daily_spent += cost
         self._monthly_spent += cost
@@ -352,10 +377,13 @@ async def _tracked_stream(response: Any, model: str) -> AsyncIterator[Any]:
     async for chunk in response:
         usage = getattr(chunk, "usage", None)
         if usage:
+            cr, cw = _cache_token_counts(usage)
             _budget.record(
                 model,
                 getattr(usage, "prompt_tokens", 0),
                 getattr(usage, "completion_tokens", 0),
+                cache_read=cr,
+                cache_write=cw,
             )
         yield chunk
 
@@ -464,10 +492,13 @@ async def complete(
                 return _tracked_stream(response, model)
             usage = getattr(response, "usage", None)
             if usage:
+                cr, cw = _cache_token_counts(usage)
                 _budget.record(
                     model,
                     getattr(usage, "prompt_tokens", 0),
                     getattr(usage, "completion_tokens", 0),
+                    cache_read=cr,
+                    cache_write=cw,
                 )
             return response
         except Exception as e:  # noqa: BLE001
