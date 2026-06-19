@@ -3,20 +3,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
 from friday.skills.registry import skill
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080")
-
-
-@dataclass
-class SearchResult:
-    title: str
-    url: str
-    snippet: str
 
 
 @skill(
@@ -27,7 +20,7 @@ class SearchResult:
     auto_confirm=True,
     timeout_s=10,
 )
-async def web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+async def web_search(query: str, max_results: int = 5) -> list[dict[str, str]] | dict[str, Any]:
     """Search the web.
 
     query: Search query string.
@@ -40,16 +33,19 @@ async def web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
         "categories": "general",
         "language": "en",
     }
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(f"{SEARXNG_URL}/search", params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{SEARXNG_URL}/search", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:  # noqa: BLE001 — return the error to the model, don't crash the turn
+        return {"error": f"web search failed (is SearXNG running?): {e}", "query": query}
 
-    results = []
-    for item in data.get("results", [])[:max_results]:
-        results.append({
+    return [
+        {
             "title": item.get("title", ""),
             "url": item.get("url", ""),
             "snippet": item.get("content", ""),
-        })
-    return results
+        }
+        for item in data.get("results", [])[:max_results]
+    ]
