@@ -79,6 +79,21 @@ def test_approve_moves_pending_then_reject(monkeypatch, tmp_path):
     assert skillsmith.reject_skill("bar") is False
 
 
+def test_name_path_traversal_is_rejected(monkeypatch, tmp_path):
+    # A crafted name must not let approve/reject/read escape the pending/user dirs.
+    monkeypatch.setattr(skillsmith, "_PENDING_DIR", tmp_path / "pending")
+    monkeypatch.setattr(skillsmith, "USER_SKILLS_DIR", tmp_path / "user")
+    (tmp_path / "pending").mkdir()
+    # plant a file one level up that a traversal name would target
+    (tmp_path / "secret.py").write_text("SECRET")
+    for bad in ["../secret", "../../etc/passwd", "a/b", "a.b", "a b", "..", ""]:
+        assert skillsmith.approve_skill(bad) is None
+        assert skillsmith.reject_skill(bad) is False
+        assert skillsmith.read_pending(bad) is None
+    assert (tmp_path / "secret.py").read_text() == "SECRET"   # untouched
+    assert not (tmp_path / "user").exists()                   # nothing was promoted
+
+
 def test_registry_loads_an_approved_user_skill(monkeypatch, tmp_path):
     monkeypatch.setattr(registry, "USER_SKILLS_DIR", tmp_path)
     monkeypatch.setattr(registry, "_loaded_user", set())

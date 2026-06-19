@@ -21,6 +21,15 @@ from friday.skills.registry import USER_SKILLS_DIR
 _PENDING_DIR = Path.home() / ".local" / "share" / "friday" / "pending_skills"
 _log = logging.getLogger(__name__)
 
+# A skill name is a plain identifier. draft_skill only ever generates names in this charset,
+# so this also blocks a crafted name (e.g. "../../etc/x") from traversing out of the dirs.
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _pending_path(name: str) -> Path | None:
+    """Pending-skill path for `name`, or None if `name` isn't a plain skill identifier."""
+    return _PENDING_DIR / f"{name}.py" if _SAFE_NAME.match(name or "") else None
+
 DRAFT_SYSTEM_PROMPT = (
     "You write ONE self-contained Python module defining a single Sutra skill. Output ONLY the "
     "code — no prose, no markdown fences. Follow this template exactly:\n\n"
@@ -112,14 +121,14 @@ def list_pending() -> list[str]:
 
 
 def read_pending(name: str) -> str | None:
-    p = _PENDING_DIR / f"{name}.py"
-    return p.read_text() if p.is_file() else None
+    p = _pending_path(name)
+    return p.read_text() if p and p.is_file() else None
 
 
 def approve_skill(name: str) -> Path | None:
     """Promote a pending skill into the user-skills dir (loads next run). Your explicit go."""
-    src = _PENDING_DIR / f"{name}.py"
-    if not src.is_file():
+    src = _pending_path(name)
+    if not src or not src.is_file():
         return None
     USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     dst = USER_SKILLS_DIR / f"{name}.py"
@@ -130,8 +139,8 @@ def approve_skill(name: str) -> Path | None:
 
 def reject_skill(name: str) -> bool:
     """Discard a pending draft."""
-    p = _PENDING_DIR / f"{name}.py"
-    if p.is_file():
+    p = _pending_path(name)
+    if p and p.is_file():
         p.unlink()
         return True
     return False
