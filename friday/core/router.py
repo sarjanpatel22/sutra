@@ -137,6 +137,15 @@ def _prefer_local_tools(tiers: list[Tier]) -> list[Tier]:
         out.append(t)
     return out
 
+
+def _local_tools_first() -> bool:
+    """Prefer the local tool-capable model (qwen2.5:7b) for ACTION/tool turns, so they never
+    rate-limit — $0 and quota-proof, with cloud (and Claude, if paid) as the fallback when the
+    local model is down or fails. Default ON; set ROUTER_LOCAL_TOOLS_FIRST=0 to go back to
+    cloud-first (faster and stronger, but subject to free-tier daily caps)."""
+    val = os.getenv("ROUTER_LOCAL_TOOLS_FIRST", "1").strip().lower()
+    return val not in ("", "0", "false", "no")
+
 # Registered alert callbacks: fn(scope, pct_used) where scope is "daily"|"monthly"
 _alert_callbacks: list[Callable[[str, float], None]] = []
 
@@ -361,8 +370,16 @@ async def complete(
         # so a fully rate-limited tool turn still acts instead of just narrating.
         fallback = _prefer_local_tools(fallback)
 
+    tier_order = [primary, *fallback]
+    # Local-first for ACTION turns: try the quota-proof local tool model (qwen2.5:7b) BEFORE
+    # the free cloud tier, so actions never hit a daily rate cap. Cloud (and Claude, if paid)
+    # remain as fallbacks when the local model is down or fails. Default on — see
+    # _local_tools_first (ROUTER_LOCAL_TOOLS_FIRST=0 restores cloud-first).
+    if tools and primary == Tier.MEDIUM and _local_tools_first():
+        tier_order = [Tier.LOCAL_TOOLS, *tier_order]
+
     models: list[str] = []
-    for tr in [primary, *fallback]:
+    for tr in tier_order:
         for m in TIER_MODELS[tr]:
             if m not in models:
                 models.append(m)

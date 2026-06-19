@@ -302,12 +302,13 @@ def _recording_acompletion(calls, *, fail_substrings):
 
 @pytest.mark.asyncio
 async def test_complete_strips_tools_per_model_and_prefers_qwen(monkeypatch):
-    """On a tool turn with every CLOUD model down, the router must:
+    """In CLOUD-FIRST mode, on a tool turn with every CLOUD model down, the router must:
       * pass the tools array to the cloud models it tries,
       * fall back to qwen (LOCAL_TOOLS) and keep its tools,
       * reach qwen BEFORE any gemma model.
     qwen succeeds here, so gemma is never reached (correct: the action fired).
     """
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")  # this test covers cloud-first fallback
     calls: list[dict] = []
     # Fail every cloud model (groq/gemini/claude); ollama models succeed.
     fake = _recording_acompletion(calls, fail_substrings=("groq/", "gemini/", "claude"))
@@ -372,6 +373,71 @@ async def test_complete_strips_tools_for_gemma_when_qwen_also_down(monkeypatch):
     qwen_idx = models.index(qwen["model"])
     gemma_idx = models.index(gemma["model"])
     assert qwen_idx < gemma_idx, "qwen must be tried before gemma"
+
+
+@pytest.mark.asyncio
+async def test_local_tools_first_default_tries_qwen_before_cloud(monkeypatch):
+    """DEFAULT (local-first): an ACTION/tool turn tries the local qwen FIRST and, when it
+    succeeds, never touches a rate-limited cloud model — actions stay $0 and quota-proof."""
+    monkeypatch.delenv("ROUTER_LOCAL_TOOLS_FIRST", raising=False)  # unset → default ON
+    calls: list[dict] = []
+    fake = _recording_acompletion(calls, fail_substrings=())  # everything succeeds
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    resp = await router.complete(
+        [{"role": "user", "content": "open youtube"}], tier=Tier.MEDIUM, tools=[_FAKE_TOOL]
+    )
+    assert resp.choices[0].message.content == "ok"
+    # qwen2.5 (local) was the FIRST and ONLY call — no cloud model was reached.
+    assert calls[0]["model"].startswith("ollama_chat/qwen2.5")
+    assert not any(
+        c["model"].startswith(("groq/", "gemini/")) or "claude" in c["model"] for c in calls
+    ), "local-first action turn must not reach a rate-limited cloud model when local works"
+    assert calls[0]["tools"] == [_FAKE_TOOL]  # local model still gets the tools
+
+
+@pytest.mark.asyncio
+async def test_local_tools_first_falls_back_to_cloud_when_local_down(monkeypatch):
+    """Local-first is safe: if the local model is down (Ollama off), the action turn still
+    completes by falling back to the cloud tier."""
+    monkeypatch.delenv("ROUTER_LOCAL_TOOLS_FIRST", raising=False)  # default ON
+    calls: list[dict] = []
+    fake = _recording_acompletion(calls, fail_substrings=("ollama",))  # local down, cloud up
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    resp = await router.complete(
+        [{"role": "user", "content": "open youtube"}], tier=Tier.MEDIUM, tools=[_FAKE_TOOL]
+    )
+    assert resp.choices[0].message.content == "ok"
+    assert calls[0]["model"].startswith("ollama_chat/qwen2.5"), "local is tried first"
+    assert any(c["model"].startswith("groq/") for c in calls), "then falls back to cloud"
+
+
+@pytest.mark.asyncio
+async def test_local_tools_first_does_not_affect_chat_turns(monkeypatch):
+    """Local-first is for ACTIONS only: a no-tools chat turn is unaffected — it still uses
+    the cloud tier first (kept for chat quality)."""
+    monkeypatch.delenv("ROUTER_LOCAL_TOOLS_FIRST", raising=False)  # default ON
+    calls: list[dict] = []
+    fake = _recording_acompletion(calls, fail_substrings=())
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    await router.complete([{"role": "user", "content": "how are you?"}], tier=Tier.MEDIUM)
+    assert calls[0]["model"].startswith("groq/"), "chat turns stay cloud-first (no tools)"
+
+
+@pytest.mark.asyncio
+async def test_local_tools_first_disabled_is_cloud_first(monkeypatch):
+    """ROUTER_LOCAL_TOOLS_FIRST=0 restores the old cloud-first behavior for action turns."""
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")
+    calls: list[dict] = []
+    fake = _recording_acompletion(calls, fail_substrings=())
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+
+    await router.complete(
+        [{"role": "user", "content": "open youtube"}], tier=Tier.MEDIUM, tools=[_FAKE_TOOL]
+    )
+    assert calls[0]["model"].startswith("groq/"), "cloud-first when the flag is off"
 
 
 @pytest.mark.asyncio
