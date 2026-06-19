@@ -71,14 +71,15 @@ async def test_process_text_ignores_blank(local_path):
 # --- speech-presence gate: background noise must never reach the LLM ---------------
 
 class _FakeSTT:
-    """Returns a fixed TranscribeResult so process_audio's gate can be exercised offline."""
+    """A stand-in STT whose transcribe() returns a fixed result. Deliberately does NOT
+    import friday.voice.stt (that pulls in faster_whisper, absent in CI) — process_audio
+    only reads .text/.no_speech_prob/.avg_logprob, so a SimpleNamespace is enough."""
 
     def __init__(self, text, no_speech_prob):
-        from friday.voice.stt import TranscribeResult
+        import types
 
-        self._res = TranscribeResult(
-            text=text, language="en", latency_ms=1.0, segments=[],
-            avg_logprob=-0.3, no_speech_prob=no_speech_prob,
+        self._res = types.SimpleNamespace(
+            text=text, no_speech_prob=no_speech_prob, avg_logprob=-0.3,
         )
 
     def transcribe(self, audio):
