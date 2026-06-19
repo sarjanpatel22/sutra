@@ -76,6 +76,11 @@ TIER_MODELS: dict[Tier, list[str]] = {
     # plus Gemini, so a rate-limited model rolls to a FRESH one that can still call
     # tools, instead of collapsing to the local model (which can't function-call).
     Tier.MEDIUM: [
+        # Stronger function-callers, each its own Groq quota bucket → better answers AND
+        # more rate-limit headroom (one exhausting rolls to the next FRESH bucket). Kimi
+        # isn't hosted on Groq, so these qwen3 models are the realistic "bigger brain" pick.
+        "groq/qwen/qwen3-32b",
+        "groq/qwen/qwen3.6-27b",
         "groq/llama-3.3-70b-versatile",
         "groq/openai/gpt-oss-120b",
         "groq/meta-llama/llama-4-scout-17b-16e-instruct",
