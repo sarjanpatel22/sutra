@@ -124,6 +124,39 @@ async def test_close_generic_returns_none(fakes: dict[str, _Recorder]) -> None:
     assert fakes["close_window"].calls == []
 
 
+async def test_close_respects_confirm_decline(fakes: dict[str, _Recorder]) -> None:
+    # close_window is GATED — a confirm hook that declines must stop the close.
+    async def deny(_name: str, _args: dict[str, Any]) -> bool:
+        return False
+
+    out = await commands.try_command("close firefox", confirm=deny)
+    assert out is not None and out["skill"] == "close_window"
+    assert out["result"] == {"status": "declined"}
+    assert fakes["close_window"].calls == []  # never closed
+
+
+async def test_close_runs_when_confirm_approves(fakes: dict[str, _Recorder]) -> None:
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def allow(name: str, args: dict[str, Any]) -> bool:
+        seen.append((name, args))
+        return True
+
+    out = await commands.try_command("close firefox", confirm=allow)
+    assert out is not None and out["spoken"] == "Closing firefox."
+    assert fakes["close_window"].calls == [("firefox",)]
+    assert seen == [("close_window", {"title": "firefox"})]  # gate was consulted
+
+
+async def test_open_is_not_gated_by_confirm(fakes: dict[str, _Recorder]) -> None:
+    # open_app is auto-confirm; a declining hook must NOT block it (only close is gated).
+    async def deny(_name: str, _args: dict[str, Any]) -> bool:
+        return False
+
+    out = await commands.try_command("open firefox", confirm=deny)
+    assert out is not None and fakes["open_app"].calls == [("firefox",)]
+
+
 async def test_focus_window(fakes: dict[str, _Recorder]) -> None:
     out = await commands.try_command("switch to my editor")
     assert out is not None

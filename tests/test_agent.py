@@ -189,6 +189,84 @@ async def test_unforced_text_reply_unchanged(_no_memory, monkeypatch):
     assert out == "It's about three o'clock."
 
 
+# --- deterministic command short-circuit on the TEXT path (parity with voice) -----
+
+@pytest.fixture
+def _quiet(_no_memory, monkeypatch):
+    """Silence persistence + turn logging so run() is deterministic and side-effect-free."""
+    monkeypatch.setattr(agent, "persist_turn_async", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "log_text_turn", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "log_turn", lambda *a, **k: None)
+
+
+async def test_run_open_command_acts_without_calling_the_llm(_quiet, monkeypatch):
+    """'open notepad' on the text path must RUN the skill deterministically and never
+    reach the LLM — the live bug was the model NARRATING 'opening notepad' while nothing
+    happened, because the text path (unlike voice) didn't run the deterministic layer."""
+    from friday.core import commands
+
+    opened: list[str] = []
+
+    async def fake_open_app(name):
+        opened.append(name)
+        return {"status": "launched", "app": name}
+
+    monkeypatch.setattr(commands, "open_app", fake_open_app)
+
+    llm_calls = {"n": 0}
+
+    async def fake_complete(messages, **kwargs):
+        llm_calls["n"] += 1
+        return _resp(content="should never be reached")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+
+    reply, history = await agent.run("open notepad")
+    assert reply == "Opening notepad."
+    assert opened == ["notepad"]            # the skill actually ran
+    assert llm_calls["n"] == 0              # the LLM was never called — it ACTED, not narrated
+    assert history[-1] == {"role": "assistant", "content": "Opening notepad."}
+
+
+async def test_run_close_threads_confirm_hook(_quiet, monkeypatch):
+    """A gated close on the text path honors the confirm hook, so `sutra chat` still asks
+    before closing (the deterministic path must not bypass the confirmation gate)."""
+    from friday.core import commands
+
+    closed: list[str] = []
+
+    async def fake_close(title):
+        closed.append(title)
+        return {"status": "closed"}
+
+    monkeypatch.setattr(commands, "close_window", fake_close)
+
+    async def fake_complete(messages, **kwargs):
+        raise AssertionError("LLM must not be reached on a deterministic command")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+
+    async def deny(name, args):
+        return False
+
+    reply, _ = await agent.run("close firefox", confirm=deny)
+    assert closed == []                     # declined → window never closed
+    assert "leave firefox open" in reply.lower()
+
+
+async def test_run_non_command_still_falls_through_to_llm(_quiet, monkeypatch):
+    """Regression guard: a conversational turn is NOT a command, so it still reaches the
+    LLM exactly as before — the short-circuit must be conservative."""
+    async def fake_complete(messages, **kwargs):
+        return _resp(content="I'm doing well, thanks for asking!")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    monkeypatch.setattr(agent.registry, "all_tools", lambda: [])
+
+    reply, _ = await agent.run("how are you doing today?")
+    assert reply == "I'm doing well, thanks for asking!"
+
+
 def test_system_prompt_directs_code_for_hard_computation() -> None:
     # Measured lever (2026-06-14): raw 70B reasoning fails hard combinatorics
     # (coin-change), and self-consistency just amplifies the wrong answer — but the

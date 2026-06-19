@@ -14,11 +14,18 @@ positives (acting on a conversational phrase) are not.
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from friday.skills.apps import open_app
 from friday.skills.desktop import open_url
 from friday.skills.windows import close_window, focus_window, list_windows
+
+# Optional confirm hook: async (skill_name, args) -> bool. Consulted before a GATED
+# command (close_window) runs, so the deterministic path still honors the confirmation
+# gate when a caller provides one (e.g. `sutra chat`). None = run without asking, which
+# preserves the voice path's existing behavior (an explicit spoken imperative).
+ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
 
 # Leading filler ("hey sutra, can you please open firefox") stripped before matching.
 _FILLER_PREFIX = re.compile(
@@ -150,11 +157,14 @@ def _result(spoken: str, skill: str, result: dict[str, Any]) -> dict[str, Any]:
     return {"spoken": spoken, "skill": skill, "result": result}
 
 
-async def try_command(text: str) -> dict[str, Any] | None:
+async def try_command(text: str, confirm: ConfirmFn | None = None) -> dict[str, Any] | None:
     """Match `text` against known direct commands and run the matching skill.
 
     Returns {"spoken": str, "skill": str, "result": dict} on a confident match,
     else None so the caller falls through to the LLM tool-calling path.
+
+    confirm: optional async (skill_name, args) -> bool, consulted before a GATED
+    command (close_window) runs. None → run without asking (voice's behavior).
     """
     if not text or not text.strip():
         return None
@@ -213,6 +223,10 @@ async def try_command(text: str) -> dict[str, Any] | None:
             return None
         if _is_sentence_like(obj):  # "close X and open Y" → LLM, not a blind close
             return None
+        # close_window is GATED (irreversible — unsaved work). Honor a caller's confirm
+        # hook before closing; without one, run (parity with the voice path).
+        if confirm is not None and not await confirm("close_window", {"title": obj}):
+            return _result(f"Okay, I'll leave {obj} open.", "close_window", {"status": "declined"})
         result = await _safe(close_window, obj)
         return _result(f"Closing {obj}.", "close_window", result)
 

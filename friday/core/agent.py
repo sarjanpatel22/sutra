@@ -176,6 +176,25 @@ async def run(
         ]
         return answer, new_history
 
+    # Deterministic command short-circuit (parity with the voice path, which already
+    # does this in voice/pipeline.py). An unambiguous imperative — "open notepad",
+    # "open youtube", "close firefox", "switch to firefox" — runs the matching skill
+    # directly and skips the LLM. Instant, $0, and immune to a model that NARRATES the
+    # action instead of calling the tool (the live "it said it opened it but nothing
+    # happened" bug on the text path). Conservative: any doubt returns None → LLM.
+    from friday.core.commands import try_command
+
+    cmd = await try_command(user_input, confirm=confirm)
+    if cmd is not None:
+        reply = cmd["spoken"]
+        persist_turn_async(user_input, reply, source="conversation")
+        new_history = list(history or [])
+        new_history += [
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": reply},
+        ]
+        return reply, new_history
+
     registry.autodiscover()
     # Local Ollama models (gemma) emit tool calls as malformed text rather than
     # proper tool_calls — it leaked raw JSON as the answer. Only the cloud tiers,
