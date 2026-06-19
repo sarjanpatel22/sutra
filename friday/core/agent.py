@@ -21,6 +21,13 @@ from friday.skills import registry
 
 _log = logging.getLogger("sutra.agent")
 
+# Tier capability rank — used to ESCALATE a turn to autoroute's chosen tier without ever
+# downgrading an explicit higher --tier (max() by this rank).
+_TIER_RANK: dict[Tier, int] = {
+    Tier.LOCAL: 0, Tier.LOCAL_TOOLS: 1, Tier.REASON: 2, Tier.CODE: 3,
+    Tier.MEDIUM: 4, Tier.HEAVY: 5, Tier.MAX: 6,
+}
+
 # Confirmation hook: given (skill_name, args), return True to allow an
 # auto_confirm=False (irreversible) skill to run. None = always decline.
 ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
@@ -164,7 +171,8 @@ async def run(
     # loop. Off by default → this is a no-op and run() behaves exactly as before.
     from friday.core import autoroute
 
-    if autoroute.decide(user_input).council:
+    plan = autoroute.decide(user_input)
+    if plan.council:
         from friday.core.council import convene
 
         answer = (await convene(user_input)).answer
@@ -194,6 +202,14 @@ async def run(
             {"role": "assistant", "content": reply},
         ]
         return reply, new_history
+
+    # Auto-route by effort: a high-effort / big multi-step turn uses the strongest tier
+    # autoroute picked (Claude when ROUTER_ALLOW_PAID is on, else the free cloud 70B) — and
+    # goes cloud-first, NOT local-first, since the small local model can't carry a big task
+    # (measured: it writes placeholder files). Only ESCALATES — an explicit higher --tier is
+    # kept; a quick/low turn is unchanged. So big goals reach Claude without -t max.
+    tier = max(tier, plan.tier, key=lambda t: _TIER_RANK.get(t, _TIER_RANK[Tier.MEDIUM]))
+    local_first = False if plan.effort == "high" else None
 
     registry.autodiscover()
     # Local Ollama models (gemma) emit tool calls as malformed text rather than
@@ -254,7 +270,9 @@ async def run(
 
     try:
         for _ in range(max_tool_rounds):
-            response = await complete(messages, tier=tier, tools=tools or None)
+            response = await complete(
+                messages, tier=tier, tools=tools or None, local_tools_first=local_first
+            )
             _account(response)
             msg = response.choices[0].message
             messages.append(

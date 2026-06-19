@@ -385,6 +385,7 @@ async def complete(
     max_tokens: int = 2048,
     tools: list[dict[str, Any]] | None = None,
     free_only: bool = False,
+    local_tools_first: bool | None = None,
     **kwargs: Any,
 ) -> Any:
     """Route a completion through the tier's model chain with automatic fallback.
@@ -393,6 +394,10 @@ async def complete(
     limited) it falls through to _FALLBACK_TIERS so the turn still completes. A turn
     that needs tools and hits a rate-limited free tier escalates to Claude (reliable
     function-calling, budget-permitting) before the weaker local model.
+
+    local_tools_first overrides the ROUTER_LOCAL_TOOLS_FIRST default for this call:
+    None = use the env default, False = go cloud-first (used for high-effort/big tasks,
+    which the small local model can't carry), True = force local-first.
     """
     primary = tier
     # The $0 chokepoint: a paid tier (HEAVY/MAX) drops to the free MEDIUM tier UNLESS paid
@@ -419,7 +424,8 @@ async def complete(
     # the free cloud tier, so actions never hit a daily rate cap. Cloud (and Claude, if paid)
     # remain as fallbacks when the local model is down or fails. Default on — see
     # _local_tools_first (ROUTER_LOCAL_TOOLS_FIRST=0 restores cloud-first).
-    if tools and primary == Tier.MEDIUM and _local_tools_first():
+    use_local_first = _local_tools_first() if local_tools_first is None else local_tools_first
+    if tools and primary == Tier.MEDIUM and use_local_first:
         tier_order = [Tier.LOCAL_TOOLS, *tier_order]
 
     models: list[str] = []

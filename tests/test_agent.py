@@ -11,6 +11,7 @@ import types
 import pytest
 
 from friday.core import agent
+from friday.core.router import Tier
 from friday.skills import registry
 
 
@@ -265,6 +266,49 @@ async def test_run_non_command_still_falls_through_to_llm(_quiet, monkeypatch):
 
     reply, _ = await agent.run("how are you doing today?")
     assert reply == "I'm doing well, thanks for asking!"
+
+
+# --- auto-route by effort: big tasks escalate to the strong tier, cloud-first -------
+
+async def test_run_auto_escalates_high_effort_tier(_quiet, monkeypatch):
+    """A high-effort turn uses autoroute's stronger tier (Claude when paid) and goes
+    cloud-first (local_tools_first=False), so big tasks don't degrade to the local 7B."""
+    from friday.core import autoroute
+    from friday.core.autoroute import Decision
+
+    captured: dict = {}
+
+    async def fake_complete(messages, tier=None, tools=None, local_tools_first=None, **kw):
+        captured.update(tier=tier, lf=local_tools_first)
+        return _resp(content="done")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    decision = Decision(True, Tier.HEAVY, "high", "big", tool_required=True)
+    monkeypatch.setattr(autoroute, "decide", lambda *a, **k: decision)
+
+    await agent.run("plan and build a whole thing for me", tier=Tier.MEDIUM)
+    assert captured["tier"] == Tier.HEAVY   # escalated to the Claude tier automatically
+    assert captured["lf"] is False          # cloud-first, not the local 7B
+
+
+async def test_run_does_not_downgrade_explicit_tier(_quiet, monkeypatch):
+    """Escalate-only: a low-effort turn never downgrades an explicit higher --tier."""
+    from friday.core import autoroute
+    from friday.core.autoroute import Decision
+
+    captured: dict = {}
+
+    async def fake_complete(messages, tier=None, tools=None, local_tools_first=None, **kw):
+        captured.update(tier=tier, lf=local_tools_first)
+        return _resp(content="ok")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    decision = Decision(False, Tier.MEDIUM, "low", "chat")
+    monkeypatch.setattr(autoroute, "decide", lambda *a, **k: decision)
+
+    await agent.run("just chatting here", tier=Tier.MAX)
+    assert captured["tier"] == Tier.MAX     # explicit MAX kept, not pulled down to MEDIUM
+    assert captured["lf"] is None           # not high-effort → use the env default
 
 
 def test_system_prompt_directs_code_for_hard_computation() -> None:
