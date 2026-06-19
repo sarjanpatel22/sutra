@@ -84,6 +84,17 @@ _SCREEN = re.compile(
     re.I,
 )
 
+# File operations — "read my notes file", "create a new file", "delete that file".
+# These need read_file/write_file/edit_file but carry no open/go verb, so they fell to
+# chit-chat (Sutra just talked about it). Anchored to a concrete FILE noun (file/folder/
+# extension) so a verb alone can't fire it: "write a poem", "read a book", "make dinner"
+# stay chat — only a real file target acts. ('open … file' already acts via _ACTION.)
+_FILEOP = re.compile(
+    r"\b(?:read|create|make|write|save|delete|remove|edit|append|rename)\b"
+    r"[^.?!]*\b(?:files?|folders?|director(?:y|ies)|\.txt|\.md|\.py|\.json|\.csv|\.log)\b",
+    re.I,
+)
+
 # Continuing or finishing an in-progress task — especially a CTF room/box/lab.
 # "finish this room", "let's solve it", "keep going", "why aren't you finishing the
 # room". Real agentic work that carries no open/go verb, so it used to fall to
@@ -196,7 +207,7 @@ def decide(text: str, history: list[dict[str, Any]] | None = None) -> Decision:
     paid = _paid_ok()
 
     coding = bool(_CODE.search(t))
-    action = bool(_ACTION.search(t) or _SCREEN.search(t))
+    action = bool(_ACTION.search(t) or _SCREEN.search(t) or _FILEOP.search(t))
     is_url = bool(_URL.search(t))
     task = bool(_TASK.search(t))
     high = bool(

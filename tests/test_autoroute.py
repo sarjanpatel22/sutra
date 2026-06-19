@@ -70,6 +70,40 @@ def test_screen_lookalikes_stay_chat(text):
 
 
 @pytest.mark.parametrize("text", [
+    "read my notes file",
+    "create a new file called notes",
+    "delete that file",
+    "edit the config file",
+    "save this to a file",
+    "make a new folder",
+    "append to the log file",
+    "rename that file",
+    "read notes.txt",
+    "write to output.json",
+])
+def test_file_operation_intent_routes_agentic(text):
+    # File commands need read_file/write_file/edit_file but carry no open/go verb, so
+    # they used to fall to chit-chat. Must act with a tool now.
+    d = decide(text)
+    assert d.act is True and d.tool_required is True
+
+
+@pytest.mark.parametrize("text", [
+    "write a poem",
+    "make dinner",
+    "delete my account",
+    "save the world",
+    "I'm reading a document about history",
+    "I read that article",
+    "create a beautiful melody",
+    "remove your shoes",
+])
+def test_file_operation_lookalikes_stay_chat(text):
+    # A file verb alone (no concrete file/folder target) must NOT trip the file-op path.
+    assert decide(text).act is False
+
+
+@pytest.mark.parametrize("text", [
     "go to tryhackme.com and start the first room",
     "open https://news.ycombinator.com and tell me the top story",
     "log in to my account and book the appointment",
