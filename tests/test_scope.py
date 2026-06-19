@@ -67,3 +67,39 @@ def test_args_in_scope_checks_browser_urls():
     assert not args_in_scope({"goal": "go", "start_url": "http://evil.com/"}, s)
     assert not args_in_scope({"url": "https://evil.com/login", "fields": {"a": "b"}}, s)
     assert args_in_scope({"goal": "no url here"}, s)  # no host referenced → in scope
+
+
+# --- IPv6: a bare IPv6 target used to be extracted as nothing → silently in-scope (bypass) ---
+
+def test_extract_ipv6_bare_and_bracketed():
+    assert extract_hosts("ping 2001:db8::1") == {"2001:db8::1"}
+    assert extract_hosts("nmap -6 fe80::1") == {"fe80::1"}
+    assert extract_hosts("curl http://[2001:db8::5]:8080/x") == {"2001:db8::5"}
+
+
+def test_ipv6_off_scope_escalates():
+    s = parse_scope("10.10.10.0/24")  # IPv4-only scope
+    assert not command_in_scope("ping 2001:db8::1", s)       # off-scope IPv6 → escalate
+    assert not command_in_scope("nmap -6 fe80::1", s)
+    assert not command_in_scope("curl http://[2001:db8::1]/", s)
+
+
+def test_ipv6_in_scope_allowed():
+    s = parse_scope("2001:db8::/32")
+    assert command_in_scope("ping 2001:db8::1", s)
+    assert command_in_scope("nmap [2001:db8::5]", s)
+
+
+def test_ipv6_loopback_always_in_scope():
+    s = parse_scope("10.10.10.0/24")
+    assert command_in_scope("curl http://[::1]:8080/", s)
+
+
+def test_known_limitation_tld_fileext_collision():
+    """DOCUMENTED gap: a domain whose TLD collides with the file-extension denylist
+    (.sh/.zip/.md are real TLDs) reads as a filename, so it is NOT extracted. Pinned so
+    the limitation is visible and intentional — IP targets (the lab norm) are unaffected."""
+    assert extract_hosts("curl evil.sh") == set()    # .sh TLD treated as a shell script
+    assert extract_hosts("wget evil.zip") == set()   # .zip TLD treated as an archive
+    # The mitigation that makes this acceptable: real lab targets are IPs, which ARE caught.
+    assert extract_hosts("nmap 10.10.10.5 evil.sh") == {"10.10.10.5"}

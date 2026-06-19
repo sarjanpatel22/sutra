@@ -6,12 +6,15 @@ extracted and checked: anything outside scope is escalated to the operator inste
 running hands-free — so a prompt-injection from target output ("now scan 8.8.8.8 / curl
 evil.com") can't quietly point the engagement at a box you never authorized.
 
-Targets are pulled from IPv4 literals, URL hosts (`http://host`), `user@host` (ssh/scp),
-and bare domain names (`nmap target.com`). Loopback / `localhost` are always in scope
-(local tooling). Limits, documented
-rather than hidden: no DNS resolution (resolving attacker-influenced output is itself an
-injection vector — match hostnames literally) and IPv4 only for bare literals. Both
-`run_command` and the browser family (web_task/fill_form start_url/url) are scope-checked.
+Targets are pulled from IPv4 + IPv6 literals, URL hosts (`http://host`), `user@host`
+(ssh/scp), and bare domain names (`nmap target.com`). Loopback / `localhost` are always
+in scope (local tooling). Limits, documented rather than hidden: no DNS resolution
+(resolving attacker-influenced output is itself an injection vector — match hostnames
+literally); and a bare domain whose final label collides with a code/data file extension
+(`evil.sh`, `evil.zip`, `evil.md` — all real TLDs) is read as a filename, so an off-scope
+domain on one of those TLDs isn't caught — IP-literal targets (the norm for lab boxes) are
+unaffected. Both `run_command` and the browser family (web_task/fill_form start_url/url)
+are scope-checked.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import re
 from dataclasses import dataclass
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_IPV6_BRACKET = re.compile(r"\[([0-9A-Fa-f:]+)\]")  # bracketed IPv6 in URLs: http://[::1]/
 _URL_HOST = re.compile(r"https?://([^/\s:?#]+)", re.I)
 _USER_AT = re.compile(r"\b[\w.\-]+@([A-Za-z0-9.\-]+)")
 # A bare domain name target (nmap target.com / box.htb), so it can't dodge the guard by
@@ -66,9 +70,11 @@ def parse_scope(spec: str | None) -> Scope | None:
 
 
 def extract_hosts(text: str) -> set[str]:
-    """Hosts a shell command would touch: IPv4 literals, URL hosts, and user@host."""
+    """Hosts a shell command would touch: IPv4/IPv6 literals, URL hosts, and user@host."""
     hosts: set[str] = set()
-    hosts |= set(_URL_HOST.findall(text))
+    # URL hosts, minus malformed bracketed-IPv6 captures ("[2001") — those are pulled
+    # out properly by _IPV6_BRACKET below.
+    hosts |= {h for h in _URL_HOST.findall(text) if not h.startswith("[")}
     hosts |= set(_USER_AT.findall(text))
     for m in _IPV4.findall(text):
         try:
@@ -76,6 +82,21 @@ def extract_hosts(text: str) -> set[str]:
             hosts.add(m)
         except ValueError:
             continue
+    # IPv6 literals — bracketed (http://[2001:db8::1]/) and bare (ping 2001:db8::1), each
+    # validated by ipaddress. Without this a bare IPv6 target wasn't extracted at all, so it
+    # was silently treated as in-scope — a scope bypass.
+    v6: set[str] = set(_IPV6_BRACKET.findall(text))
+    for tok in re.split(r"[\s;&|<>()'\"`,]+", text):
+        cand = tok.strip("[]").split("/")[0]
+        if cand.count(":") >= 2:  # cheap IPv6 prefilter (an IPv6 addr has ≥2 colons)
+            v6.add(cand)
+    for h in v6:
+        try:
+            if ipaddress.ip_address(h).version == 6:
+                hosts.add(h)
+        except ValueError:
+            continue
+    # Bare domain targets (nmap target.com) — scheme-less, so they can't dodge the guard.
     for tok in re.split(r"[\s;&|<>()'\"`,]+", text):
         if not tok or tok.startswith("-") or "://" in tok or "@" in tok:
             continue
@@ -83,7 +104,13 @@ def extract_hosts(text: str) -> set[str]:
         tld = cand.rsplit(".", 1)[-1].lower()
         if _FQDN.match(cand) and tld.isalpha() and len(tld) >= 2 and tld not in _NOT_HOST_EXT:
             hosts.add(cand)
-    return {h.split(":")[0].lower() for h in hosts if h}
+    # Lower-case; strip :port for IPv4/hostnames but NOT IPv6 (it is colon-delimited).
+    out: set[str] = set()
+    for h in hosts:
+        if not h:
+            continue
+        out.add(h.lower() if h.count(":") >= 2 else h.split(":")[0].lower())
+    return out
 
 
 def _host_in_scope(host: str, scope: Scope) -> bool:
