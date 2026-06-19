@@ -440,6 +440,94 @@ async def test_local_tools_first_disabled_is_cloud_first(monkeypatch):
     assert calls[0]["model"].startswith("groq/"), "cloud-first when the flag is off"
 
 
+# --- prompt caching: cache Claude's static system+tools prefix (cost fix) ----------
+
+def test_is_anthropic_detects_claude_only():
+    assert router._is_anthropic("claude-sonnet-4-6")
+    assert router._is_anthropic("claude-opus-4-8")
+    assert router._is_anthropic("anthropic/claude-3-5-sonnet")
+    for free in ("groq/llama-3.3-70b-versatile", "gemini/gemini-2.5-flash",
+                 "ollama_chat/qwen2.5:7b"):
+        assert not router._is_anthropic(free)
+
+
+def test_apply_cache_control_marks_system_and_last_tool():
+    messages = [
+        {"role": "system", "content": "you are sutra"},
+        {"role": "user", "content": "hi"},
+    ]
+    tools = [
+        {"type": "function", "function": {"name": "a"}},
+        {"type": "function", "function": {"name": "b"}},
+    ]
+    new_msgs, new_tools = router._apply_cache_control(messages, tools)
+    # system content became a content-block list carrying cache_control
+    block = new_msgs[0]["content"]
+    assert isinstance(block, list) and block[0]["text"] == "you are sutra"
+    assert block[0]["cache_control"] == {"type": "ephemeral"}
+    assert new_msgs[1] == {"role": "user", "content": "hi"}  # other messages untouched
+    # only the LAST tool is marked (Anthropic caches the whole block up to it)
+    assert "cache_control" not in new_tools[0]
+    assert new_tools[1]["cache_control"] == {"type": "ephemeral"}
+    # the shared originals are NOT mutated (reused across the provider fallback loop)
+    assert messages[0]["content"] == "you are sutra"
+    assert "cache_control" not in tools[1]
+
+
+def test_apply_cache_control_handles_no_tools_and_no_system():
+    msgs, tools = router._apply_cache_control([{"role": "user", "content": "x"}], None)
+    assert tools is None
+    assert msgs == [{"role": "user", "content": "x"}]  # no system message → unchanged
+
+
+def _capturing_acompletion(seen):
+    async def fake(*, model, messages, tools=None, **kw):  # noqa: ANN001
+        seen.append({"model": model, "messages": messages, "tools": tools})
+        return _fake_response()
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_complete_applies_cache_control_for_claude(monkeypatch):
+    monkeypatch.setattr(router, "allow_paid", lambda: True)
+    monkeypatch.setattr(router._budget, "can_afford", lambda t: True)
+    seen: list[dict] = []
+    monkeypatch.setattr(router.litellm, "acompletion", _capturing_acompletion(seen))
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    await router.complete(msgs, tier=Tier.HEAVY, tools=[_FAKE_TOOL])
+    c = seen[0]
+    assert router._is_anthropic(c["model"])  # Claude is tried first at HEAVY
+    assert c["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert c["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert msgs[0]["content"] == "sys"  # caller's shared messages untouched
+
+
+@pytest.mark.asyncio
+async def test_complete_no_cache_control_for_free_tier(monkeypatch):
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")  # cloud-first → a groq model is first
+    seen: list[dict] = []
+    monkeypatch.setattr(router.litellm, "acompletion", _capturing_acompletion(seen))
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL])
+    c = seen[0]
+    assert not router._is_anthropic(c["model"])           # a free model
+    assert c["messages"][0]["content"] == "sys"            # plain string, untouched
+    assert "cache_control" not in c["tools"][-1]           # no caching for non-Claude
+
+
+@pytest.mark.asyncio
+async def test_prompt_cache_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("ROUTER_PROMPT_CACHE", "0")
+    monkeypatch.setattr(router, "allow_paid", lambda: True)
+    monkeypatch.setattr(router._budget, "can_afford", lambda t: True)
+    seen: list[dict] = []
+    monkeypatch.setattr(router.litellm, "acompletion", _capturing_acompletion(seen))
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    await router.complete(msgs, tier=Tier.HEAVY, tools=[_FAKE_TOOL])
+    # caching off → even Claude gets the plain string system, no cache_control
+    assert seen[0]["messages"][0]["content"] == "sys"
+
+
 @pytest.mark.asyncio
 async def test_free_only_never_escalates_to_paid(monkeypatch):
     """A MEDIUM tool turn escalates to paid Claude when allow_paid + budget allow; a

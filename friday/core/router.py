@@ -146,6 +146,50 @@ def _local_tools_first() -> bool:
     val = os.getenv("ROUTER_LOCAL_TOOLS_FIRST", "1").strip().lower()
     return val not in ("", "0", "false", "no")
 
+
+def _is_anthropic(model: str) -> bool:
+    """True for Anthropic Claude models, which support prompt caching (`cache_control`).
+    Other providers (Groq/Gemini/Ollama) don't understand it, so it's applied only here."""
+    return "claude" in model.lower()
+
+
+def _cache_enabled() -> bool:
+    """Prompt caching on Claude is on by default; ROUTER_PROMPT_CACHE=0 disables it."""
+    return os.getenv("ROUTER_PROMPT_CACHE", "1").strip().lower() not in ("", "0", "false", "no")
+
+
+def _apply_cache_control(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+    """Mark the STATIC prefix — the system prompt and the tool schemas — with Anthropic
+    `cache_control`, so a multi-round agentic turn re-reads them at ~10% cost instead of
+    paying full price for the same ~50 tool schemas every round (the 16:1 input:output
+    blow-up we measured). Anthropic-only; callers apply it solely when the target model is
+    Claude. Returns NEW copies — the shared `messages`/`tools` (reused across the provider
+    fallback loop) are never mutated."""
+    new_messages: list[dict[str, Any]] = []
+    marked_system = False
+    for m in messages:
+        if (not marked_system and m.get("role") == "system"
+                and isinstance(m.get("content"), str) and m["content"]):
+            new_messages.append({
+                "role": "system",
+                "content": [{
+                    "type": "text",
+                    "text": m["content"],
+                    "cache_control": {"type": "ephemeral"},
+                }],
+            })
+            marked_system = True
+        else:
+            new_messages.append(m)
+    new_tools = tools
+    if tools:
+        # cache_control on the LAST tool tells Anthropic to cache the whole tools block.
+        new_tools = [dict(t) for t in tools]
+        new_tools[-1] = {**new_tools[-1], "cache_control": {"type": "ephemeral"}}
+    return new_messages, new_tools
+
 # Registered alert callbacks: fn(scope, pct_used) where scope is "daily"|"monthly"
 _alert_callbacks: list[Callable[[str, float], None]] = []
 
@@ -390,6 +434,11 @@ async def complete(
         # Ollama rejects the request outright). qwen2.5/llama KEEP their tools and
         # function-call locally, which is what makes the offline fallback actually act.
         call_tools = None if _tool_incapable(model) else tools
+        call_messages = messages
+        # Prompt caching (Claude only): cache the static system+tools prefix so an agentic
+        # multi-round turn doesn't re-pay full price for the same ~50 schemas every round.
+        if _is_anthropic(model) and _cache_enabled():
+            call_messages, call_tools = _apply_cache_control(messages, call_tools)
         try:
             call_kwargs = dict(kwargs)
             if call_tools is None:
@@ -398,7 +447,7 @@ async def complete(
                 call_kwargs.setdefault("stream_options", {"include_usage": True})
             response = await litellm.acompletion(
                 model=model,
-                messages=messages,
+                messages=call_messages,
                 stream=stream,
                 temperature=temperature,
                 max_tokens=max_tokens,
