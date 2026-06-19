@@ -14,7 +14,9 @@ HOME = Path.home()
 
 
 def _flag(name: str, default: bool) -> bool:
-    return os.getenv(name, "1" if default else "0").lower() not in ("0", "false", "no")
+    # Treat an explicitly-empty value as falsy (consistent with core.router.allow_paid),
+    # so e.g. AMBIENT_SWEEP_NARRATION= can't accidentally enable a deletion toggle.
+    return os.getenv(name, "1" if default else "0").strip().lower() not in ("", "0", "false", "no")
 
 
 def _watch_dirs() -> list[Path]:
