@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from friday.skills.registry import skill
+
+# Serialize browser launches: a rapid burst of open_url calls (e.g. repeated voice
+# triggers) must NOT each cold-start the browser into its own window. The first call
+# launches it; the rest wait, see it running, and reuse it as a new tab.
+_BROWSER_LAUNCH_LOCK = asyncio.Lock()
+
+# Browsers we know how to drive directly (resolve the default, detect if it's running,
+# and force a new TAB rather than a new window).
+_BROWSER_TOKENS = ("firefox", "chromium", "chrome", "brave")
+_KNOWN_BROWSERS = (
+    "firefox-esr", "firefox", "chromium", "chromium-browser",
+    "google-chrome", "google-chrome-stable", "brave-browser", "brave",
+)
 
 
 async def _run(cmd: list[str], stdin: str | None = None) -> tuple[int, str, str]:
@@ -115,27 +130,99 @@ def _is_safe_url(url: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def _default_browser() -> str | None:
+    """Absolute path to the default browser binary, or None if not resolvable.
+
+    Resolves the Debian `x-www-browser` alternative (Kali's `default-browser` wrapper,
+    which `xdg-open` eventually hits, ends here), falling back to the first known browser
+    on PATH. We drive this binary directly so we can force a tab and detect reuse —
+    `xdg-open` goes through a wrapper that just relaunches and can't be steered.
+    """
+    xb = shutil.which("x-www-browser")
+    if xb:
+        real = os.path.realpath(xb)
+        if any(tok in Path(real).name for tok in _BROWSER_TOKENS):
+            return real
+    for b in _KNOWN_BROWSERS:
+        if (p := shutil.which(b)):
+            return p
+    return None
+
+
+def _reuse_cmd(browser: str, url: str) -> list[str]:
+    """Invocation that opens `url` as a new TAB in the already-running browser.
+
+    Firefox needs an explicit `--new-tab` or a `browser.link.open_newwindow` pref can
+    send it to a new window; chromium/chrome/brave already reuse the window by default.
+    """
+    if "firefox" in Path(browser).name:
+        return [browser, "--new-tab", url]
+    return [browser, url]
+
+
+async def _browser_running(browser: str) -> bool:
+    """True if a process for this browser is already up (so we open a tab, not a window)."""
+    if not shutil.which("pgrep"):
+        return False
+    code, _, _ = await _run(["pgrep", "-f", Path(browser).name])
+    return code == 0
+
+
+async def _wait_until_running(browser: str, timeout: float = 6.0) -> None:
+    """After a cold launch, wait until the browser is up so the NEXT open_url lands as a
+    tab in this window instead of racing into a second one. Held under the launch lock."""
+    if not shutil.which("pgrep"):
+        await asyncio.sleep(1.0)
+        return
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if await _browser_running(browser):
+            await asyncio.sleep(0.4)  # small settle so the remote socket is accepting
+            return
+        await asyncio.sleep(0.25)
+
+
 @skill(
     name="open_url",
     description=(
         "Open a web URL/website (http/https) in the user's default browser — e.g. 'open "
-        "github.com'. Requires an actual URL; to launch the browser app itself ('open "
-        "firefox') use open_app. For DOING something on a page — reading, clicking, "
-        "logging-in flows — use browse_url / web_task / browser_open instead."
+        "github.com'. Reuses the already-open browser window (adds a tab) instead of "
+        "spawning a new window each time. Requires an actual URL; to launch the browser "
+        "app itself ('open firefox') use open_app. For DOING something on a page — "
+        "reading, clicking, logging-in flows — use browse_url / web_task / browser_open."
     ),
     auto_confirm=True,
-    timeout_s=20,  # xdg-open can block while a cold browser starts; 5s was too tight
+    timeout_s=20,  # a cold browser start can take a while; 5s was too tight
 )
 async def open_url(url: str) -> dict[str, Any]:
-    """Open a URL in the default browser.
+    """Open a URL in the default browser, reusing an open window as a new tab.
 
     url: An http:// or https:// URL.
     """
     if not _is_safe_url(url):
         return {"error": "only http(s) URLs are allowed", "url": url}
-    if not shutil.which("xdg-open"):
-        return {"error": "xdg-open not available"}
-    code, note = await _launch_detached(["xdg-open", url])
-    if code not in (0, None):  # None = handed off, browser still warming (fine)
-        return {"error": note or "xdg-open failed", "url": url}
-    return {"status": "ok", "url": url}
+    browser = _default_browser()
+    if not browser:  # no resolvable browser binary — fall back to plain xdg-open
+        if not shutil.which("xdg-open"):
+            return {"error": "no browser found (install a browser or xdg-open)", "url": url}
+        code, note = await _launch_detached(["xdg-open", url])
+        if code not in (0, None):
+            return {"error": note or "xdg-open failed", "url": url}
+        return {"status": "ok", "url": url}
+    # One launcher at a time, so a burst of calls can't each cold-start a new window.
+    async with _BROWSER_LAUNCH_LOCK:
+        if await _browser_running(browser):
+            code, note = await _launch_detached(_reuse_cmd(browser, url))
+            if code not in (0, None):  # direct reuse failed → best-effort xdg-open
+                code, note = await _launch_detached(["xdg-open", url])
+                if code not in (0, None):
+                    return {"error": note or "could not open url", "url": url}
+            return {"status": "ok", "url": url, "browser": Path(browser).name, "reused": True}
+        # Cold start: open the browser once, then wait until it's up so the next call
+        # reuses THIS window. None = handed off, still warming (success).
+        code, note = await _launch_detached([browser, url])
+        if code not in (0, None):
+            return {"error": note or "could not launch browser", "url": url}
+        await _wait_until_running(browser)
+        return {"status": "ok", "url": url, "browser": Path(browser).name, "reused": False}
