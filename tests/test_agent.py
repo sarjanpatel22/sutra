@@ -311,6 +311,43 @@ async def test_run_does_not_downgrade_explicit_tier(_quiet, monkeypatch):
     assert captured["lf"] is None           # not high-effort → use the env default
 
 
+# --- tool-result cap: don't re-send huge payloads through the model every round ----
+
+def test_cap_tool_content_truncates_large(monkeypatch):
+    monkeypatch.setenv("TOOL_RESULT_MAX_CHARS", "100")
+    out = agent._cap_tool_content("x" * 500)
+    assert out.startswith("x" * 100)
+    assert "truncated 400 chars" in out
+    assert len(out) < 500
+
+
+def test_cap_tool_content_leaves_small_untouched(monkeypatch):
+    monkeypatch.setenv("TOOL_RESULT_MAX_CHARS", "100")
+    assert agent._cap_tool_content("small result") == "small result"
+
+
+def test_cap_tool_content_zero_disables(monkeypatch):
+    monkeypatch.setenv("TOOL_RESULT_MAX_CHARS", "0")
+    big = "x" * 5000
+    assert agent._cap_tool_content(big) == big  # 0 → no cap (full fidelity)
+
+
+async def test_run_tool_calls_caps_large_result(monkeypatch, temp_skills):
+    # A skill returning a huge payload is truncated in the tool message fed back to the model.
+    monkeypatch.setenv("TOOL_RESULT_MAX_CHARS", "200")
+
+    @registry.skill(name="_t_big", description="t", auto_confirm=True)
+    async def _big() -> dict:
+        return {"data": "y" * 4000}
+
+    try:
+        out = await agent._run_tool_calls([_tc("_t_big", {})])
+        assert len(out[0]["content"]) < 4000
+        assert "truncated" in out[0]["content"]
+    finally:
+        registry._registry.pop("_t_big", None)
+
+
 def test_system_prompt_directs_code_for_hard_computation() -> None:
     # Measured lever (2026-06-14): raw 70B reasoning fails hard combinatorics
     # (coin-change), and self-consistency just amplifies the wrong answer — but the

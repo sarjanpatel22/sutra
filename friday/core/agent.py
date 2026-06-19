@@ -28,6 +28,30 @@ _TIER_RANK: dict[Tier, int] = {
     Tier.MEDIUM: 4, Tier.HEAVY: 5, Tier.MAX: 6,
 }
 
+
+def _tool_result_limit() -> int:
+    """Max chars of a single tool result fed back to the model (TOOL_RESULT_MAX_CHARS,
+    default 8000; <=0 disables). A huge payload — a web_search dump, a big file read —
+    would otherwise be re-sent through the model on EVERY later round of the agentic
+    loop, the dominant token cost on a long task."""
+    try:
+        return int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
+    except ValueError:
+        return 8000
+
+
+def _cap_tool_content(content: str) -> str:
+    """Bound a serialized tool result: keep the head (where the useful content sits) and
+    flag the trim so the model knows to narrow its next call instead of assuming it saw all."""
+    limit = _tool_result_limit()
+    if limit <= 0 or len(content) <= limit:
+        return content
+    omitted = len(content) - limit
+    return content[:limit] + (
+        f"\n...[truncated {omitted} chars to save tokens — "
+        "read a specific part if you need more]"
+    )
+
 # Confirmation hook: given (skill_name, args), return True to allow an
 # auto_confirm=False (irreversible) skill to run. None = always decline.
 ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
@@ -893,7 +917,7 @@ async def _run_tool_calls(
             "role": "tool",
             "tool_call_id": tc.id,
             "name": fn_name,
-            "content": json.dumps(result),
+            "content": _cap_tool_content(json.dumps(result)),
         }
 
     return await asyncio.gather(*[_call_one(tc) for tc in tool_calls])
