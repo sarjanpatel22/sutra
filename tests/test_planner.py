@@ -165,3 +165,88 @@ async def test_make_plan_unusable_reply_is_failed(monkeypatch):
     monkeypatch.setattr(planner, "complete", fake_complete)
     p = await planner.make_plan("x")
     assert p.status == "failed" and p.steps == []
+
+
+# --- PR3: execution (run_plan / resume_plan), persistence, budget + error pause -----
+
+async def test_run_plan_executes_all_steps_and_persists(plans_dir, monkeypatch):
+    prompts = []
+
+    async def fake_run(prompt, confirm=None, observe=None, **kw):
+        prompts.append(prompt)
+        return "did it", []
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    p = planner.new_plan("write a report", ["search", "write the file"])
+    out = await planner.run_plan(p)
+    assert out.status == "done"
+    assert all(s.status == planner.DONE for s in out.steps)
+    assert len(prompts) == 2
+    assert "write a report" in prompts[0]                 # step grounded in the goal
+    assert planner.load(p.slug).status == "done"          # persisted
+
+
+async def test_run_plan_pauses_over_budget_leaving_step_pending(plans_dir, monkeypatch):
+    async def fake_run(prompt, **kw):
+        return "x", []
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    monkeypatch.setattr(planner, "_budget_ok", lambda: False)
+    p = planner.new_plan("g", ["a", "b"])
+    out = await planner.run_plan(p)
+    assert out.status == "paused"
+    assert out.steps[0].status == planner.PENDING         # nothing ran — fully resumable
+    assert planner.load(p.slug).status == "paused"
+
+
+async def test_run_plan_pauses_on_step_error_for_retry(plans_dir, monkeypatch):
+    async def fake_run(prompt, **kw):
+        raise RuntimeError("rate limited")
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    p = planner.new_plan("g", ["a", "b"])
+    out = await planner.run_plan(p)
+    assert out.status == "paused"
+    assert out.steps[0].status == planner.PENDING         # left PENDING so resume retries it
+    assert "rate limited" in out.steps[0].result
+
+
+async def test_run_plan_persists_progress_then_resume_finishes(plans_dir, monkeypatch):
+    async def fake_run(prompt, **kw):
+        return "ok", []
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    # budget allows exactly one step, then pauses → proves per-step persistence
+    gate = {"n": 0}
+
+    def budget():
+        gate["n"] += 1
+        return gate["n"] <= 1
+
+    monkeypatch.setattr(planner, "_budget_ok", budget)
+    p = planner.new_plan("g", ["a", "b", "c"])
+    out = await planner.run_plan(p)
+    assert out.status == "paused"
+    assert out.steps[0].status == planner.DONE            # first step ran + saved
+    assert out.steps[1].status == planner.PENDING
+
+    # ... a "token reset" later: resume continues from the persisted state
+    monkeypatch.setattr(planner, "_budget_ok", lambda: True)
+    resumed = await planner.resume_plan(p.slug)
+    assert resumed.status == "done"
+    assert [s.status for s in resumed.steps] == [planner.DONE] * 3
+
+
+async def test_resume_missing_plan_is_none(plans_dir):
+    assert await planner.resume_plan("nope") is None
+
+
+def test_budget_ok_free_tier_always_true(monkeypatch):
+    monkeypatch.setattr("friday.core.router.allow_paid", lambda: False)
+    assert planner._budget_ok() is True                   # free tiers never run out
+
+
+def test_budget_ok_paid_respects_affordability(monkeypatch):
+    monkeypatch.setattr("friday.core.router.allow_paid", lambda: True)
+    monkeypatch.setattr("friday.core.router._budget.can_afford", lambda t: False)
+    assert planner._budget_ok() is False

@@ -18,10 +18,15 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from friday.core.router import Tier, complete
+
+# Hooks threaded into step execution (same shapes the agent uses).
+ConfirmFn = Callable[[str, dict], Awaitable[bool]]   # (skill, args) -> allow?
+ObserveFn = Callable[[str, dict], None]              # (kind, data) live progress
 
 _PLANS_DIR = Path.home() / ".local" / "share" / "friday" / "plans"
 
@@ -194,3 +199,82 @@ async def make_plan(goal: str, *, tier: Tier = Tier.HEAVY, max_steps: int = 12) 
     if not plan.steps:
         plan.status = "failed"  # the model returned nothing usable — surfaced, not silent
     return plan
+
+
+# --- execution: run steps one at a time, persist after each, pause to resume later --
+
+def _budget_ok() -> bool:
+    """True if there's budget to keep going. Only PAID work can run out — on the free tiers
+    there's nothing to exhaust — so this gates the Claude path and lets a free plan run on."""
+    from friday.core.router import _budget, allow_paid
+
+    if not allow_paid():
+        return True
+    return _budget.can_afford(Tier.HEAVY)
+
+
+def _step_prompt(plan: Plan, step: Step) -> str:
+    """Ground one step in the overall goal + what's already done, so the executor stays on
+    track and doesn't redo finished work or wander off the objective."""
+    done = [s for s in plan.steps if s.status == DONE]
+    context = ""
+    if done:
+        context = "Already completed:\n" + "\n".join(f"- {s.description}" for s in done) + "\n\n"
+    return (
+        f"You are working through a larger goal: {plan.goal}\n\n"
+        f"{context}Do ONLY this next step, then stop:\n{step.description}"
+    )
+
+
+async def run_plan(
+    plan: Plan,
+    *,
+    confirm: ConfirmFn | None = None,
+    observe: ObserveFn | None = None,
+) -> Plan:
+    """Execute the plan's PENDING steps one at a time, saving after each so progress survives
+    a crash or token reset. Pauses — leaving the current step PENDING — when the budget is
+    exhausted OR a step errors (e.g. a rate limit), so a later `resume_plan` picks up at
+    exactly that step instead of losing the work. Returns the final plan."""
+    from friday.core.agent import run as agent_run
+
+    plan.status = "active"
+    save(plan)
+    while (step := plan.next_pending()) is not None:
+        if not _budget_ok():
+            plan.status = "paused"  # over budget — stop; step stays PENDING for resume
+            save(plan)
+            return plan
+        if observe:
+            observe("step_start", {"n": step.n, "description": step.description})
+        try:
+            reply, _ = await agent_run(_step_prompt(plan, step), confirm=confirm, observe=observe)
+        except Exception as e:  # noqa: BLE001 — a transient failure must not lose the plan;
+            step.result = f"paused after error: {e}"[:500]  # leave the step PENDING to retry
+            plan.status = "paused"
+            save(plan)
+            if observe:
+                observe("step_end", {"n": step.n, "status": "paused"})
+            return plan
+        step.status = DONE
+        step.result = (reply or "").strip()[:500]
+        save(plan)  # persist after EVERY step — the resumability guarantee
+        if observe:
+            observe("step_end", {"n": step.n, "status": step.status})
+    plan.status = "done" if plan.is_complete() else "failed"
+    save(plan)
+    return plan
+
+
+async def resume_plan(
+    slug: str,
+    *,
+    confirm: ConfirmFn | None = None,
+    observe: ObserveFn | None = None,
+) -> Plan | None:
+    """Reload a saved plan and continue from its first unfinished step — the 'after a token
+    reset, pick up where you left off' entry point. None if no such plan exists."""
+    plan = load(slug)
+    if plan is None:
+        return None
+    return await run_plan(plan, confirm=confirm, observe=observe)
