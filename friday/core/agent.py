@@ -801,7 +801,15 @@ async def voice_agent_run(
         messages.extend(history)
     messages.append({"role": "user", "content": user_input})
 
-    tools = registry.all_tools()
+    # On-demand tool loading: show the core + this turn's relevant skills, not all 50+ — trims
+    # input tokens and focuses the offline-fallback local model. BUT when the router is FORCING a
+    # tool (tool_choice=required below), keep the FULL set: a pruned set could force the model into
+    # the wrong tool. The cloud 70B used here handles the full set fine, so we only prune the
+    # non-forced (conversational) turns — keeping forced turns act-don't-narrate reliable.
+    tools = (
+        registry.all_tools() if force_tool
+        else registry.select_tools(user_input, limit=_max_tools())
+    )
     acted = False  # did ANY tool call actually fire this turn?
     seen: set[tuple[str, str]] = set()  # (tool, args) already run — to catch repeat loops
     for round_i in range(max_tool_rounds):

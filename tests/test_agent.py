@@ -153,6 +153,7 @@ def _no_memory(monkeypatch):
     monkeypatch.setattr(agent, "get_store", lambda: _Store())
     monkeypatch.setattr(agent.registry, "autodiscover", lambda: None)
     monkeypatch.setattr(agent.registry, "all_tools", lambda: [])
+    monkeypatch.setattr(agent.registry, "select_tools", lambda *a, **k: [])
 
 
 async def test_forced_tool_no_call_returns_ratelimited(_no_memory, monkeypatch):
@@ -188,6 +189,27 @@ async def test_unforced_text_reply_unchanged(_no_memory, monkeypatch):
     monkeypatch.setattr(agent, "complete", fake_complete)
     out = await agent.voice_agent_run("what's up", force_tool=False)
     assert out == "It's about three o'clock."
+
+
+async def test_voice_prunes_tools_only_when_not_forced(_no_memory, monkeypatch):
+    # Forced turn keeps the FULL toolset (recall-critical so tool_choice=required can't pick the
+    # wrong tool); a conversational turn prunes to the turn-relevant subset.
+    full = [{"function": {"name": f"t{i}"}} for i in range(40)]
+    monkeypatch.setattr(agent.registry, "all_tools", lambda: full)
+    monkeypatch.setattr(agent.registry, "select_tools", lambda *a, **k: full[:5])
+    seen: dict = {}
+
+    async def fake_complete(messages, **kwargs):
+        seen["tools"] = kwargs.get("tools")
+        return _resp(content="ok")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+
+    await agent.voice_agent_run("open my email", force_tool=True)
+    assert seen["tools"] == full              # forced → full set
+
+    await agent.voice_agent_run("just chatting with you", force_tool=False)
+    assert seen["tools"] == full[:5]          # not forced → pruned to relevant
 
 
 # --- deterministic command short-circuit on the TEXT path (parity with voice) -----
