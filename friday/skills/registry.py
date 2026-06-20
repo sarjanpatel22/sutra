@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import pkgutil
+import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -119,6 +120,66 @@ def unregister(name: str) -> bool:
 def all_tools() -> list[dict[str, Any]]:
     """Return all registered skills as LLM tool-call schemas."""
     return [meta.schema for meta in _registry.values()]
+
+
+# General-purpose, high-frequency skills exposed on EVERY turn — the ones plausibly useful in any
+# task. Everything else (desktop, browser, git, vpn, encoding, prefs, vision, …) is SPECIALIZED and
+# surfaced on demand by relevance to the turn, so the model isn't shown 50+ tools at once — which
+# degrades tool choice (the local function-caller mis-selects past ~48 tools) and wastes input
+# tokens. See select_tools(). Names that aren't registered are simply ignored (forgiving).
+_CORE_SKILLS = frozenset({
+    "web_search", "web_extract", "read_file", "write_file", "edit_file", "list_directory",
+    "run_command", "run_python", "calc", "current_time", "system_info", "recall", "http_request",
+})
+
+
+# Generic words that appear in too many skill descriptions to signal relevance — dropped from the
+# QUERY before scoring so "how are you" doesn't spuriously surface half the registry. Deliberately
+# excludes action verbs that ARE meaningful skill terms (get/set/run/open/read/write/search/…).
+_QUERY_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "at", "for", "with", "from",
+    "by", "my", "your", "our", "their", "this", "that", "these", "those", "it", "its", "is",
+    "are", "was", "were", "be", "been", "being", "do", "does", "did", "how", "what", "whats",
+    "when", "where", "who", "why", "which", "then", "than", "so", "if", "as", "i", "you", "we",
+    "us", "me", "please", "now", "today", "here", "there", "some", "any", "all", "into", "out",
+})
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _content_terms(text: str) -> set[str]:
+    """Query tokens worth matching on — drop stopwords and 1-2 char noise so only content words
+    (decode, base64, weather, vpn, commit, …) drive selection."""
+    return {t for t in _tokenize(text) if len(t) > 2 and t not in _QUERY_STOPWORDS}
+
+
+def _relevance(query_terms: set[str], meta: SkillMeta) -> int:
+    """Cheap lexical score: how many distinct (content) query terms appear in the skill's name or
+    description. Deterministic, offline, no model call. 0 means 'not obviously related'."""
+    if not query_terms:
+        return 0
+    return len(query_terms & _tokenize(f"{meta.name} {meta.description}"))
+
+
+def select_tools(query: str, *, limit: int = 0) -> list[dict[str, Any]]:
+    """Tool schemas relevant to `query`: the always-on core PLUS the highest-relevance specialized
+    skills, capped near `limit`. Returns ALL tools when limit<=0 or the registry already fits within
+    limit — so small installs and an explicit 'show everything' (SUTRA_MAX_TOOLS=0) are unchanged.
+    On-demand loading: keeps the model focused and the prompt cheap once skills outgrow `limit`."""
+    metas = list(_registry.values())
+    if limit <= 0 or len(metas) <= limit:
+        return [m.schema for m in metas]
+    q_terms = _content_terms(query)
+    core = [m for m in metas if m.name in _CORE_SKILLS]
+    scored = sorted(
+        ((m, _relevance(q_terms, m)) for m in metas if m.name not in _CORE_SKILLS),
+        key=lambda ms: (-ms[1], ms[0].name),
+    )
+    budget = max(0, limit - len(core))
+    extra = [m for m, score in scored if score > 0][:budget]
+    return [m.schema for m in core + extra]
 
 
 def list_skills() -> list[str]:

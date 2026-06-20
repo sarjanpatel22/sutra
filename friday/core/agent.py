@@ -40,6 +40,18 @@ def _tool_result_limit() -> int:
         return 8000
 
 
+def _max_tools() -> int:
+    """Cap on tools shown to the model per turn (SUTRA_MAX_TOOLS, default 25; 0 = no cap, show
+    every skill). Above the cap, registry.select_tools surfaces the always-on core plus the
+    skills relevant to THIS turn — focusing tool choice (the local function-caller mis-selects
+    past ~48 tools) and trimming input tokens. The core guarantees the common skills are always
+    present, so this prunes specialized skills, not capability."""
+    try:
+        return int(os.getenv("SUTRA_MAX_TOOLS", "25"))
+    except ValueError:
+        return 25
+
+
 def _cap_tool_content(content: str) -> str:
     """Bound a serialized tool result: keep the head (where the useful content sits) and
     flag the trim so the model knows to narrow its next call instead of assuming it saw all."""
@@ -239,7 +251,10 @@ async def run(
     # Local Ollama models (gemma) emit tool calls as malformed text rather than
     # proper tool_calls — it leaked raw JSON as the answer. Only the cloud tiers,
     # which do real function-calling, get tools.
-    tools = None if tier in (Tier.LOCAL, Tier.REASON) else registry.all_tools()
+    tools = (
+        None if tier in (Tier.LOCAL, Tier.REASON)
+        else registry.select_tools(user_input, limit=_max_tools())
+    )
 
     # Pull relevant long-term memory into context (no-op if memory unavailable).
     system_content = SYSTEM_PROMPT
