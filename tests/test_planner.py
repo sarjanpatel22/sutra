@@ -186,9 +186,9 @@ async def test_run_plan_executes_all_steps_and_persists(plans_dir, monkeypatch):
 
     async def fake_run(prompt, confirm=None, observe=None, **kw):
         prompts.append(prompt)
-        # an action step actually calls a tool — history carries the tool round it ran
+        # an action step actually calls a tool — history carries the named tool round it ran
         return "did it", [{"role": "assistant", "tool_calls": [{"id": "1"}]},
-                          {"role": "tool", "content": "ok"}]
+                          {"role": "tool", "name": "write_file", "content": "ok"}]
 
     monkeypatch.setattr("friday.core.agent.run", fake_run)
     p = planner.new_plan("write a report", ["search", "write the file"])
@@ -282,12 +282,36 @@ async def test_action_step_recovers_once_it_actually_calls_a_tool(plans_dir, mon
         state["n"] += 1
         if state["n"] == 1:
             return "I will write the file.", []                       # narrated → retried
-        return "done", [{"role": "tool", "content": "wrote ~/out.md"}]  # actually acted
+        return "done", [{"role": "tool", "name": "write_file",
+                         "content": '{"path": "~/out.md"}'}]           # actually wrote it
 
     monkeypatch.setattr("friday.core.agent.run", fake_run)
     out = await planner.run_plan(planner.new_plan("g", ["write ~/out.md"]))
     assert out.steps[0].status == planner.DONE
     assert out.steps[0].attempts == 2
+
+
+async def test_write_step_that_runs_a_different_tool_then_narrates_is_not_done(
+    plans_dir, monkeypatch
+):
+    # The subtlest live phantom: a "write skills.md" step where the model runs web_search (which
+    # SUCCEEDS) and then narrates the list in text — never calling write_file. A succeeding tool
+    # is not enough; a WRITE step needs a write tool (or the file on disk), else it's retried.
+    monkeypatch.setenv("PLAN_STEP_ATTEMPTS", "2")
+    monkeypatch.setenv("PLAN_RETRY_BACKOFF", "0")
+    calls = {"n": 0}
+
+    async def fake_run(prompt, **kw):
+        calls["n"] += 1
+        return "Here are the skills: 1. Linux 2. Networking", [
+            {"role": "assistant", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "name": "web_search", "content": '{"results": ["x"]}'},  # not a write
+        ]
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    out = await planner.run_plan(planner.new_plan("g", ["write skills to /nope/skills.md"]))
+    assert calls["n"] == 2                              # a non-write success isn't banked as DONE
+    assert out.steps[0].status == planner.FAILED
 
 
 async def test_reasoning_step_needs_no_tool(plans_dir, monkeypatch):
@@ -331,16 +355,27 @@ async def test_action_step_with_only_failed_tool_calls_is_not_done(plans_dir, mo
     assert out.steps[0].status == planner.FAILED
 
 
-def test_action_succeeded_distinguishes_success_from_failure():
-    ok = [{"role": "tool", "content": '{"path": "/home/u/out.md", "bytes": 42}'}]
-    err = [{"role": "tool", "content": '{"error": "bad argument command"}'}]
-    declined = [{"role": "tool", "content": '{"declined": true, "skill": "write_file"}'}]
-    assert planner._action_succeeded(ok)
-    assert not planner._action_succeeded(err)
-    assert not planner._action_succeeded(declined)
-    assert not planner._action_succeeded([])            # no tool at all (pure narration)
-    assert not planner._action_succeeded(None)
-    assert planner._action_succeeded(err + ok)          # one failed, one succeeded → progress
+def test_succeeded_tools_collects_only_non_error_calls():
+    hist = [
+        {"role": "tool", "name": "web_search", "content": '{"results": []}'},
+        {"role": "tool", "name": "write_file", "content": '{"error": "bad arg"}'},
+        {"role": "tool", "name": "edit_file", "content": '{"declined": true}'},
+    ]
+    assert planner._succeeded_tools(hist) == {"web_search"}
+    assert planner._succeeded_tools([]) == set()
+    assert planner._succeeded_tools(None) == set()
+
+
+def test_step_progressed_requires_a_write_tool_for_write_steps():
+    wrote = [{"role": "tool", "name": "write_file", "content": '{"path": "x"}'}]
+    searched = [{"role": "tool", "name": "web_search", "content": '{"results": ["x"]}'}]
+    # a non-write step is satisfied by any successful tool
+    assert planner._step_progressed("search the web for rooms", searched)
+    # a write step needs an actual write tool, not just any successful tool
+    assert planner._step_progressed("write ~/out.md", wrote)
+    assert not planner._step_progressed("write /nope/out.md", searched)
+    # nothing succeeded → never progressed
+    assert not planner._step_progressed("write ~/out.md", [])
 
 
 def test_tool_result_ok_tolerates_truncated_success():

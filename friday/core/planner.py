@@ -287,15 +287,48 @@ def _tool_result_ok(content: object) -> bool:
         return not any(f'"{k}"' in head for k in _TOOL_FAIL_KEYS)
 
 
-def _action_succeeded(history: list[dict]) -> bool:
-    """True if at least one tool call in the step actually SUCCEEDED. An action step that called
-    no tool (only narrated — the live 'said it wrote the file but didn't' phantom) OR whose every
-    tool call errored / was declined (e.g. the model invented a bad argument, so nothing landed
-    on disk) has NOT made progress, and must be retried rather than banked as DONE."""
+# Tools that actually persist a file. A WRITE step ("write/save X.md") is real only if one of
+# these SUCCEEDED — otherwise the model narrated the contents (no write), mis-called the tool (it
+# errored), or ran some OTHER tool then narrated the write (a non-write tool 'succeeded' but no
+# file was produced — the subtlest live phantom: skills.md 'written' while absent).
+_WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+_WRITE_VERB = re.compile(r"\b(write|save|generate|append|dump|export)\b", re.I)
+_PATH_RE = re.compile(r"(~?/[\w./~-]+)")  # a filesystem path mentioned in the step text
+
+
+def _is_write_step(description: str) -> bool:
+    return bool(_WRITE_VERB.search(description or ""))
+
+
+def _named_paths(description: str) -> list[Path]:
+    """Filesystem paths the step names (so a write can be verified against the disk)."""
+    return [Path(m.rstrip(".,;:)")).expanduser() for m in _PATH_RE.findall(description or "")]
+
+
+def _succeeded_tools(history: list[dict]) -> set[str]:
+    """Names of tools whose call returned a NON-error result in this step (declined/blocked/errored
+    calls don't count — nothing actually happened)."""
+    names: set[str] = set()
     for m in history or []:
         if isinstance(m, dict) and m.get("role") == "tool" and _tool_result_ok(m.get("content")):
-            return True
-    return False
+            names.add(m.get("name") or "")
+    return names
+
+
+def _step_progressed(description: str, history: list[dict]) -> bool:
+    """Did the action step actually DO its job (vs. only narrate it)? At least one tool must have
+    SUCCEEDED; and a WRITE step that names a file must really have written it — a write tool
+    succeeded, or the named file now exists on disk (covers a shell-written file). This is the
+    guard against every phantom-success the live stress-test surfaced."""
+    succeeded = _succeeded_tools(history)
+    if not succeeded:
+        return False  # pure narration, or every tool call errored — nothing happened
+    if not _is_write_step(description):
+        return True
+    if succeeded & _WRITE_TOOLS:
+        return True  # a real file-writing tool succeeded
+    paths = _named_paths(description)
+    return bool(paths) and all(p.exists() for p in paths)  # e.g. a file written via the shell
 
 
 def _step_prompt(plan: Plan, step: Step) -> str:
@@ -365,10 +398,10 @@ async def run_plan(
             # but nothing landed on disk") AND mis-calling a tool so every call errors (e.g. an
             # invented argument). Either way nothing happened — retry; if it never really acts it
             # ends FAILED (honest + resumable), never a silent false DONE with a missing artifact.
-            if _expects_tool(step.description) and not _action_succeeded(hist):
+            if _expects_tool(step.description) and not _step_progressed(step.description, hist):
                 step.result = (
-                    f"attempt {step.attempts}: no tool call succeeded (narrated or the call "
-                    f"errored), so nothing was actually done"
+                    f"attempt {step.attempts}: nothing was actually done — the model narrated, "
+                    f"or its tool call errored, or it never wrote the file it was meant to"
                 )[:500]
                 save(plan)
                 if attempt + 1 < max_attempts:
