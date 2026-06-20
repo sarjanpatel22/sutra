@@ -246,6 +246,40 @@ def _retry_backoff_s() -> float:
         return 2.0
 
 
+# A plan step is almost always an ACTION (search / write / run / fetch / …) — the planner prompt
+# asks for "one file write, one command, one check", not "think". An action step MUST actually
+# call a tool; if the model returns text with no tool call it only NARRATED the work ("I wrote
+# the README…" with no file on disk — the live phantom-success bug). We detect that and retry,
+# so a no-op can never be banked as DONE. The verb list is the action surface Sutra's plans use.
+_ACTION_VERB = re.compile(
+    r"\b(search|find|look\s*up|google|browse|navigate|open|launch|start|"
+    r"write|save|create|append|edit|modify|update|generate|"
+    r"run|execute|exec|call|invoke|build|compile|"
+    r"download|fetch|upload|send|post|submit|push|pull|clone|commit|"
+    r"install|delete|remove|copy|move|rename|extract|parse|convert|"
+    r"encode|decode|scan|screenshot|capture|click|type|read|list|check|verify|test|query)\b",
+    re.I,
+)
+
+
+def _expects_tool(description: str) -> bool:
+    """True if the step is an action that should actually invoke a tool (vs. pure reasoning)."""
+    return bool(_ACTION_VERB.search(description or ""))
+
+
+def _used_tool(history: list[dict]) -> bool:
+    """True if the agent actually invoked a tool this turn — an assistant message carrying
+    tool_calls, or a tool-result message. Empty/None history (or text-only) means it did not."""
+    for m in history or []:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "tool":
+            return True
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            return True
+    return False
+
+
 def _step_prompt(plan: Plan, step: Step) -> str:
     """Ground one step in the overall goal AND the RESULTS of the steps already done — so a
     later step can build on what an earlier one produced (write the rooms the search step
@@ -262,7 +296,10 @@ def _step_prompt(plan: Plan, step: Step) -> str:
         context = "Progress so far — build on these results:\n" + "\n".join(lines) + "\n\n"
     return (
         f"You are working through a larger goal: {plan.goal}\n\n"
-        f"{context}Do ONLY this next step, then stop:\n{step.description}"
+        f"{context}Do ONLY this next step, then stop:\n{step.description}\n\n"
+        "Actually PERFORM the step by calling the right tool — write the file with the "
+        "file-writing tool, run the command, do the search. Describing what you would do, or "
+        "printing the file's contents in your reply, does NOT count and will be retried."
     )
 
 
@@ -296,18 +333,31 @@ async def run_plan(
         for attempt in range(max_attempts):
             step.attempts += 1
             try:
-                reply, _ = await agent_run(
+                reply, hist = await agent_run(
                     _step_prompt(plan, step), confirm=confirm, observe=observe
                 )
-                step.status = DONE
-                step.result = (reply or "").strip()[:500]
-                ok = True
-                break
             except Exception as e:  # noqa: BLE001 — retry (cooldown rotates models), then skip
                 step.result = f"attempt {step.attempts} failed: {e}"[:500]
                 save(plan)
                 if attempt + 1 < max_attempts:
                     await asyncio.sleep(_retry_backoff_s())
+                continue
+            # Phantom-success guard: an action step that called NO tool only NARRATED the work
+            # (said it wrote the file but nothing landed on disk — the live bug). Don't bank it
+            # as DONE — retry; if it never actually acts it ends FAILED (honest + resumable via
+            # `resume`), never a silent false DONE that leaves the artifact missing.
+            if _expects_tool(step.description) and not _used_tool(hist):
+                step.result = (
+                    f"attempt {step.attempts}: narrated the step without calling any tool"
+                )[:500]
+                save(plan)
+                if attempt + 1 < max_attempts:
+                    await asyncio.sleep(_retry_backoff_s())
+                continue
+            step.status = DONE
+            step.result = (reply or "").strip()[:500]
+            ok = True
+            break
         if not ok:
             step.status = FAILED  # gave up after retries → skip it, keep the plan moving
         save(plan)  # persist after EVERY step — the resumability guarantee

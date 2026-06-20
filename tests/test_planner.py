@@ -186,7 +186,9 @@ async def test_run_plan_executes_all_steps_and_persists(plans_dir, monkeypatch):
 
     async def fake_run(prompt, confirm=None, observe=None, **kw):
         prompts.append(prompt)
-        return "did it", []
+        # an action step actually calls a tool — history carries the tool round it ran
+        return "did it", [{"role": "assistant", "tool_calls": [{"id": "1"}]},
+                          {"role": "tool", "content": "ok"}]
 
     monkeypatch.setattr("friday.core.agent.run", fake_run)
     p = planner.new_plan("write a report", ["search", "write the file"])
@@ -249,6 +251,72 @@ async def test_run_plan_retries_and_recovers(plans_dir, monkeypatch):
     out = await planner.run_plan(planner.new_plan("g", ["a"]))
     assert out.status == "done" and out.steps[0].status == planner.DONE
     assert out.steps[0].attempts == 2                 # failed once, succeeded on the retry
+
+
+async def test_action_step_that_only_narrates_is_retried_then_failed(plans_dir, monkeypatch):
+    # The live phantom: the model SAYS it wrote the file but calls no tool, so nothing lands on
+    # disk. The step must NOT be banked as DONE — it's retried, then FAILED (honest + resumable).
+    monkeypatch.setenv("PLAN_STEP_ATTEMPTS", "3")
+    monkeypatch.setenv("PLAN_RETRY_BACKOFF", "0")
+    calls = {"n": 0}
+
+    async def fake_run(prompt, **kw):
+        calls["n"] += 1
+        return "Sure — I wrote ~/out.md with the summary.", []   # narration, NO tool call
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    out = await planner.run_plan(planner.new_plan("g", ["write ~/out.md with the summary"]))
+    assert calls["n"] == 3                              # retried up to the cap, never banked
+    assert out.steps[0].status == planner.FAILED       # honest failure, not a phantom DONE
+    assert out.status == "failed"
+
+
+async def test_action_step_recovers_once_it_actually_calls_a_tool(plans_dir, monkeypatch):
+    # Narrates on the first try, actually calls a tool on the retry → DONE (the guard lets a
+    # real action through; it only rejects the narrate-only no-op).
+    monkeypatch.setenv("PLAN_STEP_ATTEMPTS", "3")
+    monkeypatch.setenv("PLAN_RETRY_BACKOFF", "0")
+    state = {"n": 0}
+
+    async def fake_run(prompt, **kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            return "I will write the file.", []                       # narrated → retried
+        return "done", [{"role": "tool", "content": "wrote ~/out.md"}]  # actually acted
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    out = await planner.run_plan(planner.new_plan("g", ["write ~/out.md"]))
+    assert out.steps[0].status == planner.DONE
+    assert out.steps[0].attempts == 2
+
+
+async def test_reasoning_step_needs_no_tool(plans_dir, monkeypatch):
+    # A pure-reasoning step (no action verb) legitimately answers in text — no tool required, so
+    # the phantom guard must NOT catch it.
+    async def fake_run(prompt, **kw):
+        return "the three themes are A, B, C", []                  # text only, no tool
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    out = await planner.run_plan(planner.new_plan("g", ["summarize the three themes"]))
+    assert out.steps[0].status == planner.DONE
+
+
+def test_expects_tool_classifies_action_vs_reasoning():
+    assert planner._expects_tool("write ~/out.md with the rooms")
+    assert planner._expects_tool("search the web for beginner rooms")
+    assert planner._expects_tool("run tracker.py to verify output")
+    assert not planner._expects_tool("summarize the findings")
+    assert not planner._expects_tool("decide which approach is best")
+
+
+def test_used_tool_detects_tool_activity():
+    assert planner._used_tool([{"role": "assistant", "tool_calls": [{"id": "1"}]}])
+    assert planner._used_tool([{"role": "tool", "content": "x"}])
+    assert not planner._used_tool(
+        [{"role": "assistant", "content": "just text", "tool_calls": None}]
+    )
+    assert not planner._used_tool([])
+    assert not planner._used_tool(None)
 
 
 async def test_resume_retries_a_failed_step(plans_dir, monkeypatch):
