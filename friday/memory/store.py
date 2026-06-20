@@ -20,6 +20,33 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_falkor_sanitizer_patched = False
+
+
+def _patch_falkor_fulltext_sanitizer() -> None:
+    """Graphiti 0.29.1's FalkorDB fulltext sanitizer (`_SEPARATOR_MAP`) tokenizes punctuation to
+    whitespace but OMITS the backtick. So a remembered fact containing a markdown code span — e.g.
+    "wrote `~/thm_kit/rooms.md`" — leaks a bare ` into the RediSearch query, which raises
+    "RediSearch: Syntax error" inside `add_episode`; `remember()` then catches it and the whole
+    episode is LOST. (Seen live: every markdown-y episode during a plan run failed to persist.)
+
+    Fix: add the backtick to that separator map so it's stripped like every other special char.
+    Best-effort and idempotent — if a future graphiti changes these internals, this no-ops and
+    we simply fall back to the prior (degraded) behaviour rather than crashing."""
+    global _falkor_sanitizer_patched
+    if _falkor_sanitizer_patched:
+        return
+    try:
+        from graphiti_core.driver.falkordb.operations import search_ops
+
+        sep_map = getattr(search_ops, "_SEPARATOR_MAP", None)
+        if isinstance(sep_map, dict) and ord("`") not in sep_map:
+            search_ops._SEPARATOR_MAP = {**sep_map, ord("`"): " "}
+    except Exception as e:  # noqa: BLE001 — graphiti/falkordb absent or internals moved
+        logger.debug("falkor sanitizer patch skipped: %s", e)
+    _falkor_sanitizer_patched = True
+
+
 # Tiny stopword set to keep keyword recall focused on content terms. RediSearch
 # drops its own stopwords too; this just trims obvious query filler.
 _STOPWORDS = {
@@ -241,6 +268,7 @@ class MemoryStore:
             logger.info("memory: disabled via MEMORY_ENABLED")
             return False
         try:
+            _patch_falkor_fulltext_sanitizer()  # backtick fix — must run before any fulltext query
             self._graphiti = self._build()
             await self._graphiti.build_indices_and_constraints()
             self._available = True
