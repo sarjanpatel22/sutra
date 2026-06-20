@@ -15,7 +15,9 @@ as JSON, loadable by slug. Decomposition (`make_plan`) and execution (`run_plan`
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -46,6 +48,7 @@ class Step:
     description: str
     status: str = PENDING
     result: str = ""  # short note / outcome, filled in once it runs
+    attempts: int = 0  # how many times it's been tried (across retries/resumes), for visibility
 
 
 @dataclass
@@ -101,7 +104,8 @@ def save(plan: Plan) -> Path:
         "status": plan.status,
         "created_at": plan.created_at,
         "steps": [
-            {"n": s.n, "description": s.description, "status": s.status, "result": s.result}
+            {"n": s.n, "description": s.description, "status": s.status,
+             "result": s.result, "attempts": s.attempts}
             for s in plan.steps
         ],
     }
@@ -125,6 +129,7 @@ def load(slug: str) -> Plan | None:
                 description=s["description"],
                 status=s.get("status", PENDING),
                 result=s.get("result", ""),
+                attempts=int(s.get("attempts", 0)),
             )
             for s in d.get("steps", [])
         ]
@@ -223,6 +228,24 @@ def _budget_ok() -> bool:
     return _budget.can_afford(Tier.HEAVY)
 
 
+def _step_attempts() -> int:
+    """Inline retries per step before giving up (PLAN_STEP_ATTEMPTS, default 3). The router's
+    rate-limit cooldown rotates to a fresh/local model between tries, so a rate-limited step
+    usually recovers on its own — key to a long run not stalling on a transient failure."""
+    try:
+        return max(1, int(os.getenv("PLAN_STEP_ATTEMPTS", "3")))
+    except ValueError:
+        return 3
+
+
+def _retry_backoff_s() -> float:
+    """Seconds to wait between step retries (PLAN_RETRY_BACKOFF, default 2)."""
+    try:
+        return max(0.0, float(os.getenv("PLAN_RETRY_BACKOFF", "2")))
+    except ValueError:
+        return 2.0
+
+
 def _step_prompt(plan: Plan, step: Step) -> str:
     """Ground one step in the overall goal AND the RESULTS of the steps already done — so a
     later step can build on what an earlier one produced (write the rooms the search step
@@ -250,31 +273,43 @@ async def run_plan(
     observe: ObserveFn | None = None,
 ) -> Plan:
     """Execute the plan's PENDING steps one at a time, saving after each so progress survives
-    a crash or token reset. Pauses — leaving the current step PENDING — when the budget is
-    exhausted OR a step errors (e.g. a rate limit), so a later `resume_plan` picks up at
-    exactly that step instead of losing the work. Returns the final plan."""
+    a crash or token reset.
+
+    A step that errors is RETRIED inline up to PLAN_STEP_ATTEMPTS (the rate-limit cooldown
+    rotates models between tries, so a transient/rate-limited failure usually recovers); if it
+    still fails it's marked FAILED and the run CONTINUES to the next step, so one bad step can't
+    freeze a long unattended run. Only BUDGET exhaustion pauses (it needs a reset to recover) —
+    `resume_plan` then continues, re-attempting any FAILED steps too. Returns the final plan."""
     from friday.core.agent import run as agent_run
 
     plan.status = "active"
     save(plan)
+    max_attempts = _step_attempts()
     while (step := plan.next_pending()) is not None:
         if not _budget_ok():
-            plan.status = "paused"  # over budget — stop; step stays PENDING for resume
+            plan.status = "paused"  # over budget — stop; resume after a reset
             save(plan)
             return plan
         if observe:
             observe("step_start", {"n": step.n, "description": step.description})
-        try:
-            reply, _ = await agent_run(_step_prompt(plan, step), confirm=confirm, observe=observe)
-        except Exception as e:  # noqa: BLE001 — a transient failure must not lose the plan;
-            step.result = f"paused after error: {e}"[:500]  # leave the step PENDING to retry
-            plan.status = "paused"
-            save(plan)
-            if observe:
-                observe("step_end", {"n": step.n, "status": "paused"})
-            return plan
-        step.status = DONE
-        step.result = (reply or "").strip()[:500]
+        ok = False
+        for attempt in range(max_attempts):
+            step.attempts += 1
+            try:
+                reply, _ = await agent_run(
+                    _step_prompt(plan, step), confirm=confirm, observe=observe
+                )
+                step.status = DONE
+                step.result = (reply or "").strip()[:500]
+                ok = True
+                break
+            except Exception as e:  # noqa: BLE001 — retry (cooldown rotates models), then skip
+                step.result = f"attempt {step.attempts} failed: {e}"[:500]
+                save(plan)
+                if attempt + 1 < max_attempts:
+                    await asyncio.sleep(_retry_backoff_s())
+        if not ok:
+            step.status = FAILED  # gave up after retries → skip it, keep the plan moving
         save(plan)  # persist after EVERY step — the resumability guarantee
         if observe:
             observe("step_end", {"n": step.n, "status": step.status})
@@ -288,10 +323,19 @@ async def resume_plan(
     *,
     confirm: ConfirmFn | None = None,
     observe: ObserveFn | None = None,
+    retry_failed: bool = True,
 ) -> Plan | None:
     """Reload a saved plan and continue from its first unfinished step — the 'after a token
-    reset, pick up where you left off' entry point. None if no such plan exists."""
+    reset, pick up where you left off' entry point. None if no such plan exists.
+
+    retry_failed (default True): re-attempt steps that FAILED on a previous run — you're
+    resuming because conditions changed (budget reset, a service back up), so the steps that
+    couldn't finish before are worth another try. Set False to only run still-PENDING steps."""
     plan = load(slug)
     if plan is None:
         return None
+    if retry_failed:
+        for s in plan.steps:
+            if s.status == FAILED:
+                s.status = PENDING
     return await run_plan(plan, confirm=confirm, observe=observe)

@@ -211,16 +211,63 @@ async def test_run_plan_pauses_over_budget_leaving_step_pending(plans_dir, monke
     assert planner.load(p.slug).status == "paused"
 
 
-async def test_run_plan_pauses_on_step_error_for_retry(plans_dir, monkeypatch):
+async def test_run_plan_retries_then_fails_step_and_continues(plans_dir, monkeypatch):
+    # A persistently-failing step is retried up to the cap, then SKIPPED — the run keeps
+    # going so one bad step can't freeze a long unattended plan.
+    monkeypatch.setenv("PLAN_STEP_ATTEMPTS", "2")
+    monkeypatch.setenv("PLAN_RETRY_BACKOFF", "0")
+    tries = {"a": 0}
+
     async def fake_run(prompt, **kw):
-        raise RuntimeError("rate limited")
+        if "do step a" in prompt:          # step a always fails
+            tries["a"] += 1
+            raise RuntimeError("boom")
+        return "ok", []                    # step b succeeds
 
     monkeypatch.setattr("friday.core.agent.run", fake_run)
-    p = planner.new_plan("g", ["a", "b"])
+    p = planner.new_plan("g", ["do step a", "do step b"])
     out = await planner.run_plan(p)
-    assert out.status == "paused"
-    assert out.steps[0].status == planner.PENDING         # left PENDING so resume retries it
-    assert "rate limited" in out.steps[0].result
+    assert tries["a"] == 2                            # retried up to the cap
+    assert out.steps[0].status == planner.FAILED and out.steps[0].attempts == 2
+    assert out.steps[1].status == planner.DONE        # the run CONTINUED past the failure
+    assert out.status == "failed"                     # overall failed (a step couldn't finish)
+
+
+async def test_run_plan_retries_and_recovers(plans_dir, monkeypatch):
+    # A transient failure (e.g. rate limit) recovers on retry — the cooldown rotates models.
+    monkeypatch.setenv("PLAN_STEP_ATTEMPTS", "3")
+    monkeypatch.setenv("PLAN_RETRY_BACKOFF", "0")
+    state = {"n": 0}
+
+    async def fake_run(prompt, **kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("transient rate limit")
+        return "recovered", []
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    out = await planner.run_plan(planner.new_plan("g", ["a"]))
+    assert out.status == "done" and out.steps[0].status == planner.DONE
+    assert out.steps[0].attempts == 2                 # failed once, succeeded on the retry
+
+
+async def test_resume_retries_a_failed_step(plans_dir, monkeypatch):
+    monkeypatch.setenv("PLAN_STEP_ATTEMPTS", "1")
+    monkeypatch.setenv("PLAN_RETRY_BACKOFF", "0")
+    down = {"on": True}
+
+    async def fake_run(prompt, **kw):
+        if down["on"]:
+            raise RuntimeError("service down")
+        return "ok now", []
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    p = planner.new_plan("g", ["a"])
+    assert (await planner.run_plan(p)).steps[0].status == planner.FAILED  # failed first run
+
+    down["on"] = False                                # conditions recover
+    resumed = await planner.resume_plan(p.slug)       # resume re-attempts the FAILED step
+    assert resumed.status == "done" and resumed.steps[0].status == planner.DONE
 
 
 async def test_run_plan_persists_progress_then_resume_finishes(plans_dir, monkeypatch):
