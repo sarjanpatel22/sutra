@@ -89,3 +89,79 @@ def test_list_plans_newest_first(plans_dir):
     planner.save(b)
     listed = planner.list_plans()
     assert [p.slug for p in listed] == ["second-goal", "first-goal"]  # newest first
+
+
+# --- PR2: decomposition (make_plan / _parse_steps) ---------------------------------
+
+import types  # noqa: E402
+
+
+def _resp(content):
+    msg = types.SimpleNamespace(content=content)
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+
+def test_parse_steps_json_array():
+    assert planner._parse_steps('["a", "b", "c"]') == ["a", "b", "c"]
+
+
+def test_parse_steps_strips_markdown_fence():
+    assert planner._parse_steps('```json\n["a", "b"]\n```') == ["a", "b"]
+
+
+def test_parse_steps_numbered_and_bulleted_fallback():
+    raw = "1. search the web\n2) write the file\n- check it\n* and verify"
+    assert planner._parse_steps(raw) == [
+        "search the web", "write the file", "check it", "and verify",
+    ]
+
+
+def test_parse_steps_empty():
+    assert planner._parse_steps("") == []
+    assert planner._parse_steps("   ") == []
+
+
+async def test_make_plan_decomposes_goal(monkeypatch):
+    async def fake_complete(messages, **kw):
+        assert kw.get("local_tools_first") is False  # decompose uses the strong model, not local
+        return _resp('["recon the box", "exploit the service", "grab the flag"]')
+
+    monkeypatch.setattr(planner, "complete", fake_complete)
+    p = await planner.make_plan("compromise the box")
+    assert [s.description for s in p.steps] == [
+        "recon the box", "exploit the service", "grab the flag",
+    ]
+    assert p.status == "active" and p.slug == "compromise-the-box"
+    assert p.next_pending().n == 1
+
+
+async def test_make_plan_numbered_reply(monkeypatch):
+    async def fake_complete(messages, **kw):
+        return _resp("1. search\n2. summarize\n3. save")
+
+    monkeypatch.setattr(planner, "complete", fake_complete)
+    p = await planner.make_plan("do a thing")
+    assert [s.description for s in p.steps] == ["search", "summarize", "save"]
+
+
+async def test_make_plan_caps_at_max_steps(monkeypatch):
+    async def fake_complete(messages, **kw):
+        return _resp(json.dumps([f"step {i}" for i in range(20)]))
+
+    monkeypatch.setattr(planner, "complete", fake_complete)
+    p = await planner.make_plan("big goal", max_steps=5)
+    assert len(p.steps) == 5
+
+
+async def test_make_plan_empty_goal_is_failed():
+    p = await planner.make_plan("   ")
+    assert p.status == "failed" and p.steps == []
+
+
+async def test_make_plan_unusable_reply_is_failed(monkeypatch):
+    async def fake_complete(messages, **kw):
+        return _resp("[]")  # model returned an empty list → nothing to do
+
+    monkeypatch.setattr(planner, "complete", fake_complete)
+    p = await planner.make_plan("x")
+    assert p.status == "failed" and p.steps == []

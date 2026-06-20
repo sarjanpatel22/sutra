@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from friday.core.router import Tier, complete
+
 _PLANS_DIR = Path.home() / ".local" / "share" / "friday" / "plans"
 
 # Step lifecycle. PENDING → DONE (ran ok) / FAILED (ran, errored) / SKIPPED (deliberately).
@@ -138,3 +140,57 @@ def list_plans() -> list[Plan]:
         return []
     loaded = [p for f in _PLANS_DIR.glob("*.json") if (p := load(f.stem))]
     return sorted(loaded, key=lambda p: p.created_at, reverse=True)
+
+
+# --- decomposition: the strong model divides the goal into small steps -------------
+
+_PLAN_SYSTEM = (
+    "You are a planner. Break the user's goal into a SHORT ordered list of small, concrete "
+    "steps that a tool-using assistant executes one at a time. Each step is ONE action — a "
+    "single web search, one file write, one command, one check. Use the FEWEST steps that "
+    "actually accomplish the goal (usually 3-8; never more than 12). Do not include vague "
+    "steps like 'analyze' or 'think'. Output ONLY a JSON array of step strings — no prose, no "
+    'markdown fences. Example: ["search the web for X", "write a summary to ~/out.md"]'
+)
+
+
+def _parse_steps(raw: str) -> list[str]:
+    """Pull an ordered step list out of the model's reply. Prefers a JSON array (what the
+    prompt asks for); falls back to numbered / bulleted lines so a chatty model still works."""
+    s = (raw or "").strip()
+    s = re.sub(r"^```[a-zA-Z]*\n?", "", s)  # strip a leading ```json fence
+    s = re.sub(r"\n?```\s*$", "", s).strip()
+    try:
+        data = json.loads(s)
+        if isinstance(data, list):
+            return [str(x).strip() for x in data if str(x).strip()]
+    except json.JSONDecodeError:
+        pass
+    # Fallback: one step per non-empty line, stripping "1." / "2)" / "- " / "* " markers.
+    out: list[str] = []
+    for line in s.splitlines():
+        line = re.sub(r"^\s*(?:\d+[.)]|[-*•])\s*", "", line.strip())
+        if line and not line.startswith(("{", "[", "}")):
+            out.append(line)
+    return out
+
+
+async def make_plan(goal: str, *, tier: Tier = Tier.HEAVY, max_steps: int = 12) -> Plan:
+    """Decompose `goal` into an ordered Plan using the strong model — this is the
+    'understand + divide the work' part, so it goes cloud-first (Claude when paid, the free
+    70B otherwise), never the small local model. Does NOT save; the caller persists it."""
+    goal = (goal or "").strip()
+    if not goal:
+        return Plan(goal="", slug="plan", steps=[], status="failed")
+    messages = [
+        {"role": "system", "content": _PLAN_SYSTEM},
+        {"role": "user", "content": goal},
+    ]
+    resp = await complete(
+        messages, tier=tier, tools=None, local_tools_first=False, max_tokens=800
+    )
+    steps = _parse_steps(resp.choices[0].message.content or "")[:max_steps]
+    plan = new_plan(goal, steps)
+    if not plan.steps:
+        plan.status = "failed"  # the model returned nothing usable — surfaced, not silent
+    return plan
