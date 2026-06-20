@@ -554,6 +554,61 @@ async def test_prompt_cache_can_be_disabled(monkeypatch):
     assert seen[0]["messages"][0]["content"] == "sys"
 
 
+# --- rate-limit cooldown: route around an exhausted model --------------------------
+
+@pytest.fixture
+def _clear_rl():
+    router._RATE_LIMITED.clear()
+    yield
+    router._RATE_LIMITED.clear()
+
+
+def test_is_rate_limit_error_detection():
+    assert router._is_rate_limit_error(Exception("Error code: 429 - rate limit"))
+    assert router._is_rate_limit_error(Exception("rate limit exceeded"))
+    assert router._is_rate_limit_error(Exception("quota exceeded for today"))
+
+    class RateLimitError(Exception):
+        pass
+
+    assert router._is_rate_limit_error(RateLimitError("x"))          # detected by class name
+    assert not router._is_rate_limit_error(Exception("connection refused"))  # not a rate limit
+
+
+def test_cooling_down_and_expiry(_clear_rl):
+    router._mark_cooling_down("groq/x")
+    assert router._is_cooling_down("groq/x")
+    router._RATE_LIMITED["groq/x"] = 0.0                             # pretend the cooldown elapsed
+    assert not router._is_cooling_down("groq/x")
+    assert "groq/x" not in router._RATE_LIMITED                      # auto-cleaned
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_model_skipped_on_next_call(monkeypatch, _clear_rl):
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")             # cloud-first → groq qwen3 first
+    calls: list[str] = []
+
+    async def fake(*, model, messages, tools=None, **kw):
+        calls.append(model)
+        if model.endswith("qwen3-32b"):
+            raise Exception("litellm.RateLimitError: 429 too many requests")
+        return _fake_response()
+
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+    msgs = [{"role": "user", "content": "hi"}]
+
+    # Call 1: qwen3-32b 429s → marked cooling down → falls through to a working model.
+    await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL])
+    assert calls[0].endswith("qwen3-32b")
+    assert router._is_cooling_down("groq/qwen/qwen3-32b")
+
+    # Call 2: the exhausted model is SKIPPED — no wasted 429 round-trip — yet a model still runs.
+    calls.clear()
+    await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL])
+    assert not any(m.endswith("qwen3-32b") for m in calls), "cooled-down model must be skipped"
+    assert calls, "but it still routed to a working model"
+
+
 @pytest.mark.asyncio
 async def test_free_only_never_escalates_to_paid(monkeypatch):
     """A MEDIUM tool turn escalates to paid Claude when allow_paid + budget allow; a

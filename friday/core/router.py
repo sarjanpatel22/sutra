@@ -121,6 +121,49 @@ def _cache_token_counts(usage: Any) -> tuple[int, int]:
     write = getattr(usage, "cache_creation_input_tokens", 0) or 0
     return int(read), int(write)
 
+
+# Rate-limit cooldown. When a free cloud model returns a 429/quota error, skip it for a
+# while so the router routes STRAIGHT to a fresh (or local) model instead of re-hitting the
+# exhausted one on every call. Module-level: persists across calls in a session, clears on
+# restart. Local Ollama never 429s, so the chain always keeps a working final option.
+_RATE_LIMITED: dict[str, float] = {}
+
+
+def _rl_cooldown_s() -> float:
+    """How long (seconds) to skip a model after it rate-limits. ROUTER_RATELIMIT_COOLDOWN."""
+    try:
+        return float(os.getenv("ROUTER_RATELIMIT_COOLDOWN", "120"))
+    except ValueError:
+        return 120.0
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """True for a 429 / quota / rate-limit error (vs. a connection error, bad request, etc.)."""
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return (
+        "ratelimit" in name
+        or "429" in msg
+        or "rate limit" in msg
+        or "rate_limit" in msg
+        or "quota" in msg
+        or "too many requests" in msg
+    )
+
+
+def _mark_cooling_down(model: str) -> None:
+    _RATE_LIMITED[model] = time.time() + _rl_cooldown_s()
+
+
+def _is_cooling_down(model: str) -> bool:
+    until = _RATE_LIMITED.get(model)
+    if until is None:
+        return False
+    if time.time() >= until:
+        _RATE_LIMITED.pop(model, None)  # cooldown elapsed — let the model back in
+        return False
+    return True
+
 # Local models that cannot accept a tools array AT ALL — Ollama hard-rejects the
 # request ("does not support tools"). Matched as a substring of the model id. Every
 # OTHER local model (qwen2.5, llama3.x) emits real tool_calls, so it KEEPS its tools
@@ -462,8 +505,13 @@ async def complete(
             if m not in models:
                 models.append(m)
 
+    # Skip models cooling down from a recent 429 → go straight to a fresh/local one instead of
+    # eating the round-trip + 429 again. Local never rate-limits, so something is always left;
+    # if somehow ALL are cooling down, try the full list anyway rather than failing outright.
+    attempt = [m for m in models if not _is_cooling_down(m)] or models
+
     last_err: Exception | None = None
-    for model in models:
+    for model in attempt:
         # Strip tools only for local models that genuinely can't accept them (gemma —
         # Ollama rejects the request outright). qwen2.5/llama KEEP their tools and
         # function-call locally, which is what makes the offline fallback actually act.
@@ -502,6 +550,8 @@ async def complete(
                 )
             return response
         except Exception as e:  # noqa: BLE001
+            if _is_rate_limit_error(e):
+                _mark_cooling_down(model)  # skip this model on the next calls until it cools
             last_err = e
             continue
 
