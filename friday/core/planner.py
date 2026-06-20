@@ -224,12 +224,19 @@ def _budget_ok() -> bool:
 
 
 def _step_prompt(plan: Plan, step: Step) -> str:
-    """Ground one step in the overall goal + what's already done, so the executor stays on
-    track and doesn't redo finished work or wander off the objective."""
+    """Ground one step in the overall goal AND the RESULTS of the steps already done — so a
+    later step can build on what an earlier one produced (write the rooms the search step
+    found, exploit the service the recon step saw) instead of starting blind. Without the
+    results, a multi-step plan can't actually accomplish coherent work."""
     done = [s for s in plan.steps if s.status == DONE]
     context = ""
     if done:
-        context = "Already completed:\n" + "\n".join(f"- {s.description}" for s in done) + "\n\n"
+        lines: list[str] = []
+        for s in done:
+            lines.append(f"- {s.description}")
+            if s.result:
+                lines.append(f"    result: {s.result}")
+        context = "Progress so far — build on these results:\n" + "\n".join(lines) + "\n\n"
     return (
         f"You are working through a larger goal: {plan.goal}\n\n"
         f"{context}Do ONLY this next step, then stop:\n{step.description}"

@@ -262,3 +262,22 @@ def test_budget_ok_paid_respects_affordability(monkeypatch):
     monkeypatch.setattr("friday.core.router.allow_paid", lambda: True)
     monkeypatch.setattr("friday.core.router._budget.can_afford", lambda t: False)
     assert planner._budget_ok() is False
+
+
+def test_step_prompt_includes_prior_step_results():
+    # The coherence fix: a later step must SEE what earlier steps produced, not just their
+    # descriptions — otherwise it can't build on them (write the rooms the search found).
+    p = planner.new_plan("write a THM report", ["search the web", "write the file"])
+    p.steps[0].status = planner.DONE
+    p.steps[0].result = "found rooms: Vulnversity, Blue, RootMe"
+    prompt = planner._step_prompt(p, p.steps[1])
+    assert "write a THM report" in prompt                     # the overall goal
+    assert "found rooms: Vulnversity, Blue, RootMe" in prompt  # step 1's RESULT is shared
+    assert "write the file" in prompt                         # the step to do now
+
+
+def test_step_prompt_first_step_has_no_progress_block():
+    p = planner.new_plan("do a thing", ["first step", "second"])
+    prompt = planner._step_prompt(p, p.steps[0])
+    assert "Progress so far" not in prompt                    # nothing done yet
+    assert "do a thing" in prompt and "first step" in prompt
