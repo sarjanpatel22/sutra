@@ -1050,6 +1050,122 @@ def skill_reject(name: str = typer.Argument(..., help="Pending skill to discard"
                   else f"[red]no pending skill named '{name}'[/red]")
 
 
+plan_app = typer.Typer(
+    help="Task planner — break a big goal into steps, run them one at a time, resume after a pause."
+)
+app.add_typer(plan_app, name="plan")
+
+_PLAN_MARK = {"done": ("✓", "green"), "failed": ("✗", "red"),
+              "skipped": ("–", "yellow"), "pending": ("○", "dim")}
+
+
+def _render_plan(p: Any) -> None:
+    done, total = p.progress()
+    console.print(f"[bold]{p.goal}[/bold] [dim]({p.slug})[/dim] — {done}/{total} [{p.status}]")
+    for s in p.steps:
+        mark, color = _PLAN_MARK.get(s.status, ("?", "white"))
+        console.print(f"  [{color}]{mark}[/{color}] {s.n}. {s.description}")
+        if s.result and s.status in ("done", "failed"):
+            console.print(f"     [dim]{s.result[:140]}[/dim]")
+
+
+def _plan_confirm(yes: bool):
+    """Hands-free auto-approve with -y, else an interactive y/n per gated step."""
+    async def _auto(skill: str, args: dict[str, Any]) -> bool:
+        console.print(f"     [dim]↳ auto-approved {skill}[/dim]")
+        return True
+
+    async def _ask(skill: str, args: dict[str, Any]) -> bool:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, lambda: Confirm.ask(f"     run [bold]{skill}[/bold]?", default=False)
+        )
+
+    return _auto if yes else _ask
+
+
+def _plan_observe(kind: str, data: dict[str, Any]) -> None:
+    if kind == "step_start":
+        console.print(f"\n[cyan]▶ {data['n']}.[/cyan] {data['description']}")
+    elif kind == "step_end":
+        mark, color = _PLAN_MARK.get(data.get("status", ""), ("?", "white"))
+        console.print(f"  [{color}]{mark} {data.get('status')}[/{color}]")
+
+
+@plan_app.command("run")
+def plan_run(
+    goal: str = typer.Argument(..., help="The goal to plan and execute"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve gated steps (hands-free)"),
+) -> None:
+    """Break a goal into steps and run them, saving after each so it's resumable."""
+    from friday.core.planner import make_plan, run_plan, save
+
+    async def _run() -> None:
+        with console.status("[cyan]planning…[/cyan]"):
+            plan = await make_plan(goal)
+        if not plan.steps:
+            console.print("[red]couldn't break that into steps — try rephrasing the goal.[/red]")
+            return
+        save(plan)
+        console.print("[bold]Plan:[/bold]")
+        _render_plan(plan)
+        out = await run_plan(plan, confirm=_plan_confirm(yes), observe=_plan_observe)
+        console.print("\n[bold]Result:[/bold]")
+        _render_plan(out)
+        if out.status == "paused":
+            console.print(
+                f"\n[yellow]paused[/yellow] — resume: [cyan]sutra plan resume {out.slug}[/cyan]"
+            )
+
+    asyncio.run(_run())
+
+
+@plan_app.command("resume")
+def plan_resume(
+    slug: str = typer.Argument(..., help="Plan slug to resume (see: sutra plan list)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve gated steps"),
+) -> None:
+    """Resume a paused plan from exactly where it stopped."""
+    from friday.core.planner import resume_plan
+
+    async def _run() -> None:
+        out = await resume_plan(slug, confirm=_plan_confirm(yes), observe=_plan_observe)
+        if out is None:
+            console.print(f"[red]no plan '{slug}'[/red] — see: [cyan]sutra plan list[/cyan]")
+            return
+        console.print("\n[bold]Result:[/bold]")
+        _render_plan(out)
+
+    asyncio.run(_run())
+
+
+@plan_app.command("list")
+def plan_list() -> None:
+    """List saved plans, newest first."""
+    from friday.core.planner import list_plans
+
+    plans = list_plans()
+    if not plans:
+        console.print('[dim]no plans yet — make one: sutra plan run "<goal>"[/dim]')
+        return
+    for p in plans:
+        done, total = p.progress()
+        color = _PLAN_MARK.get(p.status, ("?", "white"))[1]
+        console.print(f"  [{color}]•[/{color}] [bold]{p.slug}[/bold] "
+                      f"[dim]{done}/{total} {p.status}[/dim] — {p.goal[:60]}")
+
+
+@plan_app.command("status")
+def plan_status(slug: str = typer.Argument(..., help="Plan slug (see: sutra plan list)")) -> None:
+    """Show a plan's steps and progress."""
+    from friday.core.planner import load
+
+    p = load(slug)
+    if p is None:
+        console.print(f"[red]no plan '{slug}'[/red]")
+        return
+    _render_plan(p)
+
+
 @app.command()
 def mcp() -> None:
     """Connect to configured MCP servers and list the tools they expose to Sutra."""
