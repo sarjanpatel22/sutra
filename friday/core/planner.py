@@ -267,15 +267,33 @@ def _expects_tool(description: str) -> bool:
     return bool(_ACTION_VERB.search(description or ""))
 
 
-def _used_tool(history: list[dict]) -> bool:
-    """True if the agent actually invoked a tool this turn — an assistant message carrying
-    tool_calls, or a tool-result message. Empty/None history (or text-only) means it did not."""
+# A tool result is an error if its JSON payload carries one of these keys (see
+# agent._run_tool_calls: failures come back as {"error"/"declined"/"blocked": …}).
+_TOOL_FAIL_KEYS = ("error", "declined", "blocked")
+
+
+def _tool_result_ok(content: object) -> bool:
+    """True if a single tool-result payload represents a SUCCESS (not error/declined/blocked).
+    Tolerant of truncated content (a long success gets capped): only a clear leading fail key
+    counts as failure, so a big real result isn't misread as a failure."""
+    text = content if isinstance(content, str) else json.dumps(content) if content else ""
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return not any(data.get(k) for k in _TOOL_FAIL_KEYS)
+        return True
+    except json.JSONDecodeError:
+        head = text[:80]
+        return not any(f'"{k}"' in head for k in _TOOL_FAIL_KEYS)
+
+
+def _action_succeeded(history: list[dict]) -> bool:
+    """True if at least one tool call in the step actually SUCCEEDED. An action step that called
+    no tool (only narrated — the live 'said it wrote the file but didn't' phantom) OR whose every
+    tool call errored / was declined (e.g. the model invented a bad argument, so nothing landed
+    on disk) has NOT made progress, and must be retried rather than banked as DONE."""
     for m in history or []:
-        if not isinstance(m, dict):
-            continue
-        if m.get("role") == "tool":
-            return True
-        if m.get("role") == "assistant" and m.get("tool_calls"):
+        if isinstance(m, dict) and m.get("role") == "tool" and _tool_result_ok(m.get("content")):
             return True
     return False
 
@@ -342,13 +360,15 @@ async def run_plan(
                 if attempt + 1 < max_attempts:
                     await asyncio.sleep(_retry_backoff_s())
                 continue
-            # Phantom-success guard: an action step that called NO tool only NARRATED the work
-            # (said it wrote the file but nothing landed on disk — the live bug). Don't bank it
-            # as DONE — retry; if it never actually acts it ends FAILED (honest + resumable via
-            # `resume`), never a silent false DONE that leaves the artifact missing.
-            if _expects_tool(step.description) and not _used_tool(hist):
+            # Phantom-success guard: an action step is only DONE if a tool actually SUCCEEDED.
+            # Catches both the model NARRATING the work (no tool call — "said it wrote the file
+            # but nothing landed on disk") AND mis-calling a tool so every call errors (e.g. an
+            # invented argument). Either way nothing happened — retry; if it never really acts it
+            # ends FAILED (honest + resumable), never a silent false DONE with a missing artifact.
+            if _expects_tool(step.description) and not _action_succeeded(hist):
                 step.result = (
-                    f"attempt {step.attempts}: narrated the step without calling any tool"
+                    f"attempt {step.attempts}: no tool call succeeded (narrated or the call "
+                    f"errored), so nothing was actually done"
                 )[:500]
                 save(plan)
                 if attempt + 1 < max_attempts:

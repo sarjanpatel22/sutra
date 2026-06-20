@@ -309,14 +309,45 @@ def test_expects_tool_classifies_action_vs_reasoning():
     assert not planner._expects_tool("decide which approach is best")
 
 
-def test_used_tool_detects_tool_activity():
-    assert planner._used_tool([{"role": "assistant", "tool_calls": [{"id": "1"}]}])
-    assert planner._used_tool([{"role": "tool", "content": "x"}])
-    assert not planner._used_tool(
-        [{"role": "assistant", "content": "just text", "tool_calls": None}]
-    )
-    assert not planner._used_tool([])
-    assert not planner._used_tool(None)
+async def test_action_step_with_only_failed_tool_calls_is_not_done(plans_dir, monkeypatch):
+    # Second-layer phantom the 7-step live run exposed: the model DOES call write_file but with
+    # an invented `command` arg, so the call errors and tracker.py never lands — yet the step was
+    # marked DONE just because a tool was *attempted*. Now a step needs a tool that SUCCEEDS.
+    monkeypatch.setenv("PLAN_STEP_ATTEMPTS", "2")
+    monkeypatch.setenv("PLAN_RETRY_BACKOFF", "0")
+    calls = {"n": 0}
+
+    async def fake_run(prompt, **kw):
+        calls["n"] += 1
+        return "I tried to write it.", [
+            {"role": "assistant", "tool_calls": [{"id": "1"}]},
+            {"role": "tool",
+             "content": '{"error": "write_file() got an unexpected keyword argument command"}'},
+        ]
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    out = await planner.run_plan(planner.new_plan("g", ["write ~/thm_kit/tracker.py"]))
+    assert calls["n"] == 2                          # retried — a failed call isn't banked as DONE
+    assert out.steps[0].status == planner.FAILED
+
+
+def test_action_succeeded_distinguishes_success_from_failure():
+    ok = [{"role": "tool", "content": '{"path": "/home/u/out.md", "bytes": 42}'}]
+    err = [{"role": "tool", "content": '{"error": "bad argument command"}'}]
+    declined = [{"role": "tool", "content": '{"declined": true, "skill": "write_file"}'}]
+    assert planner._action_succeeded(ok)
+    assert not planner._action_succeeded(err)
+    assert not planner._action_succeeded(declined)
+    assert not planner._action_succeeded([])            # no tool at all (pure narration)
+    assert not planner._action_succeeded(None)
+    assert planner._action_succeeded(err + ok)          # one failed, one succeeded → progress
+
+
+def test_tool_result_ok_tolerates_truncated_success():
+    # a long success result capped mid-JSON must NOT be misread as a failure
+    assert planner._tool_result_ok('{"results": [{"title": "Vulnvers')     # truncated, no fail key
+    assert planner._tool_result_ok("ok")                                   # plain non-JSON string
+    assert not planner._tool_result_ok('{"error": "boom and a very long')  # leading error key
 
 
 async def test_resume_retries_a_failed_step(plans_dir, monkeypatch):
