@@ -163,6 +163,14 @@ def _parse_steps(raw: str) -> list[str]:
     """Pull an ordered step list out of the model's reply. Prefers a JSON array (what the
     prompt asks for); falls back to numbered / bulleted lines so a chatty model still works."""
     s = (raw or "").strip()
+    # Reasoning models (qwen3, etc.) wrap chain-of-thought in <think>…</think>. Strip it, or
+    # every THOUGHT line becomes a fake step (caught live: an 8-"step" plan that was just the
+    # model thinking). Handle a complete block, content after a close tag, and a dangling
+    # open block (the model ran out of tokens mid-thought → no real answer).
+    s = re.sub(r"(?is)<think>.*?</think>", "", s)
+    if "</think>" in s:
+        s = s.rsplit("</think>", 1)[-1]
+    s = re.sub(r"(?is)<think>.*$", "", s).strip()
     s = re.sub(r"^```[a-zA-Z]*\n?", "", s)  # strip a leading ```json fence
     s = re.sub(r"\n?```\s*$", "", s).strip()
     try:
@@ -191,8 +199,10 @@ async def make_plan(goal: str, *, tier: Tier = Tier.HEAVY, max_steps: int = 12) 
         {"role": "system", "content": _PLAN_SYSTEM},
         {"role": "user", "content": goal},
     ]
+    # Generous max_tokens: a reasoning model (qwen3) spends a big chunk THINKING before it
+    # emits the JSON, so 800 cut it off mid-thought with no plan. 2500 lets it finish.
     resp = await complete(
-        messages, tier=tier, tools=None, local_tools_first=False, max_tokens=800
+        messages, tier=tier, tools=None, local_tools_first=False, max_tokens=2500
     )
     steps = _parse_steps(resp.choices[0].message.content or "")[:max_steps]
     plan = new_plan(goal, steps)

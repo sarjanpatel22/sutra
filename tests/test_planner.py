@@ -121,6 +121,18 @@ def test_parse_steps_empty():
     assert planner._parse_steps("   ") == []
 
 
+def test_parse_steps_strips_reasoning_think_block():
+    # qwen3 et al. emit <think>…</think> — the thoughts must NOT become steps (caught live)
+    raw = '<think>\nlet me reason\nstep by step\n</think>\n["search the web", "write the file"]'
+    assert planner._parse_steps(raw) == ["search the web", "write the file"]
+
+
+def test_parse_steps_dangling_think_yields_nothing():
+    # reasoning that ran out of tokens (open <think>, no close, no answer) → no fake steps
+    raw = "<think>\nokay the user wants three rooms\nlet me think about the best approach"
+    assert planner._parse_steps(raw) == []
+
+
 async def test_make_plan_decomposes_goal(monkeypatch):
     async def fake_complete(messages, **kw):
         assert kw.get("local_tools_first") is False  # decompose uses the strong model, not local
