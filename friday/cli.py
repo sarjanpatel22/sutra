@@ -1220,10 +1220,30 @@ def secrets(
     import_env: bool = typer.Option(
         False, "--import", help="Move .env secrets into the OS keyring"
     ),
+    set_name: str = typer.Option(
+        "", "--set", metavar="NAME",
+        help="Securely store a secret in the keyring via a HIDDEN prompt "
+             "(e.g. --set ANTHROPIC_API_KEY). Paste at the prompt — never on the command line.",
+    ),
 ) -> None:
-    """Show where each secret resolves from (keyring/env/missing), or --import to keyring."""
-    from friday.core.secrets import import_from_env
+    """Show where each secret resolves from (keyring/env/missing); --import from .env; --set NAME
+    to enter one securely (hidden prompt, so a key never lands in shell history or a transcript)."""
+    from friday.core.secrets import import_from_env, set_secret
     from friday.core.secrets import status as secret_status
+
+    if set_name:
+        import getpass
+
+        value = getpass.getpass(f"Paste value for {set_name} (hidden, not echoed): ").strip()
+        if not value:
+            console.print("[yellow]nothing entered — aborted.[/yellow]")
+            return
+        ok = set_secret(set_name, value)
+        console.print(
+            f"[green]✓ stored {set_name} in the keyring[/green]" if ok
+            else "[red]keyring unavailable — not stored.[/red]"
+        )
+        return
 
     if import_env:
         moved = import_from_env()
