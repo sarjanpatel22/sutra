@@ -1097,7 +1097,7 @@ def plan_run(
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve gated steps (hands-free)"),
 ) -> None:
     """Break a goal into steps and run them, saving after each so it's resumable."""
-    from friday.core.planner import make_plan, run_plan, save
+    from friday.core.planner import make_plan, run_plan, save, synthesize_plan
 
     async def _run() -> None:
         with console.status("[cyan]planning…[/cyan]"):
@@ -1115,6 +1115,11 @@ def plan_run(
             console.print(
                 f"\n[yellow]paused[/yellow] — resume: [cyan]sutra plan resume {out.slug}[/cyan]"
             )
+        else:
+            with console.status("[cyan]summarizing…[/cyan]"):
+                summary = await synthesize_plan(out)
+            console.print(Panel(Markdown(summary), title="Outcome",
+                                border_style="cyan", padding=(0, 1)))
 
     asyncio.run(_run())
 
@@ -1125,7 +1130,7 @@ def plan_resume(
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve gated steps"),
 ) -> None:
     """Resume a paused plan from exactly where it stopped."""
-    from friday.core.planner import resume_plan
+    from friday.core.planner import resume_plan, synthesize_plan
 
     async def _run() -> None:
         out = await resume_plan(slug, confirm=_plan_confirm(yes), observe=_plan_observe)
@@ -1134,6 +1139,11 @@ def plan_resume(
             return
         console.print("\n[bold]Result:[/bold]")
         _render_plan(out)
+        if out.status != "paused":
+            with console.status("[cyan]summarizing…[/cyan]"):
+                summary = await synthesize_plan(out)
+            console.print(Panel(Markdown(summary), title="Outcome",
+                                border_style="cyan", padding=(0, 1)))
 
     asyncio.run(_run())
 

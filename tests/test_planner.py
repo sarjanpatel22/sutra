@@ -481,32 +481,42 @@ async def test_run_plan_spoken_narrates_each_step_and_summarizes(plans_dir, monk
         plan.status = "done"
         return plan
 
+    async def fake_synth(plan, *, tier=planner.Tier.HEAVY, spoken=False):
+        return "Built the kit — rooms and skills saved."
+
     monkeypatch.setattr(planner, "make_plan", fake_make_plan)
     monkeypatch.setattr(planner, "run_plan", fake_run_plan)
+    monkeypatch.setattr(planner, "synthesize_plan", fake_synth)
     out = await planner.run_plan_spoken("build a kit", speak=spoken.append)
     blob = " ".join(spoken)
     assert "plan that out" in spoken[0].lower()               # spoke before decomposing
     assert "2 steps" in blob and "Starting now" in blob
     assert any("Step 1" in s for s in spoken) and any("Step 2" in s for s in spoken)
-    assert "All done" in out and out == spoken[-1]            # summary is the last thing spoken
+    assert out == "Built the kit — rooms and skills saved."   # synthesized outcome
+    assert out == spoken[-1]                                  # and it's the last thing spoken
 
 
-async def test_run_plan_spoken_reports_partial_completion(plans_dir, monkeypatch):
-    p = planner.new_plan("g", ["a step", "b step"])
+async def test_run_plan_spoken_speaks_synthesized_outcome_with_spoken_flag(plans_dir, monkeypatch):
+    seen: dict = {}
+    p = planner.new_plan("g", ["a step"])
 
     async def fake_make_plan(goal, **kw):
         return p
 
     async def fake_run_plan(plan, *, confirm=None, observe=None):
         plan.steps[0].status = planner.DONE
-        plan.steps[1].status = planner.FAILED
-        plan.status = "failed"
+        plan.status = "done"
         return plan
+
+    async def fake_synth(plan, *, tier=planner.Tier.HEAVY, spoken=False):
+        seen["spoken"] = spoken
+        return "outcome"
 
     monkeypatch.setattr(planner, "make_plan", fake_make_plan)
     monkeypatch.setattr(planner, "run_plan", fake_run_plan)
-    out = await planner.run_plan_spoken("g", speak=lambda s: None)
-    assert "1 of 2" in out
+    monkeypatch.setattr(planner, "synthesize_plan", fake_synth)
+    await planner.run_plan_spoken("g", speak=lambda s: None)
+    assert seen["spoken"] is True                             # voice asks for speakable phrasing
 
 
 async def test_run_plan_spoken_handles_unplannable_goal(plans_dir, monkeypatch):
@@ -531,11 +541,90 @@ async def test_run_plan_spoken_passes_confirm_hook_through(plans_dir, monkeypatc
         plan.status = "done"
         return plan
 
+    async def fake_synth(plan, *, tier=planner.Tier.HEAVY, spoken=False):
+        return "ok"
+
     monkeypatch.setattr(planner, "make_plan", fake_make_plan)
     monkeypatch.setattr(planner, "run_plan", fake_run_plan)
+    monkeypatch.setattr(planner, "synthesize_plan", fake_synth)
 
     async def sentinel(skill, args):
         return True
 
     await planner.run_plan_spoken("g", speak=lambda s: None, confirm=sentinel)
     assert seen["confirm"] is sentinel                        # voice confirm policy reaches steps
+
+
+# --- final synthesis ----------------------------------------------------------------
+
+def test_basic_summary_reflects_status():
+    done = planner.new_plan("g", ["a", "b"])
+    for s in done.steps:
+        s.status = planner.DONE
+    done.status = "done"
+    assert "all 2 steps" in planner._basic_summary(done)
+
+    partial = planner.new_plan("g", ["found it", "write the file"])
+    partial.steps[0].status = planner.DONE
+    partial.steps[1].status = planner.FAILED
+    partial.status = "failed"
+    out = planner._basic_summary(partial)
+    assert "1 of 2" in out and "write the file" in out        # names what couldn't finish
+
+
+async def test_synthesize_plan_uses_model_and_strips_think(plans_dir, monkeypatch):
+    p = planner.new_plan("find the ssh port", ["look it up"])
+    p.steps[0].status = planner.DONE
+    p.steps[0].result = "SSH uses port 22"
+    p.status = "done"
+
+    async def fake_complete(messages, **kw):
+        return _resp("<think>the result says 22</think>SSH runs on port 22.")
+
+    monkeypatch.setattr(planner, "complete", fake_complete)
+    out = await planner.synthesize_plan(p)
+    assert out == "SSH runs on port 22."                      # think block stripped
+
+
+async def test_synthesize_plan_spoken_flag_adds_speech_hint(plans_dir, monkeypatch):
+    seen: dict = {}
+    p = planner.new_plan("g", ["a"])
+    p.steps[0].status = planner.DONE
+    p.status = "done"
+
+    async def fake_complete(messages, **kw):
+        seen["system"] = messages[0]["content"]
+        return _resp("done")
+
+    monkeypatch.setattr(planner, "complete", fake_complete)
+    await planner.synthesize_plan(p, spoken=True)
+    assert "read ALOUD" in seen["system"]
+
+
+async def test_synthesize_plan_falls_back_when_disabled(plans_dir, monkeypatch):
+    monkeypatch.setenv("PLAN_SYNTHESIZE", "0")
+    called = {"n": 0}
+
+    async def fake_complete(messages, **kw):
+        called["n"] += 1
+        return _resp("should not be called")
+
+    monkeypatch.setattr(planner, "complete", fake_complete)
+    p = planner.new_plan("g", ["a", "b"])
+    for s in p.steps:
+        s.status = planner.DONE
+    p.status = "done"
+    out = await planner.synthesize_plan(p)
+    assert called["n"] == 0 and "all 2 steps" in out           # deterministic fallback, no model
+
+
+async def test_synthesize_plan_falls_back_on_model_error(plans_dir, monkeypatch):
+    async def boom(messages, **kw):
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(planner, "complete", boom)
+    p = planner.new_plan("g", ["a"])
+    p.steps[0].status = planner.DONE
+    p.status = "done"
+    out = await planner.synthesize_plan(p)
+    assert "all 1 step" in out                                 # never raises — polish only

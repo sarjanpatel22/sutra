@@ -164,18 +164,21 @@ _PLAN_SYSTEM = (
 )
 
 
+def _strip_think(s: str) -> str:
+    """Remove a reasoning model's <think>…</think> chain-of-thought (qwen3 etc.) — a complete
+    block, anything before a close tag, and a dangling open block (ran out of tokens mid-thought).
+    Without this every THOUGHT line leaks into the output (caught live: an 8-'step' plan that was
+    just the model thinking)."""
+    s = re.sub(r"(?is)<think>.*?</think>", "", s or "")
+    if "</think>" in s:
+        s = s.rsplit("</think>", 1)[-1]
+    return re.sub(r"(?is)<think>.*$", "", s).strip()
+
+
 def _parse_steps(raw: str) -> list[str]:
     """Pull an ordered step list out of the model's reply. Prefers a JSON array (what the
     prompt asks for); falls back to numbered / bulleted lines so a chatty model still works."""
-    s = (raw or "").strip()
-    # Reasoning models (qwen3, etc.) wrap chain-of-thought in <think>…</think>. Strip it, or
-    # every THOUGHT line becomes a fake step (caught live: an 8-"step" plan that was just the
-    # model thinking). Handle a complete block, content after a close tag, and a dangling
-    # open block (the model ran out of tokens mid-thought → no real answer).
-    s = re.sub(r"(?is)<think>.*?</think>", "", s)
-    if "</think>" in s:
-        s = s.rsplit("</think>", 1)[-1]
-    s = re.sub(r"(?is)<think>.*$", "", s).strip()
+    s = _strip_think((raw or "").strip())
     s = re.sub(r"^```[a-zA-Z]*\n?", "", s)  # strip a leading ```json fence
     s = re.sub(r"\n?```\s*$", "", s).strip()
     try:
@@ -444,6 +447,71 @@ async def resume_plan(
     return await run_plan(plan, confirm=confirm, observe=observe)
 
 
+# --- final synthesis: tie the executed steps into one coherent outcome -------------
+
+_SYNTH_SYSTEM = (
+    "You report the OUTCOME of a finished multi-step task. Given the goal and what each "
+    "step produced, write a short, natural summary of what was accomplished — the concrete "
+    "results (the answer found, files created, what got set up). Honestly note anything that could "
+    "not be completed. No preamble, no step-by-step replay, no headings — just the outcome in 1-4 "
+    "sentences."
+)
+_SYNTH_SPOKEN = (
+    " This will be read ALOUD: use plain conversational sentences, no markdown or bullet lists."
+)
+
+
+def _synthesize_enabled() -> bool:
+    """Whether to spend one model call polishing the outcome (PLAN_SYNTHESIZE, default on)."""
+    return os.getenv("PLAN_SYNTHESIZE", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _basic_summary(plan: Plan) -> str:
+    """Deterministic outcome summary — the fallback when model synthesis is off/unavailable."""
+    done, total = plan.progress()
+    failed = [s for s in plan.steps if s.status == FAILED]
+    if not plan.steps:
+        return "There was nothing to do."
+    if plan.status == "done":
+        return f"Done — completed all {total} steps."
+    if done:
+        msg = f"Completed {done} of {total} steps."
+        if failed:
+            unfinished = "; ".join(_shorten(s.description, 8) for s in failed)
+            msg += f" Couldn't finish: {unfinished}."
+        return msg
+    return "I couldn't complete that."
+
+
+async def synthesize_plan(plan: Plan, *, tier: Tier = Tier.HEAVY, spoken: bool = False) -> str:
+    """One strong-model call that ties the executed steps' RESULTS into a coherent outcome — the
+    polished final answer (the fact found, a report's gist, what was built) instead of a bare
+    'finished N steps'. Honest about anything that failed. Falls back to a deterministic summary if
+    synthesis is disabled or the call fails (polish must never fail the plan). spoken=True
+    nudges the phrasing toward natural speech for the voice surface."""
+    if not plan.steps or not _synthesize_enabled():
+        return _basic_summary(plan)
+    lines: list[str] = []
+    for s in plan.steps:
+        entry = f"- [{s.status}] {s.description}"
+        if s.result:
+            entry += f"\n    result: {s.result}"
+        lines.append(entry)
+    user = f"Goal: {plan.goal}\n\nSteps and what they produced:\n" + "\n".join(lines)
+    system = _SYNTH_SYSTEM + (_SYNTH_SPOKEN if spoken else "")
+    try:
+        resp = await complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            tier=tier, tools=None, local_tools_first=False, max_tokens=400,
+        )
+        summary = _strip_think(resp.choices[0].message.content or "")
+        if summary:
+            return summary
+    except Exception:  # noqa: BLE001 — synthesis is polish; never crash a finished plan on it
+        pass
+    return _basic_summary(plan)
+
+
 # --- voice: speak a spoken big-goal into a planned, narrated, executed task ----------
 
 def _shorten(text: str, words: int = 9) -> str:
@@ -492,12 +560,8 @@ async def run_plan_spoken(
         msg = "Something went wrong while I was working on that."
         speak(msg)
         return msg
-    done, total = plan.progress()
-    if plan.status == "done":
-        msg = f"All done — I finished all {total} steps."
-    elif done:
-        msg = f"I finished {done} of {total} steps; the rest I couldn't complete."
-    else:
-        msg = "I wasn't able to complete that one, sorry."
+    # Polished close: one strong-model call ties the step results into a real spoken outcome
+    # ("SSH uses 22, HTTPS 443, saved to ports_note.md") rather than a bare "finished N steps".
+    msg = await synthesize_plan(plan, tier=tier, spoken=True)
     speak(msg)
     return msg
