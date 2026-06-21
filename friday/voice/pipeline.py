@@ -392,6 +392,8 @@ async def process_audio(
     if tutor_mode:
         # Pentest tutor session: coach this spoken turn (teach, don't act). Pull in the screen via
         # OCR when he asks ("look at my screen", "what am I looking at") so advice is grounded.
+        from friday.core.agent import note_hint_outcome_from_history
+        note_hint_outcome_from_history(history, transcript)  # did the last hint land? → learn
         screen = None
         if _asks_about_screen(transcript):
             from friday.skills import registry
@@ -566,6 +568,8 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
     reply_tokens: list[str] = []
     if tutor_mode:
         # Pentest tutor session: coach this turn (teach, don't act); read the screen if asked.
+        from friday.core.agent import note_hint_outcome_from_history
+        note_hint_outcome_from_history(history, text)  # did the last hint land? → learn
         screen = None
         if _asks_about_screen(text):
             from friday.skills import registry

@@ -659,6 +659,64 @@ def update_skill_profile_async(
     task.add_done_callback(_persist_tasks.discard)
 
 
+# Hint-learning loop: when his message AFTER a hint shows it LANDED (or missed), record a Dreaming
+# lesson tying the situation to what worked. agent.tutor already injects dreaming.lessons_block, so
+# that feeds straight back into future coaching — the loop closes itself. Heuristic on explicit
+# feedback only: $0, deterministic, no extra model call; records few but high-confidence signals.
+_HINT_LANDED = re.compile(
+    r"\b(that worked|it worked|works now|got it|i'?m in|nailed it|rooted|that did it|"
+    r"found (?:it|the flag)|that helped|thanks,? that|solved it|nice,? that)\b",
+    re.I,
+)
+_HINT_MISSED = re.compile(
+    r"\b(still stuck|did ?n'?t work|does ?n'?t work|no luck|same error|not working|that failed|"
+    r"still (?:nothing|failing|stuck|broken)|nope,? still)\b",
+    re.I,
+)
+
+
+def note_hint_outcome(situation: str, hint: str, feedback: str) -> None:
+    """Close the tutor loop: if `feedback` (his message after a hint) shows the `hint` LANDED or
+    MISSED, record a Dreaming lesson so future tutoring on a similar `situation` draws on what
+    actually worked. Best-effort, only on explicit feedback — never raises."""
+    if not (hint.strip() and feedback.strip()):
+        return
+    try:
+        from friday.core import dreaming
+
+        if _HINT_LANDED.search(feedback):
+            dreaming.record_lesson(
+                situation[:200], f"This coaching worked for Sarjan: {hint[:300]}",
+                tags=("tutor", "worked"),
+            )
+        elif _HINT_MISSED.search(feedback):
+            dreaming.record_lesson(
+                situation[:200],
+                f"This hint did NOT unblock Sarjan — try a different angle: {hint[:200]}",
+                tags=("tutor", "missed"),
+            )
+    except Exception:  # noqa: BLE001 — learning is best-effort
+        pass
+
+
+def note_hint_outcome_from_history(history: list[dict[str, Any]] | None, feedback: str) -> None:
+    """Pull the last (situation, hint) out of a coaching history and judge whether `feedback` (his
+    current message) says it landed. The last assistant turn is the hint; the user turn before it
+    is the situation it addressed."""
+    if not history:
+        return
+    hint = situation = ""
+    for m in reversed(history):
+        role = m.get("role") if isinstance(m, dict) else None
+        if role == "assistant" and not hint:
+            hint = m.get("content") or ""
+        elif role == "user" and hint and not situation:
+            situation = m.get("content") or ""
+            break
+    if hint:
+        note_hint_outcome(situation, hint, feedback)
+
+
 async def reason(
     user_input: str,
     history: list[dict[str, Any]] | None = None,
