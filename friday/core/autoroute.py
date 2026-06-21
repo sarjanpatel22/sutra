@@ -46,6 +46,37 @@ _HEAVY = re.compile(
     re.I,
 )
 
+# A spoken turn worth DECOMPOSING into a multi-step plan (vs one agent turn). Conservative on
+# purpose — routing to the planner makes a voice turn take minutes, so it must be a genuine multi
+# part goal, not chit-chat or a single command. Either an explicit planning phrase, or 2+ distinct
+# actions chained by a sequencing word.
+_PLAN_SIGNALS = re.compile(
+    r"\b(step by step|one by one|do all of|build me|make me a|set ?up a|put together|"
+    r"go through (?:each|all)|for each of|research .+ and (?:write|save|create)|"
+    r"create a .+ with|first .+ then)\b",
+    re.I,
+)
+_PLAN_ACTIONS = re.compile(
+    r"\b(research|search|find|look up|write|save|create|build|make|run|download|install|"
+    r"summari[sz]e|compile|send|scan|generate|set up)\b",
+    re.I,
+)
+_PLAN_SEQ = re.compile(r"\b(then|after that|next|followed by|and then)\b", re.I)
+
+
+def wants_plan(text: str) -> bool:
+    """True for a multi-step spoken GOAL that the planner should decompose + execute, rather than a
+    single action handled in one agent turn. Conservative: needs an explicit planning phrase, or
+    two+ distinct actions chained by a sequencing word ('research the rooms then write them up')."""
+    t = (text or "").strip()
+    if len(t) < 12:
+        return False
+    if _PLAN_SIGNALS.search(t):
+        return True
+    actions = {m.group(0).lower() for m in _PLAN_ACTIONS.finditer(t)}
+    return len(actions) >= 2 and bool(_PLAN_SEQ.search(t))
+
+
 # Coding intent → the code tier (free local qwen, groq fallback).
 _CODE = re.compile(
     r"\b(write (?:me )?(?:a |some )?(?:code|script|function|program)|unit test|pytest|"

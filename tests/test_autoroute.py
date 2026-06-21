@@ -300,3 +300,26 @@ def test_chat_tier_short_question_still_medium():
     # Few words but clearly a question → don't demote it to the 4B model.
     assert chat_tier("why though?") is Tier.MEDIUM
     assert chat_tier("how come?") is Tier.MEDIUM
+
+
+@pytest.mark.parametrize("text", [
+    "build me a study kit with the best beginner rooms",
+    "research the top rooms and write them to a file",
+    "first scan the box then enumerate the services and then write a report",
+    "do all of these tasks one by one",
+    "download the report then run it and summarize the output",  # 2+ actions + sequencing
+])
+def test_wants_plan_true_for_multistep_goals(text):
+    assert ar.wants_plan(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "what's the weather",
+    "open firefox",
+    "go to tryhackme and start a room",   # a single action, not a multi-step plan
+    "hello how are you",
+    "download the file",                   # one action, no sequencing
+    "scan it",                             # too short
+])
+def test_wants_plan_false_for_single_or_chat(text):
+    assert ar.wants_plan(text) is False

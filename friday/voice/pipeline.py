@@ -62,6 +62,12 @@ def _barge_in_enabled() -> bool:
     return os.getenv("VOICE_BARGE_IN", "0").strip().lower() not in ("", "0", "false", "no")
 
 
+def _voice_planner_enabled() -> bool:
+    """Route a big multi-step spoken goal through the planner (decompose + narrated execute).
+    On by default; set VOICE_PLANNER=0 to keep every voice turn single-shot."""
+    return os.getenv("VOICE_PLANNER", "1").strip().lower() not in ("0", "false", "no")
+
+
 def _get_stt():
     global _stt_instance
     if _stt_instance is None:
@@ -266,7 +272,7 @@ async def process_audio(
     # One brain decides: act (cloud function-calling) vs chit-chat (fast local path),
     # and at what effort. A real task — "go to tryhackme and start a room" — now goes
     # agentic even without a keyword match; plain talk stays local.
-    from friday.core.autoroute import decide
+    from friday.core.autoroute import decide, wants_plan
 
     plan = decide(transcript)
     # Deterministic fast-path: unambiguous commands ("open Firefox", "close X",
@@ -360,6 +366,25 @@ async def process_audio(
         token_queue.put(reply_text)
         token_queue.put(None)
         play_blocking()
+    elif use_tools and _voice_planner_enabled() and wants_plan(transcript):
+        # A big multi-step spoken goal → decompose + execute via the planner, narrating each step
+        # aloud. Destructive steps still obey the voice confirm policy (writes need autonomous).
+        from friday.core.agent import _voice_confirm
+        from friday.core.planner import run_plan_spoken
+
+        token_queue.put(None)  # this branch voices directly, not through the streaming worker
+        sr = tts.sample_rate
+
+        def _speak(line: str) -> None:
+            chunk = tts.synthesize(line)
+            play_audio(chunk.audio, sample_rate=sr, blocking=True)
+
+        _log.info("voice route: PLAN (multi-step) — %s", transcript)
+        reply_text = await run_plan_spoken(
+            transcript, speak=_speak, confirm=_voice_confirm, tier=plan.tier
+        )
+        lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
+        reply_tokens = [reply_text]
     elif use_tools:
         # Cloud function-calling: tool calls need the whole response, so this isn't
         # token-streamed. Synthesize the finished reply, then speak it. Fall back to

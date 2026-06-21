@@ -462,3 +462,80 @@ def test_step_prompt_first_step_has_no_progress_block():
     prompt = planner._step_prompt(p, p.steps[0])
     assert "Progress so far" not in prompt                    # nothing done yet
     assert "do a thing" in prompt and "first step" in prompt
+
+
+# --- run_plan_spoken: the voice surface (decompose + narrate + execute) --------------
+
+async def test_run_plan_spoken_narrates_each_step_and_summarizes(plans_dir, monkeypatch):
+    spoken: list[str] = []
+    p = planner.new_plan("build a kit", ["search the web for rooms", "write rooms to a file"])
+
+    async def fake_make_plan(goal, **kw):
+        return p
+
+    async def fake_run_plan(plan, *, confirm=None, observe=None):
+        for s in plan.steps:
+            if observe:
+                observe("step_start", {"n": s.n, "description": s.description})
+            s.status = planner.DONE
+        plan.status = "done"
+        return plan
+
+    monkeypatch.setattr(planner, "make_plan", fake_make_plan)
+    monkeypatch.setattr(planner, "run_plan", fake_run_plan)
+    out = await planner.run_plan_spoken("build a kit", speak=spoken.append)
+    blob = " ".join(spoken)
+    assert "plan that out" in spoken[0].lower()               # spoke before decomposing
+    assert "2 steps" in blob and "Starting now" in blob
+    assert any("Step 1" in s for s in spoken) and any("Step 2" in s for s in spoken)
+    assert "All done" in out and out == spoken[-1]            # summary is the last thing spoken
+
+
+async def test_run_plan_spoken_reports_partial_completion(plans_dir, monkeypatch):
+    p = planner.new_plan("g", ["a step", "b step"])
+
+    async def fake_make_plan(goal, **kw):
+        return p
+
+    async def fake_run_plan(plan, *, confirm=None, observe=None):
+        plan.steps[0].status = planner.DONE
+        plan.steps[1].status = planner.FAILED
+        plan.status = "failed"
+        return plan
+
+    monkeypatch.setattr(planner, "make_plan", fake_make_plan)
+    monkeypatch.setattr(planner, "run_plan", fake_run_plan)
+    out = await planner.run_plan_spoken("g", speak=lambda s: None)
+    assert "1 of 2" in out
+
+
+async def test_run_plan_spoken_handles_unplannable_goal(plans_dir, monkeypatch):
+    async def fake_make_plan(goal, **kw):
+        return planner.Plan(goal=goal, slug="x", steps=[])
+
+    monkeypatch.setattr(planner, "make_plan", fake_make_plan)
+    out = await planner.run_plan_spoken("mmm", speak=lambda s: None)
+    assert "rephrase" in out.lower() or "couldn't break" in out.lower()
+
+
+async def test_run_plan_spoken_passes_confirm_hook_through(plans_dir, monkeypatch):
+    seen: dict = {}
+    p = planner.new_plan("g", ["a step"])
+
+    async def fake_make_plan(goal, **kw):
+        return p
+
+    async def fake_run_plan(plan, *, confirm=None, observe=None):
+        seen["confirm"] = confirm
+        plan.steps[0].status = planner.DONE
+        plan.status = "done"
+        return plan
+
+    monkeypatch.setattr(planner, "make_plan", fake_make_plan)
+    monkeypatch.setattr(planner, "run_plan", fake_run_plan)
+
+    async def sentinel(skill, args):
+        return True
+
+    await planner.run_plan_spoken("g", speak=lambda s: None, confirm=sentinel)
+    assert seen["confirm"] is sentinel                        # voice confirm policy reaches steps

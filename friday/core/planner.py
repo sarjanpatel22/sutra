@@ -442,3 +442,62 @@ async def resume_plan(
             if s.status == FAILED:
                 s.status = PENDING
     return await run_plan(plan, confirm=confirm, observe=observe)
+
+
+# --- voice: speak a spoken big-goal into a planned, narrated, executed task ----------
+
+def _shorten(text: str, words: int = 9) -> str:
+    """First few words of a step description — enough to narrate aloud, not a paragraph."""
+    parts = (text or "").split()
+    return " ".join(parts[:words]) + ("…" if len(parts) > words else "")
+
+
+async def run_plan_spoken(
+    goal: str,
+    *,
+    speak: Callable[[str], None],
+    confirm: ConfirmFn | None = None,
+    tier: Tier = Tier.HEAVY,
+) -> str:
+    """Decompose `goal`, execute it, and NARRATE progress through `speak` (a callback that voices
+    one short line). The voice surface: a spoken big goal becomes a planned, executed task the user
+    hears progress on, instead of one agent turn that can't carry it. Returns the final summary
+    (already spoken). Never raises — a voice turn must not crash on a bad plan.
+
+    Confirmation is the caller's policy (voice passes `_voice_confirm`): destructive steps still
+    need SUTRA_AUTONOMOUS, so without it the safe steps run and the rest report as not done."""
+    goal = (goal or "").strip()
+    speak("Let me plan that out.")
+    try:
+        plan = await make_plan(goal, tier=tier)
+    except Exception:  # noqa: BLE001 — decomposition failed (model/network); stay graceful
+        msg = "Sorry, I couldn't plan that right now."
+        speak(msg)
+        return msg
+    if not plan.steps:
+        msg = "I couldn't break that into steps — try rephrasing it."
+        speak(msg)
+        return msg
+    save(plan)
+    n = len(plan.steps)
+    speak(f"Okay — {n} step{'s' if n != 1 else ''}. Starting now.")
+
+    def _observe(kind: str, data: dict) -> None:
+        if kind == "step_start":
+            speak(f"Step {data.get('n')}: {_shorten(str(data.get('description', '')))}.")
+
+    try:
+        plan = await run_plan(plan, confirm=confirm, observe=_observe)
+    except Exception:  # noqa: BLE001 — run_plan is robust, but never crash the voice turn
+        msg = "Something went wrong while I was working on that."
+        speak(msg)
+        return msg
+    done, total = plan.progress()
+    if plan.status == "done":
+        msg = f"All done — I finished all {total} steps."
+    elif done:
+        msg = f"I finished {done} of {total} steps; the rest I couldn't complete."
+    else:
+        msg = "I wasn't able to complete that one, sorry."
+    speak(msg)
+    return msg
