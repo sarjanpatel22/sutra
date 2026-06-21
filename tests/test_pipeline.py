@@ -40,7 +40,8 @@ def local_path(monkeypatch):
     monkeypatch.setattr(agent, "likely_needs_tool", lambda t: False)
     monkeypatch.setattr(agent, "cloud_tools_available", lambda: False)
     monkeypatch.setattr(agent, "voice_stream", fake_voice_stream)
-    monkeypatch.setattr(agent, "persist_turn_async", lambda u, r: persisted.append((u, r)))
+    monkeypatch.setattr(agent, "persist_turn_async",
+                        lambda u, r, **k: persisted.append((u, r)))
     monkeypatch.setattr(pipeline, "_get_tts", lambda: _FakeTTS())
     monkeypatch.setattr(pipeline, "_drive_orb_speaking", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "play_audio", lambda audio, **k: played.append(len(audio)))
@@ -146,3 +147,55 @@ async def test_process_audio_processes_real_speech(_spy_agent, monkeypatch):
 
     with pytest.raises(_Reached):
         await pipeline.process_audio(np.zeros(16000), [])
+
+
+# --- tutor mode: every turn coaches, never acts -------------------------------------
+
+def test_asks_about_screen():
+    assert pipeline._asks_about_screen("look at my screen")
+    assert pipeline._asks_about_screen("what am I looking at")
+    assert pipeline._asks_about_screen("can you read my screen")
+    assert not pipeline._asks_about_screen("what's the next step")
+    assert not pipeline._asks_about_screen("run nmap")
+
+
+def test_set_tutor_mode_toggles():
+    try:
+        pipeline.set_tutor_mode(True)
+        assert pipeline._tutor_mode_active() is True
+        pipeline.set_tutor_mode(False)
+        assert pipeline._tutor_mode_active() is False
+    finally:
+        pipeline.set_tutor_mode(False)
+
+
+@pytest.mark.asyncio
+async def test_process_text_tutor_mode_coaches_not_acts(local_path, monkeypatch):
+    from friday.core import agent, commands
+
+    _played, persisted = local_path
+    seen: dict = {}
+
+    async def fake_tutor(topic, *, history=None, screen=None, tier=None):
+        seen["topic"] = topic
+        return "First, what does an open port 80 usually mean?"
+
+    async def boom_command(text, **k):
+        seen["command_ran"] = True
+        return {"spoken": "opened it", "skill": "open_app"}
+
+    monkeypatch.setattr(agent, "tutor", fake_tutor)
+    monkeypatch.setattr(commands, "try_command", boom_command)
+    pipeline.set_tutor_mode(True)
+    try:
+        history: list[dict] = []
+        reply = await pipeline.process_text("open firefox and tell me what to do next", history)
+    finally:
+        pipeline.set_tutor_mode(False)
+
+    assert reply == "First, what does an open port 80 usually mean?"   # coached via agent.tutor
+    assert seen.get("topic") == "open firefox and tell me what to do next"
+    assert "command_ran" not in seen                                   # never acts in tutor mode
+    assert persisted and persisted[-1] == (
+        "open firefox and tell me what to do next", reply,
+    )

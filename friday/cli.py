@@ -297,8 +297,15 @@ def voice(
     check: bool = typer.Option(
         False, "--check", help="Audio doctor: test speaker + mic, then exit (no session)",
     ),
+    tutor: bool = typer.Option(
+        False, "--tutor", help="Coaching session: Sutra TEACHES every turn (pentest tutor)",
+    ),
 ) -> None:
-    """Start voice mode. ptt=hold SPACE, vad=always listening, wake=say the wake word, text=type."""
+    """Start voice mode. ptt=hold SPACE, vad=always listening, wake=say the wake word, text=type.
+
+    --tutor turns the whole session into a hands-free pentest coach: it teaches the why and hints
+    the next step instead of doing anything; say "look at my screen" and it reads your screen.
+    """
     if verbose:
         import logging
         logging.basicConfig(
@@ -317,6 +324,13 @@ def voice(
         vad_listen_loop,
         wake_listen_loop,
     )
+    if tutor:
+        from friday.voice.pipeline import set_tutor_mode
+        set_tutor_mode(True)
+        console.print(
+            "[bold green]Tutor mode[/bold green] — I'll coach you, not do it. "
+            "Say [cyan]'look at my screen'[/cyan] anytime."
+        )
     httpd = browser = None
     if orb:
         from friday.gui.server import serve_background

@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import queue as q_mod
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -66,6 +67,33 @@ def _voice_planner_enabled() -> bool:
     """Route a big multi-step spoken goal through the planner (decompose + narrated execute).
     On by default; set VOICE_PLANNER=0 to keep every voice turn single-shot."""
     return os.getenv("VOICE_PLANNER", "1").strip().lower() not in ("0", "false", "no")
+
+
+# Tutor mode: a whole `sutra voice --tutor` session where every spoken turn is a COACHING turn —
+# Sutra teaches (agent.tutor), never acts. Set once by the CLI before the loop starts.
+_TUTOR_MODE = False
+
+
+def set_tutor_mode(on: bool) -> None:
+    """Turn the voice session into a hands-free pentest-tutor coaching session (voice --tutor)."""
+    global _TUTOR_MODE
+    _TUTOR_MODE = bool(on)
+
+
+def _tutor_mode_active() -> bool:
+    return _TUTOR_MODE
+
+
+_SCREEN_REQUEST = re.compile(
+    r"\b(my screen|on screen|look at (?:this|my|the screen)|what am i looking at|see this|"
+    r"this (?:output|error|result)|what do you see|read (?:my |the )?screen)\b",
+    re.I,
+)
+
+
+def _asks_about_screen(text: str) -> bool:
+    """True when the student wants the tutor to look at his screen (so we OCR it for grounding)."""
+    return bool(_SCREEN_REQUEST.search(text or ""))
 
 
 def _get_stt():
@@ -275,18 +303,21 @@ async def process_audio(
     from friday.core.autoroute import decide, wants_plan
 
     plan = decide(transcript)
+    # Tutor mode (sutra voice --tutor): every spoken turn is a coaching turn — Sutra TEACHES, it
+    # never runs commands or acts. So skip the deterministic command path and the agentic path.
+    tutor_mode = _tutor_mode_active()
     # Deterministic fast-path: unambiguous commands ("open Firefox", "close X",
     # "switch to Y") run the skill DIRECTLY — no LLM, so they work instantly even
     # when the free cloud tiers are rate-limited (the old silent-failure cause).
     command_result = None
-    if plan.act:
+    if plan.act and not tutor_mode:
         from friday.core.commands import try_command
         command_result = await try_command(transcript)
         if command_result is not None:
             _log.info("voice command (no LLM): %s -> %s",
                       command_result.get("skill"), command_result.get("result"))
-    use_tools = command_result is None and plan.act and cloud_tools_available()
-    if plan.act and command_result is None:
+    use_tools = (not tutor_mode) and command_result is None and plan.act and cloud_tools_available()
+    if plan.act and command_result is None and not tutor_mode:
         _log.info("voice route: %s effort (%s) — %s", plan.effort, plan.tier.value, plan.reason)
 
     # Streaming agent → TTS worker thread → speaker
@@ -358,7 +389,24 @@ async def process_audio(
             token_queue.put(token)
         token_queue.put(None)  # signal TTS to flush and stop
 
-    if command_result is not None:
+    if tutor_mode:
+        # Pentest tutor session: coach this spoken turn (teach, don't act). Pull in the screen via
+        # OCR when he asks ("look at my screen", "what am I looking at") so advice is grounded.
+        screen = None
+        if _asks_about_screen(transcript):
+            from friday.skills import registry
+            registry.autodiscover()
+            res = await registry.call("see_screen")
+            screen = res.get("description") if isinstance(res, dict) else None
+        from friday.core.agent import tutor as _tutor
+        tutor_tier = Tier.MEDIUM if cloud_tools_available() else Tier.LOCAL
+        reply_text = await _tutor(transcript, history=history, screen=screen, tier=tutor_tier)
+        lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
+        reply_tokens = [reply_text]
+        token_queue.put(reply_text)
+        token_queue.put(None)
+        play_blocking()
+    elif command_result is not None:
         # The skill already ran deterministically — just speak the confirmation.
         reply_text = command_result["spoken"]
         lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
@@ -403,7 +451,7 @@ async def process_audio(
             _log.warning("voice tool path failed (%s) — falling back to local", e)
             use_tools = False
 
-    if command_result is None and not use_tools:
+    if command_result is None and not use_tools and not tutor_mode:
         if barge_in:
             # Barge-in's grace window must start at first audio, so generate fully,
             # then play interruptibly.
@@ -437,7 +485,7 @@ async def process_audio(
     max_nospeech = float(os.getenv("STT_MAX_NOSPEECH", "0.6"))
     if result.avg_logprob >= min_logprob and result.no_speech_prob <= max_nospeech:
         from friday.core.agent import persist_turn_async
-        persist_turn_async(transcript, reply)
+        persist_turn_async(transcript, reply, source="tutor" if tutor_mode else "voice")
     else:
         _log.info(
             "skip persist — low STT confidence (logprob=%.2f no_speech=%.2f): %r",
@@ -472,11 +520,12 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
     from friday.core.autoroute import decide
 
     plan = decide(text)
+    tutor_mode = _tutor_mode_active()  # --tutor: coach every turn, never act
     command_result = None
-    if plan.act:
+    if plan.act and not tutor_mode:
         from friday.core.commands import try_command
         command_result = await try_command(text)
-    use_tools = command_result is None and plan.act and cloud_tools_available()
+    use_tools = (not tutor_mode) and command_result is None and plan.act and cloud_tools_available()
     tts = _get_tts()
     sample_rate = tts.sample_rate
     token_queue: q_mod.Queue[str | None] = q_mod.Queue()
@@ -513,7 +562,22 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
             play_audio(chunk.audio, sample_rate=sample_rate, blocking=True)
 
     reply_tokens: list[str] = []
-    if command_result is not None:
+    if tutor_mode:
+        # Pentest tutor session: coach this turn (teach, don't act); read the screen if asked.
+        screen = None
+        if _asks_about_screen(text):
+            from friday.skills import registry
+            registry.autodiscover()
+            res = await registry.call("see_screen")
+            screen = res.get("description") if isinstance(res, dict) else None
+        from friday.core.agent import tutor as _tutor
+        tutor_tier = Tier.MEDIUM if cloud_tools_available() else Tier.LOCAL
+        reply_text = await _tutor(text, history=history, screen=screen, tier=tutor_tier)
+        reply_tokens = [reply_text]
+        token_queue.put(reply_text)
+        token_queue.put(None)
+        play_blocking()
+    elif command_result is not None:
         # Deterministic command already ran the skill — just speak the confirmation.
         reply_text = command_result["spoken"]
         reply_tokens = [reply_text]
@@ -535,7 +599,7 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
             _log.warning("text tool path failed (%s) — falling back to local", e)
             use_tools = False
 
-    if command_result is None and not use_tools:
+    if command_result is None and not use_tools and not tutor_mode:
         # Substantive chat → free 70B; trivial social turns stay on the instant local
         # model. Degrade to LOCAL with no free cloud key so offline still works.
         from friday.core.autoroute import chat_tier
@@ -553,7 +617,7 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
     tts_thread.join(timeout=5.0)
     history.append({"role": "user", "content": text})
     history.append({"role": "assistant", "content": reply})
-    persist_turn_async(text, reply)  # typed input is always high-confidence
+    persist_turn_async(text, reply, source="tutor" if tutor_mode else "voice")  # typed = high-conf
     return reply
 
 
