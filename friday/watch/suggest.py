@@ -77,6 +77,64 @@ def clean_suggestion(text: str | None) -> str | None:
     return s
 
 
+# Tutor flavor (sutra watch --tutor): a pentest COACH watching his TryHackMe session — when he
+# stalls, it offers ONE next step to TRY (a technique, not the flag), grounded in the screen and
+# adapted to his skill profile. Same silence bias so it never nags while he's making progress.
+_TUTOR_SYS_LOOK = (
+    "You are Sarjan's pentest tutor glancing at his screen during a TryHackMe session. ONLY if "
+    "there is a genuinely useful, non-obvious next step or teaching moment on a SECURITY task, "
+    "reply with ONE short coaching hint — the next thing to TRY, not the answer (max ~20 words, "
+    "spoken, no markdown). Otherwise reply with exactly: SILENT. When in doubt, SILENT."
+)
+_TUTOR_SYS_STUCK = (
+    "You are Sarjan's pentest tutor, watching his TryHackMe session. He has been on this SAME "
+    "screen a while and may be STUCK. If he genuinely looks stuck on a security task — stalled "
+    "enumeration, an error, a service he hasn't probed, a foothold he's missing — offer ONE "
+    "concrete next step to TRY (a technique or command), coaching-style, never the flag itself "
+    "(max ~24 words, spoken, no markdown). If he looks fine — reading, progressing, thinking — "
+    "reply with exactly: SILENT. When unsure, SILENT."
+)
+_TUTOR_USER_LOOK = "Sarjan's current screen. One useful pentest coaching hint, or SILENT."
+_TUTOR_USER_STUCK = (
+    "Sarjan has been on this screen a while. If he's stuck, give ONE next step to try; else SILENT."
+)
+
+
+async def tutor_suggest_from_screen(
+    jpeg_bytes: bytes, model: str = DEFAULT_MODEL, *, stuck: bool = False
+) -> str | None:
+    """Tutor-flavored suggester for `sutra watch --tutor`: a pentest COACHING hint about the screen
+    (the next step to TRY, adapted to his skill profile), or None (SILENT). Same vision model +
+    SILENT cleaning as suggest_from_screen — but the prompt teaches the next move instead of fixing
+    it for him, so a `watch` session becomes a tutor that pipes up when he stalls on a box."""
+    from friday.core import skill_profile
+
+    system = _TUTOR_SYS_STUCK if stuck else _TUTOR_SYS_LOOK
+    profile = skill_profile.summarize()
+    if profile:
+        system += "\n\n" + profile
+    shot = base64.b64encode(jpeg_bytes).decode()
+    r = await litellm.acompletion(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _TUTOR_USER_STUCK if stuck else _TUTOR_USER_LOOK},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{shot}"},
+                    },
+                ],
+            },
+        ],
+        max_tokens=120,
+        temperature=0.3,
+    )
+    return clean_suggestion(r.choices[0].message.content)
+
+
 async def suggest_from_screen(
     jpeg_bytes: bytes, model: str = DEFAULT_MODEL, *, stuck: bool = False
 ) -> str | None:

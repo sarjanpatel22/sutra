@@ -469,31 +469,41 @@ def watch(
     once: bool = typer.Option(
         False, "--once", help="Run a single tick, print the suggestion (or quiet line), then exit"
     ),
+    tutor: bool = typer.Option(
+        False, "--tutor", help="Pentest tutor watch: when you stall on a box, offer a coaching hint"
+    ),
 ) -> None:
     """Watch your desktop and proactively suggest — Sutra glancing over your shoulder.
 
-    Sends a screenshot to the free vision model only when the screen changes and a
-    cooldown has elapsed, and stays silent unless a suggestion genuinely helps. Off
-    until you run this; tune via WATCH_* env vars (WATCH_COOLDOWN_S, WATCH_DAILY_CAP,
-    WATCH_SPEAK, …). Ctrl+C to stop.
+    Sends a screenshot to the free vision model only when the screen changes (or you've
+    dwelled on the same screen too long — "are you stuck?"), and stays silent unless it
+    genuinely helps. --tutor makes those nudges pentest COACHING hints (the next step to
+    try, adapted to your skill level) instead of generic tips. Off until you run this;
+    tune via WATCH_* env (WATCH_DWELL_S, WATCH_COOLDOWN_S, …). Ctrl+C to stop.
     """
     from friday.watch.loop import run_watch, watch_once
+    from friday.watch.suggest import suggest_from_screen, tutor_suggest_from_screen
+
+    suggest_fn = tutor_suggest_from_screen if tutor else suggest_from_screen
 
     if once:
-        suggestion = asyncio.run(watch_once())
+        suggestion = asyncio.run(watch_once(suggest_fn=suggest_fn))
         if suggestion:
             console.print(Panel(suggestion, title="[cyan]Sutra[/cyan]", border_style="cyan"))
         else:
             console.print("[dim]Nothing worth interrupting you for right now.[/dim]")
         return
 
-    console.print("\n  👁  [bold]Sutra is watching[/bold] — suggestions only when they help")
+    label = "Sutra is tutoring" if tutor else "Sutra is watching"
+    hint = ("a coaching hint when you stall on a box" if tutor
+            else "suggestions only when they help")
+    console.print(f"\n  👁  [bold]{label}[/bold] — {hint}")
     console.print(
         "      [dim]silent unless useful · a screenshot goes to the free vision model "
         "only when the screen changes · Ctrl+C to stop[/dim]\n"
     )
     try:
-        asyncio.run(run_watch())
+        asyncio.run(run_watch(suggest_fn=suggest_fn))
     except KeyboardInterrupt:
         console.print("\n[dim]Watch stopped.[/dim]")
 

@@ -289,3 +289,46 @@ def test_clean_suggestion_variants() -> None:
     assert clean_suggestion("SILENT. Try `git rebase -i`.") == "Try `git rebase -i`."
     # Surrounding quotes/emphasis trimmed.
     assert clean_suggestion('"Close that stray tab."') == "Close that stray tab."
+
+
+# ── tutor watch: stall → a pentest COACHING hint ────────────────────────────────
+
+class _VResp:
+    def __init__(self, content):
+        self.choices = [type("C", (), {"message": type("M", (), {"content": content})()})()]
+
+
+async def test_tutor_suggest_returns_coaching_hint(monkeypatch) -> None:
+    seen: dict = {}
+
+    async def fake_acompletion(model, messages, **kw):
+        seen["system"] = messages[0]["content"]
+        return _VResp("Try gobuster on port 80 to find hidden directories.")
+
+    monkeypatch.setattr(suggest_mod.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr("friday.core.skill_profile.summarize", lambda *a, **k: "")
+    out = await suggest_mod.tutor_suggest_from_screen(b"jpeg", "m", stuck=True)
+    assert out == "Try gobuster on port 80 to find hidden directories."
+    assert "tutor" in seen["system"].lower() and "stuck" in seen["system"].lower()
+
+
+async def test_tutor_suggest_silent_returns_none(monkeypatch) -> None:
+    async def fake_acompletion(model, messages, **kw):
+        return _VResp("SILENT")
+
+    monkeypatch.setattr(suggest_mod.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr("friday.core.skill_profile.summarize", lambda *a, **k: "")
+    assert await suggest_mod.tutor_suggest_from_screen(b"x", "m") is None
+
+
+async def test_tutor_suggest_injects_skill_profile(monkeypatch) -> None:
+    seen: dict = {}
+
+    async def fake_acompletion(model, messages, **kw):
+        seen["system"] = messages[0]["content"]
+        return _VResp("hint")
+
+    monkeypatch.setattr(suggest_mod.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr("friday.core.skill_profile.summarize", lambda *a, **k: "KNOWS nmap: strong")
+    await suggest_mod.tutor_suggest_from_screen(b"x", "m", stuck=True)
+    assert "KNOWS nmap: strong" in seen["system"]   # coaching adapts to his level

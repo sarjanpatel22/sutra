@@ -163,26 +163,30 @@ async def tick(
     return surfaced
 
 
-async def watch_once(cfg: WatchConfig | None = None) -> str | None:
+async def watch_once(
+    cfg: WatchConfig | None = None, *, suggest_fn: SuggestFn = suggest_from_screen
+) -> str | None:
     """Run exactly ONE watch tick and return its surfaced suggestion (or None).
 
     A single-shot for testing `sutra watch --once`: fresh state, current wall clock,
     one `tick`. Returns None when the screen is unavailable, unchanged, or the model
     stays quiet. Does not loop and does not touch `run_watch`'s behaviour.
-    """
+    `suggest_fn` swaps the suggester (e.g. the pentest tutor for `watch --tutor`)."""
     cfg = cfg or WatchConfig.from_env()
     if not screen.screen_available():
         log.warning("watch --once: no display / no screenshot tool — nothing to watch")
         return None
-    return await tick(WatchState(), cfg, _now())
+    return await tick(WatchState(), cfg, _now(), suggest_fn=suggest_fn)
 
 
-async def run_watch(cfg: WatchConfig | None = None) -> None:
+async def run_watch(
+    cfg: WatchConfig | None = None, *, suggest_fn: SuggestFn = suggest_from_screen
+) -> None:
     """Entry point for `sutra watch`: loop forever, ticking every `poll_s` seconds.
 
     OFF by default — only called when Sarjan explicitly starts the watcher. Exits
-    cleanly on cancellation; otherwise runs until interrupted.
-    """
+    cleanly on cancellation; otherwise runs until interrupted. `suggest_fn` swaps the
+    suggester — `watch --tutor` passes the pentest tutor so a stall surfaces a coaching hint."""
     cfg = cfg or WatchConfig.from_env()
     if not screen.screen_available():
         log.warning("watch: no display / no screenshot tool — nothing to watch")
@@ -191,7 +195,7 @@ async def run_watch(cfg: WatchConfig | None = None) -> None:
     log.info("watch started — polling every %.0fs (cap %d/day)", cfg.poll_s, cfg.daily_cap)
     try:
         while True:
-            await tick(state, cfg, _now())
+            await tick(state, cfg, _now(), suggest_fn=suggest_fn)
             await asyncio.sleep(cfg.poll_s)
     except asyncio.CancelledError:
         log.info("watch stopped")
