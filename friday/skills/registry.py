@@ -186,8 +186,13 @@ def list_skills() -> list[str]:
     return list(_registry.keys())
 
 
-async def call(name: str, **kwargs: Any) -> Any:
-    """Invoke a registered skill by name with keyword arguments."""
+async def call(name: str, /, **kwargs: Any) -> Any:
+    """Invoke a registered skill by name with keyword arguments.
+
+    `name` is positional-only (note the `/`): a skill is free to declare a parameter literally
+    called `name` (e.g. dns_lookup) without colliding with this skill-name argument — otherwise
+    `call('dns_lookup', name='example.com')` raises 'multiple values for name'. The agent invokes
+    every tool through here as `call(fn_name, **model_args)`, so the collision was a live bug."""
     meta = get(name)
     return await meta.fn(**kwargs)
 
