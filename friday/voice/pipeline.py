@@ -399,8 +399,10 @@ async def process_audio(
             res = await registry.call("see_screen")
             screen = res.get("description") if isinstance(res, dict) else None
         from friday.core.agent import tutor as _tutor
+        from friday.core.agent import update_skill_profile_async
         tutor_tier = Tier.MEDIUM if cloud_tools_available() else Tier.LOCAL
         reply_text = await _tutor(transcript, history=history, screen=screen, tier=tutor_tier)
+        update_skill_profile_async(transcript, reply_text, tier=tutor_tier)  # learn his level
         lat.agent_ttft_ms = (time.monotonic() - t_agent) * 1000
         reply_tokens = [reply_text]
         token_queue.put(reply_text)
@@ -571,8 +573,10 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
             res = await registry.call("see_screen")
             screen = res.get("description") if isinstance(res, dict) else None
         from friday.core.agent import tutor as _tutor
+        from friday.core.agent import update_skill_profile_async
         tutor_tier = Tier.MEDIUM if cloud_tools_available() else Tier.LOCAL
         reply_text = await _tutor(text, history=history, screen=screen, tier=tutor_tier)
+        update_skill_profile_async(text, reply_text, tier=tutor_tier)  # learn his level
         reply_tokens = [reply_text]
         token_queue.put(reply_text)
         token_queue.put(None)

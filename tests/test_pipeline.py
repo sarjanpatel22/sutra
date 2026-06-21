@@ -185,6 +185,7 @@ async def test_process_text_tutor_mode_coaches_not_acts(local_path, monkeypatch)
         return {"spoken": "opened it", "skill": "open_app"}
 
     monkeypatch.setattr(agent, "tutor", fake_tutor)
+    monkeypatch.setattr(agent, "update_skill_profile_async", lambda *a, **k: None)  # no bg call
     monkeypatch.setattr(commands, "try_command", boom_command)
     pipeline.set_tutor_mode(True)
     try:

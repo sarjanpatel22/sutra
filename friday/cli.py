@@ -965,7 +965,7 @@ def tutor(
     With a TOPIC it answers once; with no topic it opens an interactive coaching session
     (/screen to read your screen, /answer to just be told the step, /quit).
     """
-    from friday.core.agent import persist_turn_async
+    from friday.core.agent import persist_turn_async, update_skill_profile_async
     from friday.core.agent import tutor as _tutor
 
     t = _tier_from_str(tier)
@@ -1019,6 +1019,7 @@ def tutor(
             history.append({"role": "assistant", "content": reply})
             history[:] = history[-24:]
             persist_turn_async(said, reply, source="tutor")
+            update_skill_profile_async(said, reply, tier=t)  # learn his level → adapt next turns
 
     asyncio.run(_once() if topic.strip() else _session())
 

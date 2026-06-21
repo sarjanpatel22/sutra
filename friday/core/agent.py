@@ -589,9 +589,12 @@ async def tutor(
     topic = topic.strip()
     if not topic:
         return "Tell me what you want to learn, or where you're stuck on a box."
-    from friday.core import dreaming
+    from friday.core import dreaming, skill_profile
 
     system = TUTOR_SYSTEM_PROMPT + dreaming.lessons_block(topic)
+    profile = skill_profile.summarize()  # adapt depth to what he's already shown he knows
+    if profile:
+        system += "\n\n" + profile
     if _tutor_wants_reveal(topic):
         system += _TUTOR_REVEAL
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -605,6 +608,55 @@ async def tutor(
     # of the lesson — the tutor must address him directly with a clean answer, not think out loud.
     response = await complete(messages, tier=tier, tools=None, max_tokens=700, think=False)
     return (response.choices[0].message.content or "").strip()
+
+
+_SKILL_CLASSIFY_SYSTEM = (
+    "From this pentest tutoring exchange, name the single main TOPIC (e.g. 'nmap enumeration', "
+    "'gobuster', 'linux privesc', 'sql injection') and how the STUDENT looks on it, as ONE word: "
+    "new / learning / comfortable / strong. Judge from what HE said — his question or what he "
+    "knew or tried — NOT from the tutor's reply. Reply ONLY as compact JSON: "
+    '{"topic": "...", "level": "...", "note": "<=8 word reason"}. If there is no clear pentest '
+    'topic, reply {"topic": "", "level": "learning", "note": ""}.'
+)
+
+
+async def _classify_skill(student_msg: str, tutor_reply: str, tier: Tier) -> None:
+    """Infer the topic + his level from one tutoring exchange and record it. Best-effort — skill
+    tracking must never disturb (or fail) a coaching turn."""
+    from friday.core import skill_profile
+
+    try:
+        resp = await complete(
+            [{"role": "system", "content": _SKILL_CLASSIFY_SYSTEM},
+             {"role": "user", "content": f"STUDENT: {student_msg}\nTUTOR: {tutor_reply}"}],
+            tier=tier, tools=None, max_tokens=80, think=False,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        raw = re.sub(r"(?is)^```[a-z]*\n?|\n?```$", "", raw).strip()
+        data = json.loads(raw)
+        topic = str(data.get("topic", "")).strip()
+        if topic:
+            skill_profile.record(
+                topic, str(data.get("level", "learning")), str(data.get("note", ""))
+            )
+    except Exception:  # noqa: BLE001 — best-effort classification
+        pass
+
+
+def update_skill_profile_async(
+    student_msg: str, tutor_reply: str, *, tier: Tier = Tier.MEDIUM
+) -> None:
+    """Fire-and-forget: after a turn, learn the topic + his level in the background (mirrors
+    persist_turn_async — adds no latency to the coaching reply). No-op without a running loop."""
+    if not (student_msg.strip() and tutor_reply.strip()):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_classify_skill(student_msg, tutor_reply, tier))
+    _persist_tasks.add(task)  # keep a ref so it isn't GC'd mid-flight; flush_persist awaits it too
+    task.add_done_callback(_persist_tasks.discard)
 
 
 async def reason(
