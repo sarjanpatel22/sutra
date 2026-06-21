@@ -548,26 +548,62 @@ TUTOR_SYSTEM_PROMPT = (
     "Structure the reply: (1) how to think about this; (2) the concrete next step to TRY "
     "yourself, with the exact command or technique; (3) the concept behind it so it transfers "
     "to other boxes; (4) what to look for in the output. Adapt depth to the learner, stay "
-    "encouraging, and be concise — coach, don't lecture."
+    "encouraging, and be concise — coach, don't lecture. Speak directly TO him in the second "
+    "person ('you'); never narrate your own reasoning or what you 'should' suggest, and don't "
+    "refer to him as 'the user' — just talk to him."
 )
 
 
-async def tutor(topic: str, *, tier: Tier = Tier.MEDIUM) -> str:
+# Appended to the mentor prompt when the student explicitly wants the answer handed over — the
+# Socratic hold ("never just hand over the flag") relents only on an explicit ask.
+_TUTOR_REVEAL = (
+    " The student is explicitly asking you to hand over the direct answer or command now — give it "
+    "plainly this once, then one short line on why it works."
+)
+_TUTOR_REVEAL_TRIGGERS = (
+    "just tell me", "give me the command", "give me the answer", "what's the command",
+    "what is the command", "show me the answer", "tell me the answer", "spoiler", "i give up",
+)
+
+
+def _tutor_wants_reveal(text: str) -> bool:
+    """True when the student explicitly asks for the direct answer (drop the no-spoiler hold)."""
+    t = (text or "").lower()
+    return any(p in t for p in _TUTOR_REVEAL_TRIGGERS)
+
+
+async def tutor(
+    topic: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    screen: str | None = None,
+    tier: Tier = Tier.MEDIUM,
+) -> str:
     """Pentest-mentor mode: teach the methodology + the why, and give a next step to try.
 
-    Personalizes with Dreaming lessons (what worked on past engagements) so Sutra teaches
-    from real experience. Free tier by default ($0); no tools — this is explanation, not action.
+    Personalizes with Dreaming lessons (what worked on past engagements) so Sutra teaches from real
+    experience. Free tier by default ($0); no tools — this is explanation, not action. `history`
+    carries a multi-turn coaching session; `screen` is OCR'd screen text to ground the advice in
+    what's actually in front of him; the no-spoiler hold relents only when he explicitly asks.
     """
     topic = topic.strip()
     if not topic:
         return "Tell me what you want to learn, or where you're stuck on a box."
     from friday.core import dreaming
 
-    messages = [
-        {"role": "system", "content": TUTOR_SYSTEM_PROMPT + dreaming.lessons_block(topic)},
-        {"role": "user", "content": topic},
-    ]
-    response = await complete(messages, tier=tier, tools=None, max_tokens=700)
+    system = TUTOR_SYSTEM_PROMPT + dreaming.lessons_block(topic)
+    if _tutor_wants_reveal(topic):
+        system += _TUTOR_REVEAL
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    if history:
+        messages.extend(history)
+    user = topic
+    if screen:
+        user = f"[What is on my screen right now]\n{screen[:2000]}\n\n{topic}".strip()
+    messages.append({"role": "user", "content": user})
+    # think=False: keep a reasoning model's chain-of-thought ("Wait, they already ran nmap…") out
+    # of the lesson — the tutor must address him directly with a clean answer, not think out loud.
+    response = await complete(messages, tier=tier, tools=None, max_tokens=700, think=False)
     return (response.choices[0].message.content or "").strip()
 
 

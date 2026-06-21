@@ -943,21 +943,70 @@ def pwn(
 
 @app.command()
 def tutor(
-    topic: str = typer.Argument(..., help="What to learn, or where you're stuck on a box"),
+    topic: str = typer.Argument("", help="What to learn / where you're stuck. Omit for a session."),
     tier: str = typer.Option("medium", "--tier", help="medium (free 70B) / heavy / max"),
 ) -> None:
-    """Pentest mentor — Sutra teaches the methodology and the WHY, not just the answer."""
+    """Pentest mentor — Sutra teaches the methodology and the WHY, not just the answer.
+
+    With a TOPIC it answers once; with no topic it opens an interactive coaching session
+    (/screen to read your screen, /answer to just be told the step, /quit).
+    """
+    from friday.core.agent import persist_turn_async
     from friday.core.agent import tutor as _tutor
 
-    async def _run() -> None:
+    t = _tier_from_str(tier)
+
+    async def _once() -> None:
         with console.status("[cyan]thinking like a mentor…[/cyan]"):
-            answer = await _tutor(topic, tier=_tier_from_str(tier))
+            answer = await _tutor(topic, tier=t)
         console.print(Panel(
             Markdown(answer or "(no answer)"),
             title="[bold green]Sutra — pentest tutor[/bold green]", border_style="green",
         ))
 
-    asyncio.run(_run())
+    async def _session() -> None:
+        from friday.skills import registry
+        registry.autodiscover()  # so /screen can call see_screen
+        history: list[dict[str, Any]] = []
+        console.print(Panel(
+            "[bold green]Sutra · pentest tutor[/bold green] — I coach, you hack.\n"
+            "[dim]Tell me the room and where you're stuck.  "
+            "/screen = read your screen   /answer = just tell me   /quit[/dim]",
+            border_style="green",
+        ))
+        while True:
+            try:
+                said = console.input("[bold green]you› [/bold green]").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[dim]Good hunting.[/dim]")
+                break
+            if not said:
+                continue
+            if said.lower() in ("/quit", "/exit", "quit", "exit"):
+                console.print("[dim]Good hunting.[/dim]")
+                break
+            screen = None
+            if said.lower() == "/screen":
+                with console.status("[cyan]looking at your screen…[/cyan]"):
+                    res = await registry.call("see_screen")
+                screen = res.get("description") if isinstance(res, dict) else None
+                if not screen:
+                    err = res.get("error", "couldn't read the screen") if isinstance(res, dict) \
+                        else "couldn't read the screen"
+                    console.print(f"[yellow]{err}[/yellow]")
+                    continue
+                said = "Here is my screen — what should I look at, and what's a good next step?"
+            elif said.lower() == "/answer":
+                said = "Just tell me the next step and the exact command."
+            with console.status("[cyan]thinking…[/cyan]"):
+                reply = await _tutor(said, history=history, screen=screen, tier=t)
+            console.print(Panel(Markdown(reply), border_style="green", padding=(0, 1)))
+            history.append({"role": "user", "content": said})
+            history.append({"role": "assistant", "content": reply})
+            history[:] = history[-24:]
+            persist_turn_async(said, reply, source="tutor")
+
+    asyncio.run(_once() if topic.strip() else _session())
 
 
 skill_app = typer.Typer(help="Self-extending skills — Sutra drafts a skill, you review + approve.")

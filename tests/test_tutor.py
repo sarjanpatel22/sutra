@@ -48,3 +48,45 @@ async def test_tutor_injects_dreaming_lessons(monkeypatch):
 async def test_tutor_empty_topic_guides():
     out = await agent.tutor("   ")
     assert "learn" in out.lower() or "stuck" in out.lower()
+
+
+async def test_tutor_grounds_in_screen(monkeypatch):
+    seen = {}
+
+    async def _fake(messages, tier=None, tools=None, **kw):
+        seen["user"] = messages[-1]["content"]
+        return _Resp("ok")
+
+    monkeypatch.setattr(agent, "complete", _fake)
+    monkeypatch.setattr("friday.core.dreaming.lessons_block", lambda *a, **k: "")
+    await agent.tutor("what next?", screen="80/tcp open http")
+    assert "80/tcp open http" in seen["user"] and "what next?" in seen["user"]
+
+
+async def test_tutor_threads_history(monkeypatch):
+    seen = {}
+
+    async def _fake(messages, tier=None, tools=None, **kw):
+        seen["roles"] = [m["role"] for m in messages]
+        return _Resp("ok")
+
+    monkeypatch.setattr(agent, "complete", _fake)
+    monkeypatch.setattr("friday.core.dreaming.lessons_block", lambda *a, **k: "")
+    hist = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "reply"}]
+    await agent.tutor("now", history=hist)
+    assert seen["roles"] == ["system", "user", "assistant", "user"]  # system + history + current
+
+
+async def test_tutor_reveals_only_on_explicit_request(monkeypatch):
+    seen = {}
+
+    async def _fake(messages, tier=None, tools=None, **kw):
+        seen["system"] = messages[0]["content"]
+        return _Resp("ok")
+
+    monkeypatch.setattr(agent, "complete", _fake)
+    monkeypatch.setattr("friday.core.dreaming.lessons_block", lambda *a, **k: "")
+    await agent.tutor("what should I try next?")
+    assert agent._TUTOR_REVEAL not in seen["system"]          # Socratic — no spoiler by default
+    await agent.tutor("just tell me the command")
+    assert agent._TUTOR_REVEAL in seen["system"]              # relents on explicit ask
