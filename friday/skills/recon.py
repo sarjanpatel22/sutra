@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import socket
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from friday.skills.registry import skill
@@ -221,3 +224,82 @@ async def port_scan(host: str, ports: str = "top") -> dict[str, Any]:
     found = await asyncio.gather(*[_probe(p) for p in targets])
     open_ports = [{"port": r[0], "banner": r[1]} for r in found if r]
     return {"host": host, "scanned": len(targets), "open": open_ports}
+
+
+# Wordlists for cracking, in order of preference. rockyou is the CTF standard; on Kali it often
+# ships gzipped (rockyou.txt.gz), so the uncompressed seclists subset is the practical default.
+_CRACK_WORDLISTS = (
+    "/usr/share/wordlists/rockyou.txt",
+    "/usr/share/seclists/Passwords/Leaked-Databases/rockyou-75.txt",
+    "/usr/share/wordlists/dirb/common.txt",
+)
+
+
+def _default_crack_wordlist() -> str | None:
+    return next((w for w in _CRACK_WORDLISTS if Path(w).is_file()), None)
+
+
+def _parse_john_show(out: str) -> str | None:
+    """Pull the password out of `john --show` output — '?:password' / 'user:password' lines (the
+    'N password hashes cracked' summary line is skipped)."""
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or "password hash" in line.lower():
+            continue
+        if ":" in line:
+            pw = line.split(":", 1)[1]
+            if pw:
+                return pw
+    return None
+
+
+@skill(
+    name="crack_hash",
+    description=(
+        "Crack a password hash with John the Ripper against a wordlist (rockyou by default). For "
+        "CTF loot — a hash you recovered from your own box. hash_format (e.g. raw-md5, raw-sha256) "
+        "is optional; John auto-detects. Returns the password if found. Authorized targets only."
+    ),
+    auto_confirm=False,  # intensive offline crack — gated
+    timeout_s=140,
+)
+async def crack_hash(hash_value: str, hash_format: str = "", wordlist: str = "") -> dict[str, Any]:
+    """Crack a single password hash with John the Ripper.
+
+    hash_value: The hash string to crack.
+    hash_format: Optional John format (raw-md5, raw-sha256, nt, …); auto-detected if blank.
+    wordlist: Path to a wordlist; defaults to rockyou / a seclists subset if present.
+    """
+    hash_value = (hash_value or "").strip()
+    if not hash_value:
+        return {"error": "no hash to crack"}
+    john = shutil.which("john")
+    if not john:
+        return {"error": "'john' (John the Ripper) is not installed"}
+    wl = (wordlist or "").strip() or _default_crack_wordlist()
+    if not wl or not Path(wl).is_file():
+        return {"error": "no wordlist found — install rockyou/seclists or pass wordlist=<path>"}
+    fmt = (hash_format or "").strip()
+    fd, hashfile = tempfile.mkstemp(suffix=".hash")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(hash_value + "\n")
+        crack = [john, f"--wordlist={wl}", *([f"--format={fmt}"] if fmt else []), hashfile]
+        rc, _out, _err = await _run(crack, timeout=135)
+        show = [john, "--show", *([f"--format={fmt}"] if fmt else []), hashfile]
+        _, show_out, _ = await _run(show, timeout=15)
+        password = _parse_john_show(show_out)
+        result: dict[str, Any] = {
+            "hash": hash_value, "cracked": bool(password), "tool": "john",
+            "format": fmt or "(auto-detected)",
+        }
+        if password:
+            result["password"] = password
+        elif rc == -1:
+            result["note"] = "timed out before cracking — try a targeted wordlist or hash_format"
+        return result
+    finally:
+        try:
+            os.unlink(hashfile)
+        except OSError:
+            pass

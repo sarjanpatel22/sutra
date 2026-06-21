@@ -136,3 +136,56 @@ def test_recon_skills_registered_with_correct_gating():
     for passive in ("dns_lookup", "whois", "searchsploit"):
         assert registry.get(passive).auto_confirm is True
     assert registry.get("port_scan").auto_confirm is False  # active probe → gated
+    assert registry.get("crack_hash").auto_confirm is False  # intensive crack → gated
+
+
+# --- crack_hash ---------------------------------------------------------------------
+
+def test_parse_john_show():
+    assert recon._parse_john_show("?:secret\n1 password hash cracked, 0 left") == "secret"
+    assert recon._parse_john_show("user:hunter2\n") == "hunter2"
+    assert recon._parse_john_show("0 password hashes cracked, 1 left") is None
+    assert recon._parse_john_show("") is None
+
+
+async def test_crack_hash_returns_password(monkeypatch, tmp_path):
+    wl = tmp_path / "wl.txt"
+    wl.write_text("password\n")
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/sbin/john")
+
+    async def fake_run(cmd, timeout=20):
+        if "--show" in cmd:
+            return (0, "?:password\n\n1 password hash cracked, 0 left\n", "")
+        return (0, "password   (?)\n", "")
+
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.crack_hash("5f4dcc3b5aa765d61d8327deb882cf99", wordlist=str(wl))
+    assert out["cracked"] is True and out["password"] == "password"
+
+
+async def test_crack_hash_reports_uncracked(monkeypatch, tmp_path):
+    wl = tmp_path / "wl.txt"
+    wl.write_text("nope\n")
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/sbin/john")
+
+    async def fake_run(cmd, timeout=20):
+        return (0, "0 password hashes cracked, 1 left\n", "")
+
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.crack_hash("deadbeefdeadbeef", wordlist=str(wl))
+    assert out["cracked"] is False and "password" not in out
+
+
+async def test_crack_hash_missing_john(monkeypatch, tmp_path):
+    wl = tmp_path / "wl.txt"
+    wl.write_text("a\n")
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    out = await recon.crack_hash("x", wordlist=str(wl))
+    assert "error" in out and "john" in out["error"]
+
+
+async def test_crack_hash_no_wordlist(monkeypatch):
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/sbin/john")
+    monkeypatch.setattr(recon, "_default_crack_wordlist", lambda: None)
+    out = await recon.crack_hash("x")
+    assert "error" in out and "wordlist" in out["error"]
