@@ -678,6 +678,9 @@ async def run_autonomous(
 # objective at a time; a free local-first worker (qwen 7B → free 70B, never paid) carries each
 # out with tools. The paid budget is spent ONLY on the handful of orchestrator calls.
 _ENG_DONE_SENTINEL = "ENGAGEMENT COMPLETE"
+# A weak local worker can narrate instead of acting; after this many objectives with ZERO real
+# tool progress, stop — the worker can't execute, so paying the orchestrator more is wasted.
+_WORKER_STALL_LIMIT = 2
 
 ORCHESTRATOR_SYSTEM_PROMPT = f"""You are the LEAD operator running an authorized security \
 engagement for {_USER_NAME} (his own machine and a target he started, e.g. a TryHackMe box). You \
@@ -721,6 +724,18 @@ def _strip_done_marker(text: str) -> str:
     return cleaned.lstrip(":-—. \n").strip() or "Engagement complete."
 
 
+def _tool_succeeded(content: object) -> bool:
+    """True if a tool-result message's JSON payload is a real success (not error/declined/blocked)
+    — so the loop can tell whether the worker ACTUALLY did something or only narrated."""
+    try:
+        data = json.loads(content if isinstance(content, str) else "")
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and not (
+        data.get("error") or data.get("declined") or data.get("blocked")
+    )
+
+
 async def _run_worker(
     objective: str,
     goal: str,
@@ -729,10 +744,11 @@ async def _run_worker(
     max_rounds: int,
     loop_confirm: ConfirmFn,
     observe: ObserveFn | None,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], bool]:
     """Carry out ONE orchestrator objective with tools at the cheap, local-first tier. Returns
-    (digest, produced_messages). free_only=True guarantees the worker never spends the paid
-    budget — the $5 is reserved for the orchestrator."""
+    (digest, produced_messages, acted) — `acted` is True only if a tool actually SUCCEEDED, so the
+    orchestrator can tell real progress from a worker that merely narrated. free_only=True
+    guarantees the worker never spends the paid budget — the $5 is reserved for the orchestrator."""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": WORKER_SYSTEM_PROMPT},
         {"role": "user",
@@ -740,6 +756,7 @@ async def _run_worker(
     ]
     produced: list[dict[str, Any]] = []
     digest = ""
+    acted = False
     for _ in range(max_rounds):
         resp = await complete(messages, tier=worker_tier, tools=tools or None,
                               local_tools_first=True, free_only=True)
@@ -752,12 +769,17 @@ async def _run_worker(
             messages.extend(results)
             produced.append(entry)
             produced.extend(results)
+            if any(r.get("role") == "tool" and _tool_succeeded(r.get("content")) for r in results):
+                acted = True
             if msg.content:
                 digest = msg.content.strip()
             continue
         digest = (msg.content or "").strip() or digest
         break
-    return (digest or "(worker produced no usable output)"), produced
+    digest = digest or "(worker produced no usable output)"
+    if not acted:  # the worker narrated but ran nothing — tell the orchestrator plainly
+        digest = "[NO TOOL RAN — nothing was actually done this objective] " + digest
+    return digest, produced, acted
 
 
 async def run_engagement_tiered(
@@ -805,6 +827,7 @@ async def run_engagement_tiered(
         {"role": "user", "content": f"Engagement goal: {goal}\n\nIssue the first objective."},
     ]
     report = ""
+    no_progress = 0  # consecutive objectives where the worker ran no successful tool
     try:
         for _ in range(max_objectives):
             resp = await complete(orch, tier=orchestrator_tier, tools=None)
@@ -815,11 +838,25 @@ async def run_engagement_tiered(
             if _is_engagement_done(directive):
                 report = _strip_done_marker(directive)
                 break
-            digest, produced = await _run_worker(
+            digest, produced, acted = await _run_worker(
                 directive, goal, tools, worker_tier, worker_rounds, loop_confirm, observe
             )
             transcript.extend(produced)
             _emit("worker_report", {"text": digest})
+            no_progress = 0 if acted else no_progress + 1
+            if no_progress >= _WORKER_STALL_LIMIT:
+                # The worker can't carry out the directives — stop burning paid orchestrator
+                # calls on a stuck run; have it wrap up honestly with what it does have.
+                _emit("stalled", {"objectives": no_progress})
+                orch.append({"role": "user", "content":
+                             f"The worker ran no tool for {no_progress} objectives in a row — it "
+                             f"can't carry out your directives (a capability or environment "
+                             f"limit). Reply {_ENG_DONE_SENTINEL} with the final report now: what "
+                             f"you established, what is blocked, and what {_USER_NAME} should "
+                             f"do next."})
+                resp = await complete(orch, tier=orchestrator_tier, tools=None)
+                report = _strip_done_marker((resp.choices[0].message.content or "").strip())
+                break
             orch.append({
                 "role": "user",
                 "content": f"Worker report:\n{digest}\n\nIssue the next objective, or reply "

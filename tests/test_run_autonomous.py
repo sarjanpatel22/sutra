@@ -457,15 +457,56 @@ async def test_tiered_budget_exhausted_forces_report(monkeypatch, tmp_path):
         return [_tool_msg("run_command", {"stdout": ""})]
 
     monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
-    # orchestrator never says done; each worker round just digests (no tool call → 1 round)
-    complete_fn, calls = _scripted_tiered(["keep scanning"] * 10,
-                                          [_Resp(_Msg(content="nothing yet"))] * 10)
+    # orchestrator never says done; each worker ACTS (a tool succeeds) so the stall guard never
+    # fires — this is the pure budget-exhaustion path, not a stall.
+    complete_fn, calls = _scripted_tiered(
+        ["keep scanning"] * 10,
+        [_Resp(_Msg(tool_calls=[_tc("run_command", {"command": "x"})]))] * 10)
     monkeypatch.setattr(agent, "complete", complete_fn)
 
     report, _ = await agent.run_engagement_tiered("scan", max_objectives=3, worker_rounds=1)
     assert report  # a final report was forced when the objective budget ran out
     orch_calls = [c for c in calls if not c["has_tools"]]
     assert len(orch_calls) == 4  # 3 objective rounds + 1 forced final-report call
+
+
+async def test_tiered_stall_guard_stops_when_worker_cant_act(monkeypatch, tmp_path):
+    # A weak worker that only NARRATES (never runs a tool) must not make the orchestrator burn
+    # paid calls to the cap — after _WORKER_STALL_LIMIT no-progress objectives the run wraps up.
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        return [_tool_msg("run_command", {"stdout": "x"})]  # unused — worker never calls a tool
+
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+    complete_fn, calls = _scripted_tiered(["scan it"] * 10,
+                                          [_Resp(_Msg(content="I would run nmap"))] * 10)
+    monkeypatch.setattr(agent, "complete", complete_fn)
+    events = []
+
+    report, _ = await agent.run_engagement_tiered(
+        "scan", observe=lambda kind, data: events.append(kind), max_objectives=8, worker_rounds=1)
+    assert report and "stalled" in events           # wrapped up honestly, didn't spin to the cap
+    orch_calls = [c for c in calls if not c["has_tools"]]
+    assert len(orch_calls) == 3  # 2 no-progress objectives + 1 forced wrap-up (not the full 8)
+
+
+async def test_worker_flags_when_no_tool_ran(monkeypatch):
+    from friday.core.router import Tier
+
+    async def fake_complete(messages, **kw):
+        return _Resp(_Msg(content="I would scan the box"))  # narration, no tool_calls
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+
+    async def _ok(*a):
+        return True
+
+    digest, produced, acted = await agent._run_worker(
+        "scan it", "goal", [], Tier.MEDIUM, 2, _ok, None)
+    assert acted is False and produced == []
+    assert "NO TOOL RAN" in digest  # the orchestrator is told plainly that nothing happened
 
 
 def test_engagement_done_detection_and_strip():
