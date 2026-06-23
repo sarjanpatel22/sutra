@@ -343,3 +343,34 @@ def test_save_engagement_omits_findings_when_none(monkeypatch, tmp_path):
     monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
     path = agent._save_engagement("recon", [{"role": "assistant", "content": "hi"}], "n/a")
     assert "## Findings" not in path.read_text()  # nothing structured → section omitted
+
+
+# ── flag capture (the headline of a CTF engagement) ──────────────────────────
+def test_extract_flags_finds_braced_formats_everywhere():
+    msgs = [
+        {"role": "assistant", "content": "got the user flag THM{user_was_here}"},
+        _tool_msg("run_command", {"stdout": "root:x:0:0\nflag{r00t_3sc4l4t3d}\n"}),  # JSON-escaped
+        _tool_msg("port_scan", {"host": "x", "open": []}),  # no flag
+    ]
+    flags = agent._extract_flags(msgs, report="Done. Root flag: HTB{pr1v_3sc}")
+    assert flags == ["HTB{pr1v_3sc}", "THM{user_was_here}", "flag{r00t_3sc4l4t3d}"]
+
+
+def test_extract_flags_no_false_positive_on_bare_hex():
+    # A 32-hex user.txt value is a flag in THM, but indistinguishable from a hash → not claimed.
+    msgs = [_tool_msg("run_command", {"stdout": "482c811da5d5b4bc6d497ffa98491e38\n"})]
+    assert agent._extract_flags(msgs, "cracked 5f4dcc3b5aa765d61d8327deb882cf99") == []
+
+
+def test_extract_flags_dedupes():
+    msgs = [{"role": "assistant", "content": "THM{dup}"},
+            _tool_msg("run_command", {"o": "THM{dup}"})]
+    assert agent._extract_flags(msgs, "report mentions THM{dup} too") == ["THM{dup}"]
+
+
+def test_save_engagement_headlines_flags(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    text = agent._save_engagement(
+        "pwn", [_tool_msg("run_command", {"stdout": "THM{pwned}"})], "rooted").read_text()
+    assert "## Flags" in text and "`THM{pwned}`" in text
+    assert text.index("## Flags") < text.index("## Report")  # flags lead the whole file

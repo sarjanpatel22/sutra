@@ -480,13 +480,37 @@ def _extract_findings(messages: list[dict[str, Any]]) -> list[str]:
     return findings
 
 
+# CTF flag formats — prefixed + braced (THM{…}, flag{…}, HTB{…}, picoCTF{…}). Braced ONLY, so
+# there are zero false positives: a bare 32-hex user.txt value is indistinguishable from a hash
+# without guessing, so it isn't claimed as a flag here (it still lands in the transcript). No \b
+# prefix on purpose — tool output is JSON-escaped, so a flag can follow the "n" of a "\n" escape.
+_FLAG_RE = re.compile(r"(?:thm|htb|flag|ctf|picoctf)\{[^}\r\n]{1,200}\}", re.I)
+
+
+def _extract_flags(messages: list[dict[str, Any]], report: str) -> list[str]:
+    """Surface captured CTF flags found anywhere in the run — tool output, the model's own
+    messages, or the final report. The headline of a CTF engagement. Order-preserving + deduped."""
+    flags: list[str] = []
+    seen: set[str] = set()
+    for blob in [report, *(str(m.get("content") or "") for m in messages)]:
+        for flag in _FLAG_RE.findall(blob):
+            if flag not in seen:
+                seen.add(flag)
+                flags.append(flag)
+    return flags
+
+
 def _save_engagement(goal: str, messages: list[dict[str, Any]], report: str) -> Path:
     """Persist the transcript + report to a per-engagement markdown file; return its path."""
     slug = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:40] or "engagement"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     _ENGAGE_DIR.mkdir(parents=True, exist_ok=True)
     path = _ENGAGE_DIR / f"{ts}-{slug}.md"
-    lines = [f"# Engagement: {goal}", f"_{ts}_", "", "## Report", "", report, ""]
+    lines = [f"# Engagement: {goal}", f"_{ts}_", ""]
+    flags = _extract_flags(messages, report)
+    if flags:
+        lines += ["## Flags 🚩", "", *(f"- `{f}`" for f in flags), ""]
+    lines += ["## Report", "", report, ""]
     findings = _extract_findings(messages)
     if findings:
         lines += ["## Findings", "", *(f"- {f}" for f in findings), ""]
