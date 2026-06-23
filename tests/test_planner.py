@@ -200,6 +200,25 @@ async def test_run_plan_executes_all_steps_and_persists(plans_dir, monkeypatch):
     assert planner.load(p.slug).status == "done"          # persisted
 
 
+async def test_run_plan_executes_steps_free_only(plans_dir, monkeypatch):
+    # The cost win: a step runs on the free/local worker by default (make_plan already spent the
+    # strong model on planning), and PLAN_PAID_STEPS=1 restores paid escalation.
+    seen = {}
+
+    async def fake_run(prompt, confirm=None, observe=None, **kw):
+        seen["free_only"] = kw.get("free_only")
+        return "did it", [{"role": "assistant", "content": "done, no tool needed"}]
+
+    monkeypatch.setattr("friday.core.agent.run", fake_run)
+    monkeypatch.delenv("PLAN_PAID_STEPS", raising=False)
+    await planner.run_plan(planner.new_plan("think about X", ["reason about it"]))
+    assert seen["free_only"] is True  # default → never spends the paid budget per step
+
+    monkeypatch.setenv("PLAN_PAID_STEPS", "1")
+    await planner.run_plan(planner.new_plan("think about Y", ["reason about it"]))
+    assert seen["free_only"] is False  # opt back into paid step escalation
+
+
 async def test_run_plan_pauses_over_budget_leaving_step_pending(plans_dir, monkeypatch):
     async def fake_run(prompt, **kw):
         return "x", []

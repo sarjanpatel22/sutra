@@ -5,9 +5,10 @@ it stopped.
 Why this exists: a weak model loses the thread on a long multi-step goal, and a strong one
 burns tokens trying to do it all in one breath — so Sutra "can't last 3 minutes" and "can't
 divide the work." The planner has the strong model PLAN once (understand + divide — the hard
-part), then executes each small step with whatever tier fits, saving after every step. So a
-big goal becomes a checklist that works across sessions and resumes after a rate-limit/budget
-pause.
+part), then executes each small step on the FREE/local tiers (the step is small enough that any
+tier can run it — so the paid budget is spent once on planning, not per step; PLAN_PAID_STEPS=1
+lets a hard step escalate), saving after every step. So a big goal becomes a checklist that works
+across sessions and resumes after a rate-limit/budget pause.
 
 This module (PR1) is just the durable data model: a `Plan` of ordered `Step`s, saved to disk
 as JSON, loadable by slug. Decomposition (`make_plan`) and execution (`run_plan`) build on it.
@@ -241,6 +242,14 @@ def _step_attempts() -> int:
         return 3
 
 
+def _free_steps() -> bool:
+    """Run step EXECUTION on the free/local tiers only (default True). make_plan already spent the
+    strong model on decomposition; each step is small enough that any tier can run it (the planner's
+    whole premise), so the paid budget needn't be spent again per step. Set PLAN_PAID_STEPS=1 to
+    let a genuinely hard step escalate to the paid tier."""
+    return os.getenv("PLAN_PAID_STEPS", "").strip().lower() not in ("1", "true", "yes")
+
+
 def _retry_backoff_s() -> float:
     """Seconds to wait between step retries (PLAN_RETRY_BACKOFF, default 2)."""
     try:
@@ -376,6 +385,7 @@ async def run_plan(
     plan.status = "active"
     save(plan)
     max_attempts = _step_attempts()
+    free_steps = _free_steps()  # strong model planned; execute steps free/local (the cost win)
     while (step := plan.next_pending()) is not None:
         if not _budget_ok():
             plan.status = "paused"  # over budget — stop; resume after a reset
@@ -388,7 +398,8 @@ async def run_plan(
             step.attempts += 1
             try:
                 reply, hist = await agent_run(
-                    _step_prompt(plan, step), confirm=confirm, observe=observe
+                    _step_prompt(plan, step), confirm=confirm, observe=observe,
+                    free_only=free_steps,
                 )
             except Exception as e:  # noqa: BLE001 — retry (cooldown rotates models), then skip
                 step.result = f"attempt {step.attempts} failed: {e}"[:500]

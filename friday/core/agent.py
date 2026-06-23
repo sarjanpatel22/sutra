@@ -192,6 +192,7 @@ async def run(
     max_tool_rounds: int = 5,
     confirm: ConfirmFn | None = None,
     observe: ObserveFn | None = None,
+    free_only: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one turn of the agent loop.
 
@@ -199,6 +200,10 @@ async def run(
     auto_confirm=False (irreversible) skill runs. Without it those skills are
     declined — never silently executed — so the confirmation gate can't be
     bypassed, but with it they actually run after approval.
+
+    free_only: never spend the paid budget for this turn (the router stays on the free/local
+    tiers regardless of `tier`). Used by callers that want a guaranteed-$0 worker — e.g. the
+    planner executing a decomposed step after a strong model already did the planning.
 
     Returns (assistant_reply, updated_history).
     """
@@ -310,7 +315,8 @@ async def run(
     try:
         for _ in range(max_tool_rounds):
             response = await complete(
-                messages, tier=tier, tools=tools or None, local_tools_first=local_first
+                messages, tier=tier, tools=tools or None, local_tools_first=local_first,
+                free_only=free_only,
             )
             _account(response)
             msg = response.choices[0].message
@@ -339,7 +345,7 @@ async def run(
             {"role": "user",
              "content": "[System: max tool rounds reached — please give a final answer now]"}
         )
-        response = await complete(messages, tier=tier, tools=None)
+        response = await complete(messages, tier=tier, tools=None, free_only=free_only)
         _account(response)
         msg = response.choices[0].message
         messages.append({"role": "assistant", "content": msg.content})

@@ -313,6 +313,27 @@ async def test_run_auto_escalates_high_effort_tier(_quiet, monkeypatch):
     assert captured["lf"] is False          # cloud-first, not the local 7B
 
 
+async def test_run_free_only_threads_to_complete(_quiet, monkeypatch):
+    """free_only=True reaches the router, so the turn can never spend the paid budget — the
+    contract the planner relies on for guaranteed-$0 step execution."""
+    from friday.core import autoroute
+    from friday.core.autoroute import Decision
+
+    captured: dict = {}
+
+    async def fake_complete(messages, tier=None, tools=None, free_only=False, **kw):
+        captured["free_only"] = free_only
+        return _resp(content="done")
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    low = Decision(True, Tier.MEDIUM, "low", "x", tool_required=False)
+    monkeypatch.setattr(autoroute, "decide", lambda *a, **k: low)
+    monkeypatch.setattr(agent.registry, "all_tools", lambda: [])
+
+    await agent.run("plan and build a whole thing for me", free_only=True)
+    assert captured["free_only"] is True
+
+
 async def test_run_does_not_downgrade_explicit_tier(_quiet, monkeypatch):
     """Escalate-only: a low-effort turn never downgrades an explicit higher --tier."""
     from friday.core import autoroute
