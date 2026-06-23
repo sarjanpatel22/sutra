@@ -880,7 +880,7 @@ def _default_auto_tier() -> str:
 def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool = False,
                     scope: str | None = None) -> None:
     """Drive one autonomous engagement: pick the tier, stream tools, confirm risky steps."""
-    from friday.core.agent import run_autonomous
+    from friday.core.agent import engagement_highlights, run_autonomous
 
     tier = _tier_from_str(tier_str)
     if tier in (Tier.HEAVY, Tier.MAX) and not allow_paid():
@@ -908,11 +908,22 @@ def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool
         )
 
     async def _run() -> None:
-        report, _ = await run_autonomous(
+        report, messages = await run_autonomous(
             goal, max_rounds=rounds, tier=tier, confirm=_confirm,
             observe=_engagement_observe, scope=scope,
         )
+        flags, findings = engagement_highlights(messages, report or "")
+        if flags:  # the headline — surfaced even if the prose report forgot to restate it
+            console.print(Panel(
+                "\n".join(f"[bold green]🚩 {f}[/bold green]" for f in flags),
+                title="[bold green]Flags captured[/bold green]", border_style="green",
+            ))
         console.print(Panel(Markdown(report or "(no report)"), title=title, border_style="green"))
+        if findings:
+            console.print(Panel(
+                Markdown("\n".join(f"- {f}" for f in findings)),
+                title="Findings", border_style="cyan",
+            ))
         console.print("[dim]Transcript saved under ~/.local/share/friday/engagements/[/dim]")
 
     asyncio.run(_run())

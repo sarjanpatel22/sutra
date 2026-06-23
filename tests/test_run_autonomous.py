@@ -374,3 +374,14 @@ def test_save_engagement_headlines_flags(monkeypatch, tmp_path):
         "pwn", [_tool_msg("run_command", {"stdout": "THM{pwned}"})], "rooted").read_text()
     assert "## Flags" in text and "`THM{pwned}`" in text
     assert text.index("## Flags") < text.index("## Report")  # flags lead the whole file
+
+
+def test_engagement_highlights_returns_flags_and_findings():
+    # The public seam the CLI uses to surface results live, mirroring the saved file.
+    msgs = [
+        _tool_msg("run_command", {"stdout": "THM{flag_here}\n"}),
+        _tool_msg("port_scan", {"host": "10.10.10.5", "open": [{"port": 22, "banner": ""}]}),
+    ]
+    flags, findings = agent.engagement_highlights(msgs, "report prose without the flag")
+    assert flags == ["THM{flag_here}"]
+    assert findings == ["**Open ports** on 10.10.10.5: 22"]

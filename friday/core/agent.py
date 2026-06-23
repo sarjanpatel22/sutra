@@ -539,6 +539,15 @@ def _save_engagement(goal: str, messages: list[dict[str, Any]], report: str) -> 
     return path
 
 
+def engagement_highlights(
+    messages: list[dict[str, Any]], report: str
+) -> tuple[list[str], list[str]]:
+    """(flags, findings) for a finished engagement — the headline flags plus the scannable facts,
+    so a live caller (the CLI) can surface them on screen the moment the loop ends, mirroring what
+    _save_engagement persists to disk. The model's prose report may omit a flag it merely cat'd."""
+    return _extract_flags(messages, report), _extract_findings(messages)
+
+
 async def run_autonomous(
     goal: str,
     *,
