@@ -46,6 +46,7 @@ _DEP_GROUPS: dict[str, list[str]] = {
     "action": ["playwright"],
     "mcp": ["mcp"],
     "telegram": ["telegram"],
+    "train": ["torch", "transformers", "trl", "peft", "bitsandbytes", "datasets"],
 }
 
 # binary -> (what it powers, apt package to install). "(...)" packages aren't apt-installable.

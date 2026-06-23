@@ -9,6 +9,7 @@ from typing import Any
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -1070,6 +1071,54 @@ def pwn(
     _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]", yes=yes,
                     scope=target, tiered=not single, objectives=objectives,
                     worker_rounds=worker_rounds)
+
+
+@app.command()
+def train(
+    dataset_only: bool = typer.Option(
+        False, "--dataset-only",
+        help="Only build the SFT dataset from engagement traces (no GPU, $0); skip training"),
+    base_model: str = typer.Option(
+        "", "--base-model", help="HF base checkpoint to fine-tune (default: the local worker)"),
+    epochs: int = typer.Option(2, "--epochs", help="Training epochs"),
+    include_failed: bool = typer.Option(
+        False, "--all",
+        help="Include engagements that captured no flag/finding (default: only successful ones — "
+             "train on what worked)"),
+    max_samples: int = typer.Option(
+        0, "--max-samples", help="Cap the dataset to the N most recent samples"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the QLoRA plan without training, even if deps are present"),
+) -> None:
+    """Fine-tune the local worker on what actually worked in past engagements (LoRA).
+
+    Pipeline: captured engagement traces -> SFT dataset -> 4-bit QLoRA over qwen 7B. The training
+    deps are an optional extra installed on the GPU box; without them this still builds the
+    dataset and prints the exact plan + install command. Run live engagements first (sutra pwn
+    <ip> -y) so there is something to learn from.
+    """
+    from friday.core import train as trainer
+
+    stats = trainer.build_dataset(include_failed=include_failed, max_samples=max_samples)
+    console.print(Panel(
+        f"traces: {stats['traces']}  ->  samples: {stats['samples']}\n"
+        f"skipped — no flag/finding: {stats['skipped_unsuccessful']}   "
+        f"no tool action: {stats['skipped_no_action']}\n"
+        f"dataset: {stats['path']}",
+        title="[bold cyan]Training dataset[/bold cyan]", border_style="cyan"))
+    if stats["samples"] == 0:
+        console.print(
+            "[yellow]No training samples yet.[/yellow] Run live engagements first "
+            "(sutra pwn <ip> -y), then re-run sutra train.")
+        if not dataset_only:
+            return
+    if dataset_only:
+        return
+    status = trainer.run_finetune(base_model=base_model or trainer.DEFAULT_BASE_MODEL,
+                                  epochs=epochs, dry_run=dry_run)
+    # escape: the status carries a literal pip command with [train], which is Rich markup
+    console.print(Panel(escape(status), title="[bold green]Fine-tune[/bold green]",
+                        border_style="green"))
 
 
 @app.command()

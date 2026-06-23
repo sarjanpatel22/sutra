@@ -58,6 +58,17 @@ mcp = [
 telegram = [
     "python-telegram-bot>=21",
 ]
+# Local worker fine-tuning (QLoRA). Heavy + CUDA-specific, so NOT part of [all] — install on the
+# GPU box only, when you are ready to train: pip install -e ".[train]"
+train = [
+    "torch>=2.2",
+    "transformers>=4.44",
+    "trl>=0.9",
+    "peft>=0.11",
+    "bitsandbytes>=0.43",
+    "datasets>=2.20",
+    "accelerate>=0.30",
+]
 # Everything, for a full install: pip install -e ".[all]"
 all = [
     "friday-os[dev,search,voice,memory,action,ambient,mcp,telegram]",

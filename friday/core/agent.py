@@ -624,7 +624,7 @@ async def run_autonomous(
             [],
         )
 
-    from friday.core import dreaming, playbook
+    from friday.core import dreaming, playbook, train
     from friday.core.scope import parse_scope
     scope_rules = parse_scope(scope)
     loop_confirm = _make_loop_confirm(scope_rules, confirm)
@@ -673,6 +673,7 @@ async def run_autonomous(
 
     _save_engagement(goal, messages, reply)
     dreaming.record_lesson(goal, reply)
+    train.record_trace(goal, messages, reply)  # structured trace for future worker fine-tuning
     return reply, messages[1:]
 
 
@@ -814,7 +815,7 @@ async def run_engagement_tiered(
             "set SUTRA_AUTONOMOUS=1 and re-run.",
             [],
         )
-    from friday.core import dreaming, playbook
+    from friday.core import dreaming, playbook, train
     from friday.core.scope import parse_scope
     scope_rules = parse_scope(scope)
     loop_confirm = _make_loop_confirm(scope_rules, confirm)
@@ -885,6 +886,7 @@ async def run_engagement_tiered(
 
     _save_engagement(goal, transcript, report)
     dreaming.record_lesson(goal, report)
+    train.record_trace(goal, transcript, report)  # structured trace for future fine-tuning
     return report, transcript
 
 
