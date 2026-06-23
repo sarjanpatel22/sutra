@@ -425,16 +425,72 @@ def _looks_risky(cmd: str) -> bool:
     return bool(_RISKY_CMD.search(cmd or ""))
 
 
+def _extract_findings(messages: list[dict[str, Any]]) -> list[str]:
+    """Pull scannable facts out of the loop's tool results — the structured JSON the recon/loot
+    skills return (open ports, web paths, cracked hashes, exploits, DNS/WHOIS, headers) — so the
+    engagement file leads with WHAT WAS FOUND, not just the raw transcript. Best effort: an
+    unparseable, errored, or unfamiliar result is skipped, never raised on. Deduped, no model call.
+    """
+    findings: list[str] = []
+    seen: set[str] = set()
+
+    def _add(line: str) -> None:
+        if line not in seen:
+            seen.add(line)
+            findings.append(line)
+
+    for m in messages:
+        if m.get("role") != "tool":
+            continue
+        try:
+            data = json.loads(m.get("content") or "")
+        except (ValueError, TypeError):
+            continue  # truncated / non-JSON tool output → leave it in the transcript only
+        if not isinstance(data, dict) or data.get("error") or data.get("declined"):
+            continue
+        name = m.get("name")
+        if name == "port_scan" and data.get("open"):
+            ports = ", ".join(
+                f"{p['port']}" + (f" ({p['banner'][:40]})" if p.get("banner") else "")
+                for p in data["open"]
+            )
+            _add(f"**Open ports** on {data.get('host', '?')}: {ports}")
+        elif name == "web_enum" and data.get("found"):
+            paths = ", ".join(
+                str(f.get("path") or f.get("line") or "?")
+                + (f" [{f['status']}]" if f.get("status") else "")
+                for f in data["found"][:15]
+            )
+            _add(f"**Web paths** on {data.get('url', '?')}: {paths}")
+        elif name == "http_headers" and data.get("status"):
+            miss = ", ".join(data.get("missing_security_headers") or []) or "none"
+            _add(f"**HTTP** {data.get('url', '?')} (status {data['status']}): "
+                 f"server={data.get('server') or '?'}; missing headers: {miss}")
+        elif name == "dns_lookup" and data.get("records"):
+            _add(f"**DNS** {data.get('type', '?')} {data.get('name', '?')}: "
+                 f"{', '.join(map(str, data['records'][:8]))}")
+        elif name == "whois" and data.get("fields"):
+            bits = ", ".join(f"{k}={v}" for k, v in list(data["fields"].items())[:4])
+            _add(f"**WHOIS** {data.get('query', '?')}: {bits}")
+        elif name == "searchsploit" and data.get("results"):
+            titles = "; ".join(str(r.get("title", "?")) for r in data["results"][:5])
+            _add(f"**Exploits** for {data.get('term', '?')}: {titles}")
+        elif name == "crack_hash" and data.get("cracked"):
+            _add(f"**Cracked hash** {str(data.get('hash', '?'))[:32]} → {data.get('password')}")
+    return findings
+
+
 def _save_engagement(goal: str, messages: list[dict[str, Any]], report: str) -> Path:
     """Persist the transcript + report to a per-engagement markdown file; return its path."""
     slug = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:40] or "engagement"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     _ENGAGE_DIR.mkdir(parents=True, exist_ok=True)
     path = _ENGAGE_DIR / f"{ts}-{slug}.md"
-    lines = [
-        f"# Engagement: {goal}", f"_{ts}_", "", "## Report", "", report,
-        "", "## Transcript", "",
-    ]
+    lines = [f"# Engagement: {goal}", f"_{ts}_", "", "## Report", "", report, ""]
+    findings = _extract_findings(messages)
+    if findings:
+        lines += ["## Findings", "", *(f"- {f}" for f in findings), ""]
+    lines += ["## Transcript", ""]
     for m in messages:
         role = m.get("role")
         if role == "system":

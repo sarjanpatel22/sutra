@@ -287,3 +287,59 @@ async def test_autonomous_records_a_dreaming_lesson(monkeypatch, tmp_path):
     await agent.run_autonomous("pwn 10.10.10.5", max_rounds=3)
     rows = dreaming._load()
     assert rows and "vsftpd" in rows[-1]["lesson"]  # the engagement left a lesson for next time
+
+
+# ── engagement findings (the report leads with WHAT WAS FOUND) ────────────────
+def _tool_msg(name, result):
+    return {"role": "tool", "tool_call_id": "x", "name": name, "content": json.dumps(result)}
+
+
+def test_extract_findings_pulls_structured_facts():
+    msgs = [
+        {"role": "user", "content": "go"},
+        _tool_msg("port_scan", {"host": "10.10.10.5", "open": [
+            {"port": 22, "banner": "SSH-2.0-OpenSSH"}, {"port": 80, "banner": ""}]}),
+        _tool_msg("web_enum", {"url": "http://10.10.10.5", "found": [
+            {"path": "/admin", "status": 301}, {"path": "/login", "status": 200}]}),
+        _tool_msg("crack_hash", {"hash": "5f4dcc3b", "cracked": True, "password": "password"}),
+        _tool_msg("searchsploit", {"term": "vsftpd 2.3.4", "results": [
+            {"title": "vsftpd 2.3.4 - Backdoor Command Execution"}]}),
+        _tool_msg("http_headers", {"url": "http://10.10.10.5", "status": 200,
+                                   "server": "Apache", "missing_security_headers": ["CSP"]}),
+        _tool_msg("dns_lookup", {"name": "x.com", "type": "A", "records": ["1.2.3.4"]}),
+        _tool_msg("run_command", {"stdout": "noise"}),            # no dedicated finding → skipped
+        _tool_msg("port_scan", {"host": "x", "error": "boom"}),   # errored → skipped
+        _tool_msg("web_enum", {"declined": True}),                # declined → skipped
+    ]
+    joined = "\n".join(agent._extract_findings(msgs))
+    assert "Open ports** on 10.10.10.5: 22 (SSH-2.0-OpenSSH), 80" in joined
+    assert "/admin [301]" in joined and "/login [200]" in joined
+    assert "Cracked hash** 5f4dcc3b → password" in joined
+    assert "vsftpd 2.3.4 - Backdoor Command Execution" in joined
+    assert "missing headers: CSP" in joined
+    assert "DNS** A x.com: 1.2.3.4" in joined
+    assert "boom" not in joined and "noise" not in joined  # errored / declined / raw skipped
+
+
+def test_extract_findings_dedupes_and_handles_garbage():
+    msgs = [
+        _tool_msg("port_scan", {"host": "h", "open": [{"port": 22, "banner": ""}]}),
+        _tool_msg("port_scan", {"host": "h", "open": [{"port": 22, "banner": ""}]}),  # dup
+        {"role": "tool", "name": "port_scan", "content": "{not json"},                # garbage
+        {"role": "assistant", "content": "thinking"},                                 # non-tool
+    ]
+    assert agent._extract_findings(msgs) == ["**Open ports** on h: 22"]  # deduped, garbage skipped
+
+
+def test_save_engagement_writes_findings_section(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    msgs = [_tool_msg("crack_hash", {"hash": "abc", "cracked": True, "password": "hunter2"})]
+    text = agent._save_engagement("pwn the box", msgs, "rooted it").read_text()
+    assert "## Findings" in text and "Cracked hash** abc → hunter2" in text
+    assert text.index("## Findings") < text.index("## Transcript")  # findings lead the file
+
+
+def test_save_engagement_omits_findings_when_none(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    path = agent._save_engagement("recon", [{"role": "assistant", "content": "hi"}], "n/a")
+    assert "## Findings" not in path.read_text()  # nothing structured → section omitted
