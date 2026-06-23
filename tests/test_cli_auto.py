@@ -50,3 +50,35 @@ def test_auto_no_flags_still_prints_report(monkeypatch, tmp_path):
     assert r.exit_code == 0, r.output
     assert "Recon only" in r.output
     assert "Flags captured" not in r.output  # nothing captured → no flags panel
+
+
+def test_auto_tiered_routes_to_orchestrator_and_streams_live(monkeypatch, tmp_path):
+    from friday.core.router import Tier
+
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    used = {}
+
+    async def fake_tiered(goal, *, orchestrator_tier=None, confirm=None, observe=None,
+                          scope=None, **kw):
+        used["tier"] = orchestrator_tier
+        if observe:  # the orchestrator's objective, a worker tool call, the worker's digest
+            observe("objective", {"text": "port_scan 10.10.10.9"})
+            observe("tool_start", {"skill": "port_scan", "args": {"host": "10.10.10.9"}})
+            observe("worker_report", {"text": "22/SSH, 80/Apache"})
+        msgs = [{"role": "tool", "name": "run_command",
+                 "content": json.dumps({"stdout": "THM{tier_cli}"})}]
+        return "Rooted the box.", msgs
+
+    async def boom(*a, **k):
+        raise AssertionError("run_autonomous must not run in tiered mode")
+
+    monkeypatch.setattr(agent, "run_engagement_tiered", fake_tiered)
+    monkeypatch.setattr(agent, "run_autonomous", boom)
+
+    r = runner.invoke(cli.app, ["auto", "pwn it", "--tier", "heavy", "-y", "--tiered"])
+    assert r.exit_code == 0, r.output
+    assert used["tier"] is Tier.HEAVY                       # --tier heavy → orchestrator tier
+    assert "objective" in r.output and "port_scan 10.10.10.9" in r.output  # orchestrator streamed
+    assert "worker:" in r.output and "22/SSH" in r.output   # worker digest streamed
+    assert "THM{tier_cli}" in r.output and "Flags captured" in r.output    # flag surfaced live

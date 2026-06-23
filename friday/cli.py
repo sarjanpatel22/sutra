@@ -864,12 +864,19 @@ def council(
 
 
 def _engagement_observe(kind: str, data: dict[str, Any]) -> None:
-    """Stream each tool call as the autonomous loop fires it."""
-    if kind != "tool_start":
-        return
-    gated = " [yellow][gated][/yellow]" if data.get("gated") else ""
-    args = str(data.get("args", ""))[:90]
-    console.print(f"[dim]→[/dim] {data.get('skill')}{gated} [dim]{args}[/dim]")
+    """Stream the engagement live: orchestrator objectives (tiered), each tool call, worker digests.
+
+    Single-tier runs only ever emit tool_start, so they render exactly as before.
+    """
+    if kind == "objective":  # tiered: the strong orchestrator's next directive
+        txt = str(data.get("text", ""))[:200]
+        console.print(f"\n[bold cyan]🧠 objective[/bold cyan] [white]{txt}[/white]")
+    elif kind == "worker_report":  # tiered: the local worker's digest back to the orchestrator
+        console.print(f"[dim]  ↳ worker:[/dim] {str(data.get('text', ''))[:160]}")
+    elif kind == "tool_start":
+        gated = " [yellow][gated][/yellow]" if data.get("gated") else ""
+        args = str(data.get("args", ""))[:90]
+        console.print(f"[dim]   →[/dim] {data.get('skill')}{gated} [dim]{args}[/dim]")
 
 
 def _default_auto_tier() -> str:
@@ -878,23 +885,38 @@ def _default_auto_tier() -> str:
 
 
 def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool = False,
-                    scope: str | None = None) -> None:
-    """Drive one autonomous engagement: pick the tier, stream tools, confirm risky steps."""
-    from friday.core.agent import engagement_highlights, run_autonomous
+                    scope: str | None = None, tiered: bool = False) -> None:
+    """Drive one autonomous engagement: pick the tier, stream tools, confirm risky steps.
+
+    tiered=True runs the orchestrator-worker loop (a `tier_str` orchestrator directs a free
+    local-first worker); otherwise the single-tier loop runs every step at `tier_str`.
+    """
+    from friday.core.agent import (
+        engagement_highlights,
+        run_autonomous,
+        run_engagement_tiered,
+    )
 
     tier = _tier_from_str(tier_str)
     if tier in (Tier.HEAVY, Tier.MAX) and not allow_paid():
         model = "Opus" if tier is Tier.MAX else "Sonnet"
+        role = "orchestrator" if tiered else "loop"
         console.print(
-            f"[yellow]Note:[/yellow] [dim]ROUTER_ALLOW_PAID is off — '{tier_str}' falls back "
-            f"to the free tier. Set ROUTER_ALLOW_PAID=1 to use {model}.[/dim]"
+            f"[yellow]Note:[/yellow] [dim]ROUTER_ALLOW_PAID is off — the {role} '{tier_str}' "
+            f"falls back to the free tier. Set ROUTER_ALLOW_PAID=1 to use {model}.[/dim]"
         )
     mode = "full auto" if yes else "asks before risky actions"
     scope_note = f" · scope {scope}" if scope else ""
-    console.print(
-        f"[cyan]Sutra is working autonomously[/cyan] "
-        f"[dim](≤{rounds} rounds · {tier_str} · {mode}{scope_note})[/dim]"
-    )
+    if tiered:
+        console.print(
+            f"[cyan]Sutra is working autonomously[/cyan] [dim](tiered · {tier_str} orchestrator "
+            f"directs a local-first worker · {mode}{scope_note})[/dim]"
+        )
+    else:
+        console.print(
+            f"[cyan]Sutra is working autonomously[/cyan] "
+            f"[dim](≤{rounds} rounds · {tier_str} · {mode}{scope_note})[/dim]"
+        )
 
     async def _confirm(skill: str, args: dict[str, Any]) -> bool:
         if yes:
@@ -908,10 +930,16 @@ def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool
         )
 
     async def _run() -> None:
-        report, messages = await run_autonomous(
-            goal, max_rounds=rounds, tier=tier, confirm=_confirm,
-            observe=_engagement_observe, scope=scope,
-        )
+        if tiered:
+            report, messages = await run_engagement_tiered(
+                goal, orchestrator_tier=tier, confirm=_confirm,
+                observe=_engagement_observe, scope=scope,
+            )
+        else:
+            report, messages = await run_autonomous(
+                goal, max_rounds=rounds, tier=tier, confirm=_confirm,
+                observe=_engagement_observe, scope=scope,
+            )
         flags, findings = engagement_highlights(messages, report or "")
         if flags:  # the headline — surfaced even if the prose report forgot to restate it
             console.print(Panel(
@@ -945,11 +973,16 @@ def auto(
         "", "--scope",
         help="Authorized targets (IPs/CIDRs/hosts, comma-separated); off-scope commands ask first",
     ),
+    tiered: bool = typer.Option(
+        False, "--tiered", "-T",
+        help="Tiered: a strong orchestrator directs a free local-first worker (spends the paid "
+             "budget only on strategy)",
+    ),
 ) -> None:
     """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1."""
     _run_engagement(
         goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]", yes=yes,
-        scope=scope or os.getenv("SUTRA_SCOPE") or None,
+        scope=scope or os.getenv("SUTRA_SCOPE") or None, tiered=tiered,
     )
 
 
@@ -965,6 +998,11 @@ def pwn(
         False, "--yes", "-y",
         help="Full auto: run everything without confirming risky actions (you accept the risk)",
     ),
+    tiered: bool = typer.Option(
+        False, "--tiered", "-T",
+        help="Tiered: a strong orchestrator directs a free local-first worker (spends the paid "
+             "budget only on strategy)",
+    ),
 ) -> None:
     """Autonomously enumerate, exploit, and report on a target box. Needs SUTRA_AUTONOMOUS=1."""
     goal = (
@@ -973,7 +1011,7 @@ def pwn(
         f"Report the findings, the flags, and how you got them."
     )
     _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]", yes=yes,
-                    scope=target)
+                    scope=target, tiered=tiered)
 
 
 @app.command()
