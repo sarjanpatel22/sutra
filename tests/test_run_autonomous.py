@@ -509,6 +509,32 @@ async def test_worker_flags_when_no_tool_ran(monkeypatch):
     assert "NO TOOL RAN" in digest  # the orchestrator is told plainly that nothing happened
 
 
+async def test_worker_digest_is_capped(monkeypatch):
+    # A runaway worker that dumps a wall of output can't inflate the PAID orchestrator's input.
+    from friday.core.router import Tier
+
+    n = {"i": 0}
+
+    async def fake_complete(messages, **kw):
+        n["i"] += 1
+        if n["i"] == 1:  # act once so acted=True (no NO-TOOL prefix)…
+            return _Resp(_Msg(tool_calls=[_tc("run_command", {"command": "x"})]))
+        return _Resp(_Msg(content="A" * 9000))  # …then dump a wall
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        return [_tool_msg("run_command", {"stdout": "ok"})]
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+
+    async def _ok(*a):
+        return True
+
+    digest, _, acted = await agent._run_worker("scan", "goal", [], Tier.MEDIUM, 3, _ok, None)
+    assert acted is True
+    assert len(digest) <= agent._DIGEST_CAP  # bounded before it reaches the paid orchestrator
+
+
 def test_engagement_done_detection_and_strip():
     assert agent._is_engagement_done("ENGAGEMENT COMPLETE\nrooted")
     assert agent._is_engagement_done("ok, Engagement Complete now")  # case-insensitive substring

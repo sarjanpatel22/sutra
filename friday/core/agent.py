@@ -681,6 +681,10 @@ _ENG_DONE_SENTINEL = "ENGAGEMENT COMPLETE"
 # A weak local worker can narrate instead of acting; after this many objectives with ZERO real
 # tool progress, stop — the worker can't execute, so paying the orchestrator more is wasted.
 _WORKER_STALL_LIMIT = 2
+# Cap the worker digest fed back into the PAID orchestrator prompt — a runaway worker that dumps a
+# wall of output can't inflate the $5 in Sonnet input tokens. The worker is prompted to be terse;
+# this is the hard backstop.
+_DIGEST_CAP = 2000
 
 ORCHESTRATOR_SYSTEM_PROMPT = f"""You are the LEAD operator running an authorized security \
 engagement for {_USER_NAME} (his own machine and a target he started, e.g. a TryHackMe box). You \
@@ -776,7 +780,7 @@ async def _run_worker(
             continue
         digest = (msg.content or "").strip() or digest
         break
-    digest = digest or "(worker produced no usable output)"
+    digest = (digest or "(worker produced no usable output)")[:_DIGEST_CAP]  # bound paid tokens
     if not acted:  # the worker narrated but ran nothing — tell the orchestrator plainly
         digest = "[NO TOOL RAN — nothing was actually done this objective] " + digest
     return digest, produced, acted

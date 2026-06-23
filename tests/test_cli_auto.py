@@ -82,3 +82,23 @@ def test_auto_tiered_routes_to_orchestrator_and_streams_live(monkeypatch, tmp_pa
     assert "objective" in r.output and "port_scan 10.10.10.9" in r.output  # orchestrator streamed
     assert "worker:" in r.output and "22/SSH" in r.output   # worker digest streamed
     assert "THM{tier_cli}" in r.output and "Flags captured" in r.output    # flag surfaced live
+
+
+def test_pwn_tiered_threads_objective_and_round_caps(monkeypatch, tmp_path):
+    # The bounded-probe knobs (--objectives / --worker-rounds) reach the engine, so a first live
+    # run can be cheap (e.g. --objectives 2 = at most 2 paid orchestrator calls).
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    seen = {}
+
+    async def fake_tiered(goal, *, orchestrator_tier=None, max_objectives=8, worker_rounds=6,
+                          confirm=None, observe=None, scope=None, **kw):
+        seen.update(objectives=max_objectives, worker_rounds=worker_rounds, scope=scope)
+        return "done", []
+
+    monkeypatch.setattr(agent, "run_engagement_tiered", fake_tiered)
+    r = runner.invoke(cli.app, ["pwn", "10.10.10.5", "-T", "-y",
+                                "--objectives", "2", "--worker-rounds", "3"])
+    assert r.exit_code == 0, r.output
+    assert seen["objectives"] == 2 and seen["worker_rounds"] == 3
+    assert seen["scope"] == "10.10.10.5"  # pwn still auto-scopes to its target

@@ -885,7 +885,8 @@ def _default_auto_tier() -> str:
 
 
 def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool = False,
-                    scope: str | None = None, tiered: bool = False) -> None:
+                    scope: str | None = None, tiered: bool = False,
+                    objectives: int = 8, worker_rounds: int = 6) -> None:
     """Drive one autonomous engagement: pick the tier, stream tools, confirm risky steps.
 
     tiered=True runs the orchestrator-worker loop (a `tier_str` orchestrator directs a free
@@ -932,7 +933,8 @@ def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool
     async def _run() -> None:
         if tiered:
             report, messages = await run_engagement_tiered(
-                goal, orchestrator_tier=tier, confirm=_confirm,
+                goal, orchestrator_tier=tier, max_objectives=objectives,
+                worker_rounds=worker_rounds, confirm=_confirm,
                 observe=_engagement_observe, scope=scope,
             )
         else:
@@ -978,11 +980,19 @@ def auto(
         help="Tiered: a strong orchestrator directs a free local-first worker (spends the paid "
              "budget only on strategy)",
     ),
+    objectives: int = typer.Option(
+        8, "--objectives",
+        help="Tiered mode: max orchestrator objectives (each is one paid call — lower it for a "
+             "cheap bounded first probe, e.g. 2)",
+    ),
+    worker_rounds: int = typer.Option(
+        6, "--worker-rounds", help="Tiered mode: max worker tool rounds per objective"),
 ) -> None:
     """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1."""
     _run_engagement(
         goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]", yes=yes,
         scope=scope or os.getenv("SUTRA_SCOPE") or None, tiered=tiered,
+        objectives=objectives, worker_rounds=worker_rounds,
     )
 
 
@@ -1003,6 +1013,13 @@ def pwn(
         help="Tiered: a strong orchestrator directs a free local-first worker (spends the paid "
              "budget only on strategy)",
     ),
+    objectives: int = typer.Option(
+        8, "--objectives",
+        help="Tiered mode: max orchestrator objectives (each is one paid call — lower it for a "
+             "cheap bounded first probe, e.g. 2)",
+    ),
+    worker_rounds: int = typer.Option(
+        6, "--worker-rounds", help="Tiered mode: max worker tool rounds per objective"),
 ) -> None:
     """Autonomously enumerate, exploit, and report on a target box. Needs SUTRA_AUTONOMOUS=1."""
     goal = (
@@ -1011,7 +1028,7 @@ def pwn(
         f"Report the findings, the flags, and how you got them."
     )
     _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]", yes=yes,
-                    scope=target, tiered=tiered)
+                    scope=target, tiered=tiered, objectives=objectives, worker_rounds=worker_rounds)
 
 
 @app.command()
