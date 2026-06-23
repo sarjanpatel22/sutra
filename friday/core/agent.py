@@ -624,15 +624,18 @@ async def run_autonomous(
             [],
         )
 
-    from friday.core import dreaming
+    from friday.core import dreaming, playbook
     from friday.core.scope import parse_scope
     scope_rules = parse_scope(scope)
     loop_confirm = _make_loop_confirm(scope_rules, confirm)
 
     registry.autodiscover()
     tools = registry.all_tools()
+    sys_prompt = (
+        AUTONOMOUS_SYSTEM_PROMPT + playbook.playbook_block() + dreaming.lessons_block(goal)
+    )
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": AUTONOMOUS_SYSTEM_PROMPT + dreaming.lessons_block(goal)},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": goal},
     ]
     nudged = False
@@ -811,7 +814,7 @@ async def run_engagement_tiered(
             "set SUTRA_AUTONOMOUS=1 and re-run.",
             [],
         )
-    from friday.core import dreaming
+    from friday.core import dreaming, playbook
     from friday.core.scope import parse_scope
     scope_rules = parse_scope(scope)
     loop_confirm = _make_loop_confirm(scope_rules, confirm)
@@ -826,8 +829,11 @@ async def run_engagement_tiered(
                 pass
 
     transcript: list[dict[str, Any]] = [{"role": "user", "content": goal}]
+    orch_sys = (
+        ORCHESTRATOR_SYSTEM_PROMPT + playbook.playbook_block() + dreaming.lessons_block(goal)
+    )
     orch: list[dict[str, Any]] = [
-        {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT + dreaming.lessons_block(goal)},
+        {"role": "system", "content": orch_sys},
         {"role": "user", "content": f"Engagement goal: {goal}\n\nIssue the first objective."},
     ]
     report = ""
