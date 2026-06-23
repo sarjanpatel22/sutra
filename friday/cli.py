@@ -975,23 +975,27 @@ def auto(
         "", "--scope",
         help="Authorized targets (IPs/CIDRs/hosts, comma-separated); off-scope commands ask first",
     ),
-    tiered: bool = typer.Option(
-        False, "--tiered", "-T",
-        help="Tiered: a strong orchestrator directs a free local-first worker (spends the paid "
-             "budget only on strategy)",
+    single: bool = typer.Option(
+        False, "--single", "-S",
+        help="Single-tier loop (every step at --tier) instead of the DEFAULT tiered "
+             "orchestrator-worker (a strong orchestrator directs a free local-first worker)",
     ),
     objectives: int = typer.Option(
         8, "--objectives",
-        help="Tiered mode: max orchestrator objectives (each is one paid call — lower it for a "
+        help="Tiered: max orchestrator objectives (each is one paid call — lower it for a "
              "cheap bounded first probe, e.g. 2)",
     ),
     worker_rounds: int = typer.Option(
-        6, "--worker-rounds", help="Tiered mode: max worker tool rounds per objective"),
+        6, "--worker-rounds", help="Tiered: max worker tool rounds per objective"),
 ) -> None:
-    """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1."""
+    """Pursue a goal hands-free to completion (authorized CTF). Needs SUTRA_AUTONOMOUS=1.
+
+    Tiered by default — a strong orchestrator plans, a free local-first worker acts (paid budget
+    spent only on strategy). Pass --single for the flat single-tier loop.
+    """
     _run_engagement(
         goal, rounds, tier, "[bold green]Sutra — engagement report[/bold green]", yes=yes,
-        scope=scope or os.getenv("SUTRA_SCOPE") or None, tiered=tiered,
+        scope=scope or os.getenv("SUTRA_SCOPE") or None, tiered=not single,
         objectives=objectives, worker_rounds=worker_rounds,
     )
 
@@ -1008,27 +1012,32 @@ def pwn(
         False, "--yes", "-y",
         help="Full auto: run everything without confirming risky actions (you accept the risk)",
     ),
-    tiered: bool = typer.Option(
-        False, "--tiered", "-T",
-        help="Tiered: a strong orchestrator directs a free local-first worker (spends the paid "
-             "budget only on strategy)",
+    single: bool = typer.Option(
+        False, "--single", "-S",
+        help="Single-tier loop (every step at --tier) instead of the DEFAULT tiered "
+             "orchestrator-worker (a strong orchestrator directs a free local-first worker)",
     ),
     objectives: int = typer.Option(
         8, "--objectives",
-        help="Tiered mode: max orchestrator objectives (each is one paid call — lower it for a "
+        help="Tiered: max orchestrator objectives (each is one paid call — lower it for a "
              "cheap bounded first probe, e.g. 2)",
     ),
     worker_rounds: int = typer.Option(
-        6, "--worker-rounds", help="Tiered mode: max worker tool rounds per objective"),
+        6, "--worker-rounds", help="Tiered: max worker tool rounds per objective"),
 ) -> None:
-    """Autonomously enumerate, exploit, and report on a target box. Needs SUTRA_AUTONOMOUS=1."""
+    """Autonomously enumerate, exploit, and report on a target box. Needs SUTRA_AUTONOMOUS=1.
+
+    Tiered by default — a strong orchestrator plans, a free local-first worker acts. Pass
+    --single for the flat single-tier loop.
+    """
     goal = (
         f"Enumerate and compromise the box at {target}. Establish VPN reachability if needed, "
         f"scan it, find a foothold, escalate to root, and capture the user and root flags. "
         f"Report the findings, the flags, and how you got them."
     )
     _run_engagement(goal, rounds, tier, f"[bold green]Sutra — {target}[/bold green]", yes=yes,
-                    scope=target, tiered=tiered, objectives=objectives, worker_rounds=worker_rounds)
+                    scope=target, tiered=not single, objectives=objectives,
+                    worker_rounds=worker_rounds)
 
 
 @app.command()

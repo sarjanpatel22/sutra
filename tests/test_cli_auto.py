@@ -31,7 +31,7 @@ def test_auto_surfaces_flags_and_findings_live(monkeypatch, tmp_path):
         return "Compromised the box.", msgs  # prose report does NOT restate the flag
 
     monkeypatch.setattr(agent, "run_autonomous", fake_run_autonomous)
-    r = runner.invoke(cli.app, ["auto", "pwn it", "--tier", "medium", "-y"])
+    r = runner.invoke(cli.app, ["auto", "pwn it", "--tier", "medium", "-y", "--single"])
     assert r.exit_code == 0, r.output
     assert "THM{live_flag}" in r.output      # the flag surfaces though the report omitted it
     assert "Flags captured" in r.output
@@ -46,7 +46,7 @@ def test_auto_no_flags_still_prints_report(monkeypatch, tmp_path):
         return "Recon only — no foothold yet.", [{"role": "assistant", "content": "looked around"}]
 
     monkeypatch.setattr(agent, "run_autonomous", fake_run_autonomous)
-    r = runner.invoke(cli.app, ["auto", "scan it", "--tier", "medium", "-y"])
+    r = runner.invoke(cli.app, ["auto", "scan it", "--tier", "medium", "-y", "--single"])
     assert r.exit_code == 0, r.output
     assert "Recon only" in r.output
     assert "Flags captured" not in r.output  # nothing captured → no flags panel
@@ -76,7 +76,7 @@ def test_auto_tiered_routes_to_orchestrator_and_streams_live(monkeypatch, tmp_pa
     monkeypatch.setattr(agent, "run_engagement_tiered", fake_tiered)
     monkeypatch.setattr(agent, "run_autonomous", boom)
 
-    r = runner.invoke(cli.app, ["auto", "pwn it", "--tier", "heavy", "-y", "--tiered"])
+    r = runner.invoke(cli.app, ["auto", "pwn it", "--tier", "heavy", "-y"])  # tiered is default now
     assert r.exit_code == 0, r.output
     assert used["tier"] is Tier.HEAVY                       # --tier heavy → orchestrator tier
     assert "objective" in r.output and "port_scan 10.10.10.9" in r.output  # orchestrator streamed
@@ -97,7 +97,7 @@ def test_pwn_tiered_threads_objective_and_round_caps(monkeypatch, tmp_path):
         return "done", []
 
     monkeypatch.setattr(agent, "run_engagement_tiered", fake_tiered)
-    r = runner.invoke(cli.app, ["pwn", "10.10.10.5", "-T", "-y",
+    r = runner.invoke(cli.app, ["pwn", "10.10.10.5", "-y",  # tiered is default now
                                 "--objectives", "2", "--worker-rounds", "3"])
     assert r.exit_code == 0, r.output
     assert seen["objectives"] == 2 and seen["worker_rounds"] == 3
