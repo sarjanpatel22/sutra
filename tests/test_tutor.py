@@ -139,3 +139,33 @@ def test_hint_outcome_from_history_empty_is_safe(monkeypatch):
     agent.note_hint_outcome_from_history([], "that worked")
     agent.note_hint_outcome_from_history(None, "that worked")
     assert recorded == []
+
+
+async def test_tutor_coaches_from_engagement_context(monkeypatch):
+    seen = {}
+
+    async def _fake(messages, tier=None, tools=None, **kw):
+        seen["system"] = messages[0]["content"]
+        return _Resp("ok")
+
+    monkeypatch.setattr(agent, "complete", _fake)
+    monkeypatch.setattr("friday.core.dreaming.lessons_block", lambda *a, **k: "")
+    await agent.tutor("what's my next move?",
+                      engagement="## Findings\n- Open ports on 10.10.10.5: 22, 80\n- /admin [301]")
+    assert "10.10.10.5" in seen["system"] and "/admin" in seen["system"]
+    assert "CURRENT BOX" in seen["system"]  # framed so the model coaches from real findings
+
+
+def test_latest_engagement_findings_reads_newest_head(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    assert agent._latest_engagement_findings() is None  # nothing yet
+    (tmp_path / "old.md").write_text("# Engagement: old\n## Findings\n- old\n## Transcript\nx")
+    (tmp_path / "new.md").write_text(
+        "# Engagement: new box\n## Flags\n- THM{x}\n## Findings\n- port 22\n## Transcript\nnoise")
+    os.utime(tmp_path / "old.md", (1000, 1000))
+    os.utime(tmp_path / "new.md", (2000, 2000))  # newest regardless of FS timing
+    out = agent._latest_engagement_findings()
+    assert "new box" in out and "THM{x}" in out and "port 22" in out
+    assert "noise" not in out and "old" not in out  # newest only, transcript dropped

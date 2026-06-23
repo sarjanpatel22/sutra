@@ -1025,6 +1025,7 @@ def tutor(
     (/screen to read your screen, /answer to just be told the step, /quit).
     """
     from friday.core.agent import (
+        _latest_engagement_findings,
         note_hint_outcome_from_history,
         persist_turn_async,
         update_skill_profile_async,
@@ -1034,8 +1035,11 @@ def tutor(
     t = _tier_from_str(tier)
 
     async def _once() -> None:
+        eng = _latest_engagement_findings()
+        if eng:
+            console.print("[dim]· coaching from your last engagement's findings[/dim]")
         with console.status("[cyan]thinking like a mentor…[/cyan]"):
-            answer = await _tutor(topic, tier=t)
+            answer = await _tutor(topic, engagement=eng, tier=t)
         console.print(Panel(
             Markdown(answer or "(no answer)"),
             title="[bold green]Sutra — pentest tutor[/bold green]", border_style="green",
@@ -1045,10 +1049,13 @@ def tutor(
         from friday.skills import registry
         registry.autodiscover()  # so /screen can call see_screen
         history: list[dict[str, Any]] = []
+        engagement = _latest_engagement_findings()  # coach from the box his loop just worked
+        loaded = "  [green]· last engagement loaded[/green]" if engagement else ""
         console.print(Panel(
             "[bold green]Sutra · pentest tutor[/bold green] — I coach, you hack.\n"
             "[dim]Tell me the room and where you're stuck.  "
-            "/screen = read your screen   /answer = just tell me   /quit[/dim]",
+            "/screen = read your screen   /box = reload last engagement   "
+            f"/answer = just tell me   /quit[/dim]{loaded}",
             border_style="green",
         ))
         while True:
@@ -1063,6 +1070,11 @@ def tutor(
                 console.print("[dim]Good hunting.[/dim]")
                 break
             note_hint_outcome_from_history(history, said)  # did the last hint land? → learn from it
+            if said.lower() == "/box":
+                engagement = _latest_engagement_findings()
+                msg = "reloaded your last engagement" if engagement else "no engagement found yet"
+                console.print(f"[dim]· {msg}[/dim]")
+                continue
             screen = None
             if said.lower() == "/screen":
                 with console.status("[cyan]looking at your screen…[/cyan]"):
@@ -1077,7 +1089,8 @@ def tutor(
             elif said.lower() == "/answer":
                 said = "Just tell me the next step and the exact command."
             with console.status("[cyan]thinking…[/cyan]"):
-                reply = await _tutor(said, history=history, screen=screen, tier=t)
+                reply = await _tutor(said, history=history, screen=screen,
+                                     engagement=engagement, tier=t)
             console.print(Panel(Markdown(reply), border_style="green", padding=(0, 1)))
             history.append({"role": "user", "content": said})
             history.append({"role": "assistant", "content": reply})

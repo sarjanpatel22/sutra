@@ -548,6 +548,21 @@ def engagement_highlights(
     return _extract_flags(messages, report), _extract_findings(messages)
 
 
+def _latest_engagement_findings(max_chars: int = 1500) -> str | None:
+    """The goal + report + Flags + Findings of the most recent engagement file (everything above
+    the raw transcript), so the tutor can coach on the box he actually worked. None if there is no
+    engagement yet, or it can't be read."""
+    try:
+        files = sorted(_ENGAGE_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not files:
+            return None
+        text = files[0].read_text()
+    except OSError:
+        return None
+    head = text.split("## Transcript", 1)[0].strip()  # drop the verbose transcript, keep the gist
+    return head[:max_chars] or None
+
+
 def _make_loop_confirm(scope_rules: Any, confirm: ConfirmFn | None) -> ConfirmFn:
     """The autonomous hybrid confirm policy as a reusable closure (shared by the single-tier
     run_autonomous and the tiered orchestrator-worker loop): a clean, IN-SCOPE run_command /
@@ -856,6 +871,7 @@ async def tutor(
     *,
     history: list[dict[str, Any]] | None = None,
     screen: str | None = None,
+    engagement: str | None = None,
     tier: Tier = Tier.MEDIUM,
 ) -> str:
     """Pentest-mentor mode: teach the methodology + the why, and give a next step to try.
@@ -863,7 +879,9 @@ async def tutor(
     Personalizes with Dreaming lessons (what worked on past engagements) so Sutra teaches from real
     experience. Free tier by default ($0); no tools — this is explanation, not action. `history`
     carries a multi-turn coaching session; `screen` is OCR'd screen text to ground the advice in
-    what's actually in front of him; the no-spoiler hold relents only when he explicitly asks.
+    what's actually in front of him; `engagement` is the recon his autonomous loop already did on
+    the current box (so it coaches from real findings, not generics); the no-spoiler hold relents
+    only when he explicitly asks.
     """
     topic = topic.strip()
     if not topic:
@@ -874,6 +892,13 @@ async def tutor(
     profile = skill_profile.summarize()  # adapt depth to what he's already shown he knows
     if profile:
         system += "\n\n" + profile
+    if engagement:
+        # Coach from what the recon actually turned up on THIS box, not generic theory.
+        system += (
+            "\n\n[CURRENT BOX — what his recon already found. Coach from THIS: reference the open "
+            "ports, paths, credentials, and flags he has; don't re-ask what's known. If his "
+            "question is unrelated to this box, ignore this.]\n" + engagement.strip()[:1500]
+        )
     if _tutor_wants_reveal(topic):
         system += _TUTOR_REVEAL
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
