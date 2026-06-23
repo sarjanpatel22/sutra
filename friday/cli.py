@@ -19,14 +19,17 @@ app = typer.Typer(name="sutra", help="Sutra — voice-native ambient AI assistan
 console = Console()
 
 
-@app.callback()
-def _bootstrap() -> None:
-    """Runs before any command — load keyring secrets into the environment."""
+@app.callback(invoke_without_command=True)
+def _bootstrap(ctx: typer.Context) -> None:
+    """Runs before any command — load keyring secrets into the environment. With NO subcommand,
+    bare `sutra` boots the presence (orb + chat) instead of just printing help."""
     try:
         from friday.core.secrets import load_into_env
         load_into_env()
     except Exception:  # noqa: BLE001 — secret-loading must never block the CLI
         pass
+    if ctx.invoked_subcommand is None:
+        _start_presence(Tier.MEDIUM)
 
 
 def _tier_from_str(s: str) -> Tier:
@@ -163,11 +166,40 @@ async def _chat_loop(tier: Tier) -> None:
     await close_bridge()  # tear down MCP server subprocesses (no-op if none)
 
 
+def _start_presence(tier: Tier, *, orb: bool = True) -> None:
+    """Boot Sutra's presence: the orb on the desktop (background) + an interactive chat session.
+    The orb is ambient — if it can't start (no display, no browser) the chat runs anyway."""
+    httpd = browser = None
+    if orb:
+        try:
+            from friday.gui.server import serve_background
+            httpd, browser = serve_background()
+            console.print("[dim]· presence orb up[/dim]")
+        except Exception as e:  # noqa: BLE001 — the orb is ambient; never block the session
+            console.print(f"[yellow]orb didn't start ({e}); continuing without it[/yellow]")
+    try:
+        asyncio.run(_chat_loop(tier))
+    finally:
+        if browser is not None:
+            browser.terminate()
+        if httpd is not None:
+            httpd.shutdown()
+
+
+@app.command()
+def start(
+    tier: str = typer.Option("medium", "--tier", "-t", help="Routing tier: local/medium/heavy/max"),
+    no_orb: bool = typer.Option(False, "--no-orb", help="Skip the presence orb (chat only)"),
+) -> None:
+    """Boot Sutra — bring up the presence orb and drop into chat. This is what bare `sutra` runs."""
+    _start_presence(_tier_from_str(tier), orb=not no_orb)
+
+
 @app.command()
 def chat(
     tier: str = typer.Option("medium", "--tier", "-t", help="Routing tier: local/medium/heavy/max"),
 ) -> None:
-    """Start an interactive chat session."""
+    """Start an interactive chat session (no orb)."""
     asyncio.run(_chat_loop(_tier_from_str(tier)))
 
 
