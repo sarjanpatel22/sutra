@@ -548,6 +548,31 @@ def engagement_highlights(
     return _extract_flags(messages, report), _extract_findings(messages)
 
 
+def _make_loop_confirm(scope_rules: Any, confirm: ConfirmFn | None) -> ConfirmFn:
+    """The autonomous hybrid confirm policy as a reusable closure (shared by the single-tier
+    run_autonomous and the tiered orchestrator-worker loop): a clean, IN-SCOPE run_command /
+    browser / structured recon-loot call runs hands-free; an off-scope target or a machine-risky
+    action escalates to `confirm` (auto-approved with --yes, declined when no hook is given)."""
+    from friday.core.scope import args_in_scope, command_in_scope
+
+    async def _loop_confirm(skill: str, args: dict[str, Any]) -> bool:
+        if skill == "run_command":
+            cmd = args.get("command", "")
+            off_scope = scope_rules is not None and not command_in_scope(cmd, scope_rules)
+            if not off_scope and not _looks_risky(cmd):
+                return True
+            return bool(confirm and await confirm(skill, args))
+        if skill in _AUTO_HANDS_FREE and skill != "run_command":
+            # The browser + structured recon/loot family auto-runs too — but not against an
+            # off-scope target (URL/host in the args; crack_hash has none → always in scope).
+            if scope_rules is not None and not args_in_scope(args, scope_rules):
+                return bool(confirm and await confirm(skill, args))
+            return True
+        return bool(confirm and await confirm(skill, args))
+
+    return _loop_confirm
+
+
 async def run_autonomous(
     goal: str,
     *,
@@ -579,25 +604,9 @@ async def run_autonomous(
         )
 
     from friday.core import dreaming
-    from friday.core.scope import args_in_scope, command_in_scope, parse_scope
+    from friday.core.scope import parse_scope
     scope_rules = parse_scope(scope)
-
-    async def _loop_confirm(skill: str, args: dict[str, Any]) -> bool:
-        # Clean, IN-SCOPE recon runs hands-free; an off-scope target or a machine-risky
-        # action asks the operator (or is declined when the CLI passed no confirm hook).
-        if skill == "run_command":
-            cmd = args.get("command", "")
-            off_scope = scope_rules is not None and not command_in_scope(cmd, scope_rules)
-            if not off_scope and not _looks_risky(cmd):
-                return True
-            return bool(confirm and await confirm(skill, args))
-        if skill in _AUTO_HANDS_FREE and skill != "run_command":
-            # The browser + structured recon/loot family auto-runs too — but not against an
-            # off-scope target (URL/host in the args; crack_hash has none → always in scope).
-            if scope_rules is not None and not args_in_scope(args, scope_rules):
-                return bool(confirm and await confirm(skill, args))
-            return True
-        return bool(confirm and await confirm(skill, args))
+    loop_confirm = _make_loop_confirm(scope_rules, confirm)
 
     registry.autodiscover()
     tools = registry.all_tools()
@@ -619,7 +628,7 @@ async def run_autonomous(
             tool_calls = getattr(msg, "tool_calls", None)
             if tool_calls:
                 messages.extend(
-                    await _run_tool_calls(tool_calls, confirm=_loop_confirm, observe=observe)
+                    await _run_tool_calls(tool_calls, confirm=loop_confirm, observe=observe)
                 )
                 nudged = False
                 continue
@@ -641,6 +650,174 @@ async def run_autonomous(
     _save_engagement(goal, messages, reply)
     dreaming.record_lesson(goal, reply)
     return reply, messages[1:]
+
+
+# ── Tiered orchestrator-worker engagement (strong tier directs, local worker does) ────
+# Beats the long-chain ceiling cheaply: a strong orchestrator (Sonnet via HEAVY) plans ONE
+# objective at a time; a free local-first worker (qwen 7B → free 70B, never paid) carries each
+# out with tools. The paid budget is spent ONLY on the handful of orchestrator calls.
+_ENG_DONE_SENTINEL = "ENGAGEMENT COMPLETE"
+
+ORCHESTRATOR_SYSTEM_PROMPT = f"""You are the LEAD operator running an authorized security \
+engagement for {_USER_NAME} (his own machine and a target he started, e.g. a TryHackMe box). You \
+do the THINKING; a fast but limited local worker does the hands-on work. You never call tools \
+yourself — you direct.
+
+Each turn, issue ONE concrete objective for the worker, then read its report and decide the next. \
+Drive the methodology: reach the target, enumerate, find a foothold, escalate, capture the user \
+and root flags.
+- Be specific and tactical — name the exact technique, tool, and target ("port_scan 10.10.x.x", \
+"web_enum http://10.10.x.x:80 for directories", "crack the MD5 <hash> with rockyou"). The worker \
+is NOT as smart as you, so spell out exactly what to run.
+- One objective per turn. Build only on what the worker actually reported — never invent a result.
+- If the worker stalls or reports nothing useful twice, change approach (a different port, \
+service, or technique).
+- When the flags are captured or you are genuinely blocked, reply with a line that is exactly \
+{_ENG_DONE_SENTINEL}, then a short report: what you found, the flags, and how you got them.
+- If a human-only step is needed (a captcha, a Start Machine click, a credential only \
+{_USER_NAME} has), say so and stop."""
+
+WORKER_SYSTEM_PROMPT = f"""You are the worker on an authorized security engagement for \
+{_USER_NAME}. The lead operator hands you ONE objective; carry it out with your tools and report \
+back. Prefer the dedicated skills (port_scan, web_enum, http_headers, dns_lookup, whois, \
+searchsploit, crack_hash, transform_text / hash_text); use run_command for anything else (nmap, \
+ssh, nc, curl, running an exploit).
+
+- ACT: call a tool, don't narrate what you would do. Ground every statement in real tool output.
+- Stay on THIS objective; don't wander. A few tool calls, then report.
+- When the objective is done (or you hit a wall), STOP and give a tight factual digest: what you \
+ran and what you found — open ports, paths, credentials, hashes, flags, errors. No fluff."""
+
+
+def _is_engagement_done(text: str) -> bool:
+    """The orchestrator signals completion with the sentinel anywhere in its reply."""
+    return _ENG_DONE_SENTINEL.lower() in (text or "").lower()
+
+
+def _strip_done_marker(text: str) -> str:
+    """Drop the completion sentinel, leaving just the orchestrator's final report prose."""
+    cleaned = re.sub(re.escape(_ENG_DONE_SENTINEL), "", text or "", flags=re.I).strip()
+    return cleaned.lstrip(":-—. \n").strip() or "Engagement complete."
+
+
+async def _run_worker(
+    objective: str,
+    goal: str,
+    tools: list[dict[str, Any]],
+    worker_tier: Tier,
+    max_rounds: int,
+    loop_confirm: ConfirmFn,
+    observe: ObserveFn | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Carry out ONE orchestrator objective with tools at the cheap, local-first tier. Returns
+    (digest, produced_messages). free_only=True guarantees the worker never spends the paid
+    budget — the $5 is reserved for the orchestrator."""
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+        {"role": "user",
+         "content": f"Overall goal: {goal}\n\nYour objective right now:\n{objective}"},
+    ]
+    produced: list[dict[str, Any]] = []
+    digest = ""
+    for _ in range(max_rounds):
+        resp = await complete(messages, tier=worker_tier, tools=tools or None,
+                              local_tools_first=True, free_only=True)
+        msg = resp.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None)
+        entry = {"role": "assistant", "content": msg.content, "tool_calls": tool_calls}
+        messages.append(entry)
+        if tool_calls:
+            results = await _run_tool_calls(tool_calls, confirm=loop_confirm, observe=observe)
+            messages.extend(results)
+            produced.append(entry)
+            produced.extend(results)
+            if msg.content:
+                digest = msg.content.strip()
+            continue
+        digest = (msg.content or "").strip() or digest
+        break
+    return (digest or "(worker produced no usable output)"), produced
+
+
+async def run_engagement_tiered(
+    goal: str,
+    *,
+    orchestrator_tier: Tier = Tier.HEAVY,
+    worker_tier: Tier = Tier.MEDIUM,
+    max_objectives: int = 8,
+    worker_rounds: int = 6,
+    confirm: ConfirmFn | None = None,
+    observe: ObserveFn | None = None,
+    scope: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Orchestrator-worker autonomous engagement. A strong orchestrator (Sonnet via HEAVY when
+    ROUTER_ALLOW_PAID is on, else the free 70B) sets ONE objective at a time and reads each
+    result; a cheap local-first worker (qwen 7B → free 70B, NEVER paid) carries each objective out
+    with tools. Spends the paid budget only on the few strategic orchestrator calls — the fix for
+    the long-chain ceiling at near-zero cost. Same hands-free in-scope confirm policy, engagement
+    file (Flags/Findings/transcript), and Dreaming lesson as run_autonomous. Needs
+    SUTRA_AUTONOMOUS=1.
+    """
+    if not _autonomous():
+        return (
+            "Autonomous mode is OFF. This runs gated tools hands-free, so it is opt-in: "
+            "set SUTRA_AUTONOMOUS=1 and re-run.",
+            [],
+        )
+    from friday.core import dreaming
+    from friday.core.scope import parse_scope
+    scope_rules = parse_scope(scope)
+    loop_confirm = _make_loop_confirm(scope_rules, confirm)
+    registry.autodiscover()
+    tools = registry.all_tools()
+
+    def _emit(kind: str, data: dict[str, Any]) -> None:
+        if observe:
+            try:
+                observe(kind, data)
+            except Exception:  # noqa: BLE001 — telemetry must never break the loop
+                pass
+
+    transcript: list[dict[str, Any]] = [{"role": "user", "content": goal}]
+    orch: list[dict[str, Any]] = [
+        {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT + dreaming.lessons_block(goal)},
+        {"role": "user", "content": f"Engagement goal: {goal}\n\nIssue the first objective."},
+    ]
+    report = ""
+    try:
+        for _ in range(max_objectives):
+            resp = await complete(orch, tier=orchestrator_tier, tools=None)
+            directive = (resp.choices[0].message.content or "").strip()
+            orch.append({"role": "assistant", "content": directive})
+            transcript.append({"role": "assistant", "content": f"[orchestrator] {directive}"})
+            _emit("objective", {"text": directive})
+            if _is_engagement_done(directive):
+                report = _strip_done_marker(directive)
+                break
+            digest, produced = await _run_worker(
+                directive, goal, tools, worker_tier, worker_rounds, loop_confirm, observe
+            )
+            transcript.extend(produced)
+            _emit("worker_report", {"text": digest})
+            orch.append({
+                "role": "user",
+                "content": f"Worker report:\n{digest}\n\nIssue the next objective, or reply "
+                           f"{_ENG_DONE_SENTINEL} with the final report if the flags are captured "
+                           f"or you are blocked.",
+            })
+        else:
+            orch.append({"role": "user", "content":
+                         f"Objective budget reached. Reply {_ENG_DONE_SENTINEL} with the final "
+                         f"report now: the findings, the flags, and how."})
+            resp = await complete(orch, tier=orchestrator_tier, tools=None)
+            report = _strip_done_marker((resp.choices[0].message.content or "").strip())
+    except Exception as e:  # noqa: BLE001 — never crash the turn or lose the transcript
+        _log.warning("run_engagement_tiered aborted: %s", e)
+        report = report or f"The engagement stopped early due to an error: {e}"
+
+    _save_engagement(goal, transcript, report)
+    dreaming.record_lesson(goal, report)
+    return report, transcript
 
 
 TUTOR_SYSTEM_PROMPT = (

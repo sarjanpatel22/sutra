@@ -385,3 +385,92 @@ def test_engagement_highlights_returns_flags_and_findings():
     flags, findings = agent.engagement_highlights(msgs, "report prose without the flag")
     assert flags == ["THM{flag_here}"]
     assert findings == ["**Open ports** on 10.10.10.5: 22"]
+
+
+# ── tiered orchestrator-worker loop (Sonnet directs, local-first worker does) ─
+def _scripted_tiered(orchestrator_replies, worker_script):
+    """complete() fake: a tools=None call is the orchestrator (pop a directive string); a call
+    with tools is the worker (pop a scripted _Resp). Records every call's tier + kwargs."""
+    orch = list(orchestrator_replies)
+    work = list(worker_script)
+    calls: list[dict] = []
+
+    async def _complete(messages, tier=None, tools=None, **kw):
+        calls.append({"tier": tier, "has_tools": tools is not None, "kw": kw})
+        if tools is None:
+            return _Resp(_Msg(content=orch.pop(0) if orch else "ENGAGEMENT COMPLETE\n(done)"))
+        return work.pop(0) if work else _Resp(_Msg(content="(no more)"))
+
+    return _complete, calls
+
+
+async def test_tiered_refuses_without_autonomous(monkeypatch):
+    monkeypatch.delenv("SUTRA_AUTONOMOUS", raising=False)
+    report, msgs = await agent.run_engagement_tiered("scan the box")
+    assert "SUTRA_AUTONOMOUS" in report and msgs == []
+
+
+async def test_tiered_orchestrator_directs_worker_and_completes(monkeypatch, tmp_path):
+    from friday.core.router import Tier
+
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        return [_tool_msg("port_scan",
+                          {"host": "10.10.10.5", "open": [{"port": 22, "banner": ""}]})]
+
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+    complete_fn, calls = _scripted_tiered(
+        orchestrator_replies=[
+            "port_scan 10.10.10.5",                                   # objective 1
+            "ENGAGEMENT COMPLETE\nRooted it. Flag THM{tier_win}.",    # done + report
+        ],
+        worker_script=[
+            _Resp(_Msg(tool_calls=[_tc("port_scan", {"host": "10.10.10.5"})])),  # worker acts
+            _Resp(_Msg(content="Found port 22 open on 10.10.10.5.")),            # worker digest
+        ],
+    )
+    monkeypatch.setattr(agent, "complete", complete_fn)
+
+    report, transcript = await agent.run_engagement_tiered("pwn 10.10.10.5", scope="10.10.10.5")
+    assert "Rooted it" in report and "THM{tier_win}" in report
+    assert "ENGAGEMENT COMPLETE" not in report  # sentinel stripped from the report
+    # the cost contract: orchestrator calls carry NO tools + tier HEAVY; worker calls carry tools,
+    # are free_only (never the $5), and local-first.
+    orch_calls = [c for c in calls if not c["has_tools"]]
+    work_calls = [c for c in calls if c["has_tools"]]
+    assert orch_calls and all(c["tier"] is Tier.HEAVY for c in orch_calls)
+    assert work_calls and all(c["kw"].get("free_only") is True for c in work_calls)
+    assert all(c["kw"].get("local_tools_first") is True for c in work_calls)
+    # findings + flags still extract from the worker's tool output in the shared transcript
+    flags, findings = agent.engagement_highlights(transcript, report)
+    assert flags == ["THM{tier_win}"]
+    assert any("Open ports" in f for f in findings)
+
+
+async def test_tiered_budget_exhausted_forces_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        return [_tool_msg("run_command", {"stdout": ""})]
+
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+    # orchestrator never says done; each worker round just digests (no tool call → 1 round)
+    complete_fn, calls = _scripted_tiered(["keep scanning"] * 10,
+                                          [_Resp(_Msg(content="nothing yet"))] * 10)
+    monkeypatch.setattr(agent, "complete", complete_fn)
+
+    report, _ = await agent.run_engagement_tiered("scan", max_objectives=3, worker_rounds=1)
+    assert report  # a final report was forced when the objective budget ran out
+    orch_calls = [c for c in calls if not c["has_tools"]]
+    assert len(orch_calls) == 4  # 3 objective rounds + 1 forced final-report call
+
+
+def test_engagement_done_detection_and_strip():
+    assert agent._is_engagement_done("ENGAGEMENT COMPLETE\nrooted")
+    assert agent._is_engagement_done("ok, Engagement Complete now")  # case-insensitive substring
+    assert not agent._is_engagement_done("still working on port 80")
+    assert agent._strip_done_marker("ENGAGEMENT COMPLETE\nRooted it.") == "Rooted it."
+    assert agent._strip_done_marker("ENGAGEMENT COMPLETE") == "Engagement complete."
