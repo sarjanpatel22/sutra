@@ -163,6 +163,30 @@ async def test_crack_hash_returns_password(monkeypatch, tmp_path):
     assert out["cracked"] is True and out["password"] == "password"
 
 
+async def test_crack_hash_passes_rules_for_tougher_passwords(monkeypatch, tmp_path):
+    wl = tmp_path / "wl.txt"
+    wl.write_text("raspberry\n")
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/sbin/john")
+    seen = {}
+
+    async def fake_run(cmd, timeout=20):
+        if "--show" in cmd:
+            return (0, "?:Raspberry1\n1 password hash cracked, 0 left\n", "")
+        seen["crack"] = cmd  # the wordlist (crack) invocation
+        return (0, "", "")
+
+    monkeypatch.setattr(recon, "_run", fake_run)
+
+    out = await recon.crack_hash("$6$x$y", wordlist=str(wl), rules="true")
+    assert "--rules" in seen["crack"] and out["rules"] == "true" and out["password"] == "Raspberry1"
+
+    await recon.crack_hash("$6$x$y", wordlist=str(wl), rules="Jumbo")  # a named ruleset
+    assert "--rules=Jumbo" in seen["crack"]
+
+    await recon.crack_hash("$6$x$y", wordlist=str(wl))  # default: no rules, unchanged behaviour
+    assert not any(str(a).startswith("--rules") for a in seen["crack"])
+
+
 async def test_crack_hash_reports_uncracked(monkeypatch, tmp_path):
     wl = tmp_path / "wl.txt"
     wl.write_text("nope\n")

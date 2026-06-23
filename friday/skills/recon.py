@@ -258,17 +258,22 @@ def _parse_john_show(out: str) -> str | None:
     description=(
         "Crack a password hash with John the Ripper against a wordlist (rockyou by default). For "
         "CTF loot — a hash you recovered from your own box. hash_format (e.g. raw-md5, raw-sha256) "
-        "is optional; John auto-detects. Returns the password if found. Authorized targets only."
+        "is optional; John auto-detects. Set rules=true to also try mangled variants (capitalize, "
+        "leetspeak, append digits/years) — needed for tougher passwords. Returns the password if "
+        "found. Authorized targets only."
     ),
     auto_confirm=False,  # intensive offline crack — gated
     timeout_s=140,
 )
-async def crack_hash(hash_value: str, hash_format: str = "", wordlist: str = "") -> dict[str, Any]:
+async def crack_hash(hash_value: str, hash_format: str = "", wordlist: str = "",
+                     rules: str = "") -> dict[str, Any]:
     """Crack a single password hash with John the Ripper.
 
     hash_value: The hash string to crack.
     hash_format: Optional John format (raw-md5, raw-sha256, nt, …); auto-detected if blank.
     wordlist: Path to a wordlist; defaults to rockyou / a seclists subset if present.
+    rules: Mangling rules for tougher passwords — "" off; "true"/"wordlist" for John's default
+        wordlist rules (capitalize, leetspeak, append digits/years); or a named set (e.g. Jumbo).
     """
     hash_value = (hash_value or "").strip()
     if not hash_value:
@@ -280,18 +285,24 @@ async def crack_hash(hash_value: str, hash_format: str = "", wordlist: str = "")
     if not wl or not Path(wl).is_file():
         return {"error": "no wordlist found — install rockyou/seclists or pass wordlist=<path>"}
     fmt = (hash_format or "").strip()
+    rules = (rules or "").strip()
+    rule_args = []
+    if rules:
+        rule_args = (["--rules"] if rules.lower() in ("1", "true", "yes", "on", "wordlist",
+                     "default") else [f"--rules={rules}"])
     fd, hashfile = tempfile.mkstemp(suffix=".hash")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(hash_value + "\n")
-        crack = [john, f"--wordlist={wl}", *([f"--format={fmt}"] if fmt else []), hashfile]
+        crack = [john, f"--wordlist={wl}", *rule_args,
+                 *([f"--format={fmt}"] if fmt else []), hashfile]
         rc, _out, _err = await _run(crack, timeout=135)
         show = [john, "--show", *([f"--format={fmt}"] if fmt else []), hashfile]
         _, show_out, _ = await _run(show, timeout=15)
         password = _parse_john_show(show_out)
         result: dict[str, Any] = {
             "hash": hash_value, "cracked": bool(password), "tool": "john",
-            "format": fmt or "(auto-detected)",
+            "format": fmt or "(auto-detected)", "rules": rules or "(none)",
         }
         if password:
             result["password"] = password
