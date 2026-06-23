@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import sys
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -1119,6 +1122,64 @@ def train(
     # escape: the status carries a literal pip command with [train], which is Rich markup
     console.print(Panel(escape(status), title="[bold green]Fine-tune[/bold green]",
                         border_style="green"))
+
+
+def _sutra_exec() -> str:
+    """The command a scheduler should run for the study pass — the installed binary if present,
+    else the module entrypoint with this interpreter."""
+    return shutil.which("sutra") or f"{sys.executable} -m friday.cli"
+
+
+def _install_study_timer() -> None:
+    """Write a systemd --user service + daily timer for `sutra study` and print how to enable it.
+    Writes only to the user unit dir; turning it on stays the operator's explicit step."""
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    (unit_dir / "sutra-study.service").write_text(
+        "[Unit]\nDescription=Sutra daily self-improvement pass\n\n"
+        f"[Service]\nType=oneshot\nExecStart={_sutra_exec()} study\n")
+    (unit_dir / "sutra-study.timer").write_text(
+        "[Unit]\nDescription=Run Sutra study daily\n\n"
+        "[Timer]\nOnBootSec=10min\nOnCalendar=daily\nPersistent=true\n\n"
+        "[Install]\nWantedBy=timers.target\n")
+    console.print(Panel(
+        f"Wrote {unit_dir}/sutra-study.{{service,timer}}\n\n"
+        "Enable it (runs at boot + daily, even after a missed day):\n"
+        "  systemctl --user daemon-reload\n"
+        "  systemctl --user enable --now sutra-study.timer\n\n"
+        "Let it run while logged out:  loginctl enable-linger $USER",
+        title="[bold cyan]Study timer installed[/bold cyan]", border_style="cyan"))
+
+
+@app.command()
+def study(
+    apply: bool = typer.Option(
+        False, "--apply",
+        help="Also grow the playbook with the principles (default: propose only, you review)"),
+    tier: str = typer.Option("medium", "--tier", help="medium (free 70B) / heavy / max"),
+    install_timer: bool = typer.Option(
+        False, "--install-timer",
+        help="Write a systemd --user timer to run this at boot + daily, then print how to enable"),
+) -> None:
+    """Sutra's daily self-improvement pass: learn from real runs, propose new doctrine, leave a
+    digest for you to review.
+
+    Grounded + $0 + takes no actions — it reflects on real engagement traces/lessons with the free
+    model and writes a dated digest to ~/.local/share/friday/study/. By DEFAULT it only PROPOSES
+    new principles (you are the gate); pass --apply to actually grow the playbook. With no run data
+    yet it says so honestly instead of inventing lessons. Schedule it with --install-timer.
+    """
+    if install_timer:
+        _install_study_timer()
+        return
+    from friday.core import study as study_mod
+
+    path, refl = asyncio.run(study_mod.run_study(write=apply, tier=_tier_from_str(tier)))
+    learned = "\n".join(f"- {p}" for p in (refl.principles if refl else [])) or "- (nothing new)"
+    head = "Added to the playbook" if apply else "Proposed (review, then re-run with --apply)"
+    console.print(Panel(
+        f"digest: {path}\n\n{head}:\n{learned}",
+        title="[bold green]Sutra study[/bold green]", border_style="green"))
 
 
 @app.command()
