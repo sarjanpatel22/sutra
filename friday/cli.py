@@ -1131,23 +1131,27 @@ def _sutra_exec() -> str:
 
 
 def _install_study_timer() -> None:
-    """Write a systemd --user service + daily timer for `sutra study` and print how to enable it.
-    Writes only to the user unit dir; turning it on stays the operator's explicit step."""
+    """Write a systemd --user service + timer that runs `sutra study` continuously while the
+    machine is on (a few min after boot, then every 30 min). Each pass skips the model call when
+    nothing has changed, so this is cheap. Writes only to the user unit dir; turning it on stays
+    the operator's explicit step."""
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     (unit_dir / "sutra-study.service").write_text(
-        "[Unit]\nDescription=Sutra daily self-improvement pass\n\n"
+        "[Unit]\nDescription=Sutra self-improvement pass\n\n"
         f"[Service]\nType=oneshot\nExecStart={_sutra_exec()} study\n")
     (unit_dir / "sutra-study.timer").write_text(
-        "[Unit]\nDescription=Run Sutra study daily\n\n"
-        "[Timer]\nOnBootSec=10min\nOnCalendar=daily\nPersistent=true\n\n"
+        "[Unit]\nDescription=Sutra study — learn continuously while the machine is on\n\n"
+        "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=30min\nPersistent=true\n\n"
         "[Install]\nWantedBy=timers.target\n")
     console.print(Panel(
         f"Wrote {unit_dir}/sutra-study.{{service,timer}}\n\n"
-        "Enable it (runs at boot + daily, even after a missed day):\n"
+        "Runs ~5 min after boot, then every 30 min while the laptop is on (a user timer, so only\n"
+        "while on; each pass is a no-op unless there is new run data, so it stays cheap).\n\n"
+        "Enable it:\n"
         "  systemctl --user daemon-reload\n"
         "  systemctl --user enable --now sutra-study.timer\n\n"
-        "Let it run while logged out:  loginctl enable-linger $USER",
+        "Keep it running while logged out:  loginctl enable-linger $USER",
         title="[bold cyan]Study timer installed[/bold cyan]", border_style="cyan"))
 
 
@@ -1156,30 +1160,39 @@ def study(
     apply: bool = typer.Option(
         False, "--apply",
         help="Also grow the playbook with the principles (default: propose only, you review)"),
+    force: bool = typer.Option(
+        False, "--force", help="Reflect even if nothing has changed since the last pass"),
     tier: str = typer.Option("medium", "--tier", help="medium (free 70B) / heavy / max"),
     install_timer: bool = typer.Option(
         False, "--install-timer",
-        help="Write a systemd --user timer to run this at boot + daily, then print how to enable"),
+        help="Write a systemd --user timer to learn continuously while the machine is on"),
 ) -> None:
-    """Sutra's daily self-improvement pass: learn from real runs, propose new doctrine, leave a
-    digest for you to review.
+    """Sutra's self-improvement pass: learn from real runs, propose new doctrine, leave a digest.
 
     Grounded + $0 + takes no actions — it reflects on real engagement traces/lessons with the free
     model and writes a dated digest to ~/.local/share/friday/study/. By DEFAULT it only PROPOSES
-    new principles (you are the gate); pass --apply to actually grow the playbook. With no run data
-    yet it says so honestly instead of inventing lessons. Schedule it with --install-timer.
+    new principles (you are the gate); pass --apply to grow the playbook. Safe to run continuously:
+    a pass with nothing new since the last one SKIPS the model call (use --force to override). With
+    no run data yet it says so honestly instead of inventing lessons. Schedule it 24/7 while the
+    laptop is on with --install-timer.
     """
     if install_timer:
         _install_study_timer()
         return
     from friday.core import study as study_mod
 
-    path, refl = asyncio.run(study_mod.run_study(write=apply, tier=_tier_from_str(tier)))
-    learned = "\n".join(f"- {p}" for p in (refl.principles if refl else [])) or "- (nothing new)"
-    head = "Added to the playbook" if apply else "Proposed (review, then re-run with --apply)"
-    console.print(Panel(
-        f"digest: {path}\n\n{head}:\n{learned}",
-        title="[bold green]Sutra study[/bold green]", border_style="green"))
+    path, refl, status = asyncio.run(
+        study_mod.run_study(write=apply, tier=_tier_from_str(tier), force=force))
+    if status == "unchanged":
+        body = (f"Nothing new since the last pass — skipped (normal for the 24/7 timer; it only "
+                f"reflects when there is new run data).\nlatest digest: {path}")
+    elif status == "no-data":
+        body = f"No run data yet — wrote an honest digest, invented nothing.\ndigest: {path}"
+    else:
+        learned = "\n".join(f"- {p}" for p in (refl.principles if refl else [])) or "- (none)"
+        head = "Added to the playbook" if apply else "Proposed (review, then re-run with --apply)"
+        body = f"digest: {path}\n\n{head}:\n{learned}"
+    console.print(Panel(body, title="[bold green]Sutra study[/bold green]", border_style="green"))
 
 
 @app.command()

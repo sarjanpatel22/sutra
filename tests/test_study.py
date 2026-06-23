@@ -92,8 +92,8 @@ async def test_run_study_no_material_writes_honest_digest(monkeypatch):
         raise AssertionError("must not call the model with no data to learn from")
 
     monkeypatch.setattr(study, "complete", _boom)
-    path, refl = await study.run_study()
-    assert refl is None
+    path, refl, status = await study.run_study()
+    assert refl is None and status == "no-data"
     assert "No engagement data yet" in path.read_text()
 
 
@@ -110,34 +110,57 @@ async def test_run_study_records_principles_unless_dry_run(monkeypatch, tmp_path
 
     monkeypatch.setattr(study, "reflect", _reflect)
 
-    path, refl = await study.run_study(write=True)
-    assert "Snapshot creds" in path.read_text()
+    path, refl, status = await study.run_study(write=True)
+    assert status == "reflected" and "Snapshot creds" in path.read_text()
     assert any("Snapshot creds" in p for p in playbook.principles(limit=0))  # grew the doctrine
 
-    # propose-only (the default): same reflection, but the playbook must NOT change
+    # propose-only: same reflection (force past the change-guard), playbook must NOT change
     before = playbook.principles(limit=0)
-    path2, _ = await study.run_study(write=False)
+    path2, _, _ = await study.run_study(write=False, force=True)
     assert playbook.principles(limit=0) == before
     assert "not applied" in path2.read_text().lower()
 
 
+async def test_run_study_skips_when_nothing_new(monkeypatch, tmp_path):
+    # the 24/7 guard: once it has reflected on a state, an unchanged re-run must NOT call the model
+    monkeypatch.setattr(study, "gather_signals",
+                        lambda: study.Signals(n_traces=1, n_successful=1, lessons=["x"]))
+    calls = {"n": 0}
+
+    async def _reflect(signals, *, tier=Tier.MEDIUM):
+        calls["n"] += 1
+        return study.Reflection(principles=[], focus="")
+
+    monkeypatch.setattr(study, "reflect", _reflect)
+
+    _, _, s1 = await study.run_study(write=False)
+    _, _, s2 = await study.run_study(write=False)            # nothing changed → skip
+    assert s1 == "reflected" and s2 == "unchanged"
+    assert calls["n"] == 1                                    # the model ran only once
+
+    _, _, s3 = await study.run_study(write=False, force=True)  # --force overrides the guard
+    assert s3 == "reflected" and calls["n"] == 2
+
+
 # ── CLI + scheduler ──────────────────────────────────────────────────────────────────
 def test_cli_study_proposes_by_default_and_applies_on_flag(monkeypatch, tmp_path):
+    monkeypatch.setenv("COLUMNS", "200")  # keep Rich from wrapping the long tmp path mid-token
     seen = {}
 
-    async def _run_study(*, write=True, tier=None):
-        seen["write"] = write
-        return tmp_path / "2026-06-23.md", study.Reflection(principles=["learned a thing"])
+    async def _run_study(*, write=True, tier=None, force=False):
+        seen["write"], seen["force"] = write, force
+        return tmp_path / "2026-06-23.md", study.Reflection(principles=["learned a thing"]), \
+            "reflected"
 
     monkeypatch.setattr(study, "run_study", _run_study)
 
     r = runner.invoke(cli.app, ["study"])           # default: propose only
     assert r.exit_code == 0, r.output
-    assert seen["write"] is False and "Proposed" in r.output
+    assert seen["write"] is False and seen["force"] is False and "Proposed" in r.output
     assert "learned a thing" in r.output and "2026-06-23.md" in r.output
 
-    r2 = runner.invoke(cli.app, ["study", "--apply"])  # opt in to growing the doctrine
-    assert r2.exit_code == 0 and seen["write"] is True
+    r2 = runner.invoke(cli.app, ["study", "--apply", "--force"])  # opt in + override the guard
+    assert r2.exit_code == 0 and seen["write"] is True and seen["force"] is True
     assert "Added to the playbook" in r2.output
 
 
@@ -148,4 +171,4 @@ def test_cli_install_timer_writes_units(monkeypatch, tmp_path):
     unit_dir = tmp_path / ".config" / "systemd" / "user"
     assert (unit_dir / "sutra-study.service").exists()
     timer = (unit_dir / "sutra-study.timer").read_text()
-    assert "OnCalendar=daily" in timer and "OnBootSec" in timer
+    assert "OnUnitActiveSec=30min" in timer and "OnBootSec" in timer  # continuous while on

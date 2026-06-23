@@ -174,19 +174,50 @@ def _write_digest(signals: Signals, refl: Reflection | None, *, wrote: bool) -> 
     return path
 
 
-async def run_study(*, write: bool = True,
-                    tier: Tier = Tier.MEDIUM) -> tuple[Path, Reflection | None]:
-    """The daily pass: gather real signals, reflect (only if there's material), grow the playbook,
-    and write the dated digest. Returns (digest_path, reflection_or_None). $0, takes no actions."""
+def _state_key(signals: Signals) -> str:
+    """A cheap fingerprint of the learnable material. It changes only when there is something new
+    to reflect on, so a frequent (24/7) timer can SKIP the model call — and the free-tier rate
+    limit — whenever nothing has changed since the last pass."""
+    return f"{signals.n_traces}:{len(signals.lessons)}"
+
+
+def _load_marker() -> str:
+    try:
+        return (_STUDY_DIR / ".last").read_text().strip()
+    except OSError:
+        return ""
+
+
+def _save_marker(key: str) -> None:
+    try:
+        _STUDY_DIR.mkdir(parents=True, exist_ok=True)
+        (_STUDY_DIR / ".last").write_text(key)
+    except OSError as e:
+        _log.warning("could not write study marker: %s", e)
+
+
+async def run_study(*, write: bool = True, tier: Tier = Tier.MEDIUM,
+                    force: bool = False) -> tuple[Path, Reflection | None, str]:
+    """One self-improvement pass, safe to run continuously. Gathers real signals; if there is
+    nothing NEW to learn since the last pass it SKIPS the model call (so a 24/7 timer stays cheap
+    and never thrashes the free-tier rate limit) unless force=True. Otherwise it reflects, may grow
+    the playbook, and writes the dated digest. Returns (path, reflection_or_None, status) where
+    status is 'reflected' | 'no-data' | 'unchanged'. $0, takes no actions."""
     signals = gather_signals()
-    refl: Reflection | None = None
-    if signals.has_material:
-        refl = await reflect(signals, tier=tier)
-        if write and refl.principles:
-            from friday.core import playbook
-            for p in refl.principles:
-                playbook.record_principle(p, source="study")  # deduped against core + learned
-    return _write_digest(signals, refl, wrote=write), refl
+    if not signals.has_material:
+        return _write_digest(signals, None, wrote=write), None, "no-data"
+    key = _state_key(signals)
+    if not force and key == _load_marker():
+        digests = latest_digests(1)
+        return (digests[0] if digests else _STUDY_DIR), None, "unchanged"
+    refl = await reflect(signals, tier=tier)
+    if write and refl.principles:
+        from friday.core import playbook
+        for p in refl.principles:
+            playbook.record_principle(p, source="study")  # deduped against core + learned
+    path = _write_digest(signals, refl, wrote=write)
+    _save_marker(key)  # remember the state we just reflected on
+    return path, refl, "reflected"
 
 
 def latest_digests(n: int = 3) -> list[Path]:
