@@ -221,6 +221,44 @@ async def test_scope_guard_escalates_offscope_targets(monkeypatch, tmp_path):
     assert "nmap -sV 10.10.10.5" not in asked  # in-scope recon never escalates
 
 
+async def test_structured_recon_skills_auto_run_in_scope(monkeypatch, tmp_path):
+    # The gated kill-chain skills (port_scan / web_enum / crack_hash) should auto-run in an
+    # authorized engagement — exactly like their raw run_command equivalents (nmap / gobuster /
+    # john), which already auto-run — instead of nagging the operator on every recon step. An
+    # off-scope probe still escalates; crack_hash carries no host, so it is always in scope.
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)
+    captured = {}
+
+    async def _fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        captured["confirm"] = confirm
+        return [{"role": "tool", "tool_call_id": "x", "name": "port_scan", "content": "{}"}]
+
+    monkeypatch.setattr(agent, "_run_tool_calls", _fake_rtc)
+    monkeypatch.setattr(agent, "complete", _scripted(
+        _Resp(_Msg(tool_calls=[_tc("port_scan", {"host": "10.10.10.5"})])),
+        _Resp(_Msg(content="still")),
+        _Resp(_Msg(content="done")),
+    ))
+    asked = []
+
+    async def _operator(skill, args):
+        asked.append(skill)
+        return True
+
+    await agent.run_autonomous("scan", confirm=_operator, scope="10.10.10.5", max_rounds=4)
+    lc = captured["confirm"]
+    # in-scope network probes + the host-less local crack all auto-run, none escalate:
+    assert await lc("port_scan", {"host": "10.10.10.5", "ports": "top"}) is True
+    assert await lc("web_enum", {"url": "http://10.10.10.5"}) is True
+    assert await lc("crack_hash", {"hash_value": "5f4dcc3b5aa765d61d8327deb882cf99"}) is True
+    assert asked == []  # none of the in-scope recon/loot escalated to the operator
+    # …but an off-scope probe still asks.
+    assert await lc("port_scan", {"host": "8.8.8.8"}) is True
+    assert await lc("web_enum", {"url": "http://evil.com"}) is True
+    assert asked == ["port_scan", "web_enum"]  # only the off-scope ones escalated
+
+
 def test_looks_risky_flags_persistence_and_spares_recon():
     # The hybrid loop auto-runs only CLEAN recon; persistence/wipe commands that carry no
     # rm and no redirect (the audit's blind spot) must still escalate to the operator.

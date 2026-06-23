@@ -358,10 +358,16 @@ authorized security engagement — his own machine and target (e.g. a TryHackMe 
 started). No human is watching each step, so ACT: don't ask permission for steps that follow \
 from the goal.
 
-Work methodically: establish reachability (vpn_status, and connect_vpn if the tunnel is down), \
-enumerate before you exploit (nmap, service/version scans, directory busting), then exploit, \
-escalate, and capture the objective (the user and root flags). Use run_command for tooling \
-(nmap, gobuster, nikto, curl, ssh, …) and the web/browser skills for web targets.
+Work methodically — recon, enumerate, exploit, escalate, loot. Prefer the dedicated skills \
+(they hand you structured results to reason over) over reinventing them through run_command:
+- Reachability first: vpn_status, then connect_vpn if the tunnel is down.
+- Map the target: port_scan for open ports (nmap via run_command for deep version detection), \
+dns_lookup / whois for a domain, http_headers then web_enum (directory / vhost brute) once a \
+web port is open, searchsploit to turn a service + version into known exploits.
+- Loot and decode: crack_hash (John the Ripper on a hash you recovered), transform_text \
+(base64 / hex / url / rot13), hash_text and identify_hash.
+- Fall back to run_command for anything without a dedicated skill (nikto, ssh, nc, running an \
+exploit) and the web/browser skills for interactive web targets.
 
 Hard rules:
 - Ground EVERY claim in actual tool output. Never invent a flag, a service, or a result — if \
@@ -379,10 +385,16 @@ _AUTO_WRAPUP = "[System: round limit reached — stop and give your final report
 
 _ENGAGE_DIR = Path.home() / ".local" / "share" / "friday" / "engagements"
 
-# Skills the autonomous loop may run hands-free (recon + browse). run_command is here too
-# but is additionally screened by _looks_risky; everything NOT in this set (run_python,
-# write_file, forget, connect_vpn, desktop input, …) is escalated to the operator.
-_AUTO_HANDS_FREE = frozenset({"run_command", "web_task", "web_task_vision", "fill_form"})
+# Skills the autonomous loop may run hands-free (recon + browse + loot). run_command is here
+# too but is additionally screened by _looks_risky; the structured recon/loot skills
+# (port_scan, web_enum, crack_hash) are gated by default, yet in an authorized engagement they
+# auto-run just like their raw run_command equivalents (nmap, gobuster, john) already do — all
+# still scope-checked. Everything NOT in this set (run_python, write_file, forget, connect_vpn,
+# desktop input, …) is escalated to the operator.
+_AUTO_HANDS_FREE = frozenset({
+    "run_command", "web_task", "web_task_vision", "fill_form",
+    "port_scan", "web_enum", "crack_hash",
+})
 
 # A shell command that could harm THIS machine (delete/overwrite, escalate privilege, or
 # spawn an interpreter to dodge the run_command floor). These get confirmed by the operator;
@@ -491,7 +503,8 @@ async def run_autonomous(
                 return True
             return bool(confirm and await confirm(skill, args))
         if skill in _AUTO_HANDS_FREE and skill != "run_command":
-            # The browser family auto-runs too — but not at an off-scope URL.
+            # The browser + structured recon/loot family auto-runs too — but not against an
+            # off-scope target (URL/host in the args; crack_hash has none → always in scope).
             if scope_rules is not None and not args_in_scope(args, scope_rules):
                 return bool(confirm and await confirm(skill, args))
             return True
