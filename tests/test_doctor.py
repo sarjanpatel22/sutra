@@ -59,3 +59,36 @@ async def test_run_doctor_returns_true_when_core_ok() -> None:
     # services=False avoids any network; core deps are present in the test env.
     ok = await doctor.run_doctor(services=False)
     assert ok is True
+
+
+def test_engagement_rows_autonomous_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("friday.core.router.allow_paid", lambda: False)
+    monkeypatch.setattr("friday.core.secrets.get_secret", lambda *a, **k: None)
+
+    monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
+    by_name = {r.name: r for r in doctor.engagement_rows()}
+    assert by_name["SUTRA_AUTONOMOUS"].status is Status.OK
+
+    monkeypatch.delenv("SUTRA_AUTONOMOUS", raising=False)
+    by_name = {r.name: r for r in doctor.engagement_rows()}
+    assert by_name["SUTRA_AUTONOMOUS"].status is Status.WARN
+
+
+def test_engagement_rows_flags_paid_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The silent-fallback gotcha: ROUTER_ALLOW_PAID on but no key → the orchestrator is NOT Sonnet.
+    monkeypatch.setattr("friday.core.router.allow_paid", lambda: True)
+    monkeypatch.setattr("friday.core.secrets.get_secret", lambda *a, **k: "sk-ant-xxx")
+    assert {r.name: r for r in doctor.engagement_rows()}["paid orchestrator"].status is Status.OK
+
+    monkeypatch.setattr("friday.core.secrets.get_secret", lambda *a, **k: None)
+    row = {r.name: r for r in doctor.engagement_rows()}["paid orchestrator"]
+    assert row.status is Status.WARN and "ANTHROPIC_API_KEY" in row.detail
+
+
+def test_engagement_rows_recon_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("friday.core.router.allow_paid", lambda: False)
+    monkeypatch.setattr("friday.core.secrets.get_secret", lambda *a, **k: None)
+    monkeypatch.setattr(doctor.shutil, "which", lambda b: "/usr/bin/x" if b == "nmap" else None)
+    by_name = {r.name: r for r in doctor.engagement_rows()}
+    assert by_name["nmap"].status is Status.OK
+    assert by_name["john"].status is Status.WARN  # missing recon tool → flagged, not fatal

@@ -17,6 +17,7 @@ line ("install X") instead of a cryptic runtime failure later.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 from dataclasses import dataclass
 
@@ -124,6 +125,54 @@ def skill_rows() -> list[_Row]:
     return rows
 
 
+# The worker's external tools for a real engagement. A missing one degrades gracefully (the skill
+# returns a clear "not installed"), but the box gets harder — these live on the Kali host, not CI.
+_ENGAGEMENT_BINARIES: dict[str, str] = {
+    "nmap": "deep port/service scan",
+    "gobuster": "web content brute (web_enum)",
+    "ffuf": "web fuzz (web_enum fallback)",
+    "john": "hash cracking (crack_hash)",
+    "searchsploit": "Exploit-DB search",
+    "dig": "DNS lookup",
+    "whois": "WHOIS",
+}
+
+
+def engagement_rows() -> list[_Row]:
+    """Readiness for an autonomous engagement (`sutra pwn`/`auto`, especially `--tiered`): the
+    opt-in flag, whether the paid Sonnet orchestrator will ACTUALLY engage (the gotcha that
+    otherwise degrades silently), and the recon tools the worker shells out to. All advisory
+    (WARN, never FAIL) — a missing recon binary shouldn't fail the core health check."""
+    from friday.core.router import allow_paid
+    from friday.core.secrets import get_secret
+
+    rows: list[_Row] = []
+    auto = os.getenv("SUTRA_AUTONOMOUS", "").strip().lower() in ("1", "true", "yes")
+    rows.append(_Row(
+        "SUTRA_AUTONOMOUS", Status.OK if auto else Status.WARN,
+        "hands-free runs enabled" if auto else "unset — export SUTRA_AUTONOMOUS=1 for hands-free",
+    ))
+
+    paid = allow_paid()
+    key = bool(get_secret("ANTHROPIC_API_KEY"))
+    if paid and key:
+        rows.append(_Row("paid orchestrator", Status.OK,
+                         "ROUTER_ALLOW_PAID + Anthropic key present → Sonnet orchestrator"))
+    elif paid and not key:
+        rows.append(_Row("paid orchestrator", Status.WARN,
+                         "ROUTER_ALLOW_PAID set but NO Anthropic key — the orchestrator silently "
+                         "falls back to free 70B. Fix: sutra secrets --set ANTHROPIC_API_KEY"))
+    else:
+        rows.append(_Row("paid orchestrator", Status.WARN,
+                         "free-only — set ROUTER_ALLOW_PAID=1 (+ key) for the Sonnet orchestrator"))
+
+    for binary, feature in _ENGAGEMENT_BINARIES.items():
+        ok = shutil.which(binary) is not None
+        rows.append(_Row(binary, Status.OK if ok else Status.WARN,
+                         feature if ok else f"missing — {feature} degrades"))
+    return rows
+
+
 def _render(title: str, rows: list[_Row]) -> None:
     t = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
     t.add_column("Check", style="bold", width=20)
@@ -143,6 +192,7 @@ async def run_doctor(*, services: bool = True) -> bool:
     _render("Python packages", py_rows)
     _render("System binaries", bin_rows)
     _render("Skills", skill_rows())
+    _render("Engagement readiness", engagement_rows())
 
     if services:
         from friday.core.monitor import print_report
