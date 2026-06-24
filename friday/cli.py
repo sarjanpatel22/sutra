@@ -1195,6 +1195,68 @@ def study(
     console.print(Panel(body, title="[bold green]Sutra study[/bold green]", border_style="green"))
 
 
+def _render_learning(snap: Any) -> Any:
+    """Build the Rich view of what Sutra is learning / has learned from a LearningSnapshot."""
+    from rich.console import Group
+
+    status = "[green]🟢 active[/green]" if snap.timer_active else "[dim]⚪ idle[/dim]"
+    total_chunks = sum(n for _, n in snap.collections)
+    parts: list[Any] = [Panel(
+        f"study timer: {status}    last pass: {escape(snap.last_study)}    "
+        f"knowledge: {total_chunks} chunks / {len(snap.collections)} collection(s)",
+        title="[bold]🧠 Sutra — what it's learning[/bold]", border_style="cyan")]
+
+    doctrine = ("\n".join(f"• {escape(p)}" for p in snap.doctrine)
+                or "[dim]no earned principles yet — runs + study passes grow these[/dim]")
+    parts.append(Panel(doctrine, title="[bold]Doctrine it has earned[/bold]", border_style="green"))
+
+    if snap.digests:
+        t = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        t.add_column("pass", style="cyan", no_wrap=True)
+        t.add_column("what it concluded")
+        for date, headline in snap.digests:
+            t.add_row(escape(date), escape(headline))
+        parts.append(Panel(t, title="[bold]Recent study passes[/bold]", border_style="blue"))
+
+    if snap.lessons:
+        body = "\n".join(f"[cyan]{escape(topic)}[/cyan] — {escape(lesson)}"
+                         for topic, lesson in snap.lessons)
+        parts.append(Panel(body, title="[bold]Lessons from real engagements[/bold]",
+                           border_style="magenta"))
+
+    if snap.collections:
+        body = "\n".join(f"📚 {escape(name)}: {n} chunks" for name, n in snap.collections)
+        parts.append(Panel(body, title="[bold]Knowledge base (recallable)[/bold]",
+                           border_style="yellow"))
+    return Group(*parts)
+
+
+@app.command()
+def learning(
+    watch: bool = typer.Option(False, "--watch", "-w", help="Live view; refreshes until Ctrl+C"),
+    interval: float = typer.Option(5.0, "--interval", help="Refresh seconds in --watch mode"),
+) -> None:
+    """Show what Sutra is learning right now and what it has learned — its earned doctrine, recent
+    study passes, lessons from real engagements, and the knowledge base it can recall. --watch keeps
+    it live. (Learning itself auto-runs via the study timer; this is just the window into it.)"""
+    from friday.core import learning as learn
+
+    if not watch:
+        console.print(_render_learning(learn.snapshot()))
+        return
+    import time
+
+    from rich.live import Live
+    with Live(_render_learning(learn.snapshot()), console=console, refresh_per_second=2,
+              screen=False) as live:
+        try:
+            while True:
+                time.sleep(max(1.0, interval))
+                live.update(_render_learning(learn.snapshot()))
+        except KeyboardInterrupt:
+            pass
+
+
 @app.command()
 def tutor(
     topic: str = typer.Argument("", help="What to learn / where you're stuck. Omit for a session."),
