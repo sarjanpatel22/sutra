@@ -21,6 +21,27 @@ ObserveFn = Callable[[str, dict[str, Any]], None] | None
 _BARE_DOMAIN = re.compile(r"^(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
 
 
+def _split(spec: str) -> list[str]:
+    return [t for t in re.split(r"[,\s]+", (spec or "").strip().lower()) if t]
+
+
+def _matches(host: str, pattern: str) -> bool:
+    """A host matches a scope pattern under the bug-bounty convention that a listed domain covers
+    its subdomains — so '*.example.com', 'example.com', and 'api.example.com' each mean 'this name
+    and anything under it'. This is what keeps a hunt from wandering off the authorized scope."""
+    host = host.lower().strip()
+    pattern = pattern.lower().strip().lstrip("*").lstrip(".")
+    return bool(pattern) and (host == pattern or host.endswith("." + pattern))
+
+
+def _in_scope(host: str, scope: list[str], exclude: list[str]) -> bool:
+    """In scope if it matches an allow pattern (or there are none) AND no deny pattern. Exclusion
+    always wins — the safe default."""
+    if any(_matches(host, p) for p in exclude):
+        return False
+    return (not scope) or any(_matches(host, p) for p in scope)
+
+
 async def _is_live_web(host: str, timeout: float = 2.0) -> str | None:
     """The host's URL if it answers on 443 or 80 (a fast TCP-connect probe), else None."""
     for port, scheme in ((443, "https"), (80, "http")):
@@ -59,11 +80,14 @@ def _emit(observe: ObserveFn, kind: str, data: dict[str, Any]) -> None:
 
 async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
                severity: str = "low,medium,high,critical", tags: str = "",
+               scope: str = "", exclude: str = "",
                observe: ObserveFn = None) -> dict[str, Any]:
     """Run a whole-program hunt and draft ONE combined report.
 
     target: a bare domain (auto-enumerated) or a URL/host (scanned directly).
     enum: force subdomain enumeration on/off; None = auto-detect from the target shape.
+    scope: comma/space allow-list of in-scope domain patterns (default: the target apex only, so a
+        hunt never wanders off the program). exclude: deny-list that always wins.
     Returns {target, hosts, findings, report}.
     """
     from friday.core.bounty import draft_bounty_report
@@ -74,6 +98,8 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     if not target:
         return {"error": "no target to hunt"}
     bare = target.split("://")[-1].split("/")[0].split(":")[0].lower()
+    scope_pats = _split(scope) or [bare]  # default: stay on the target's own domain
+    excl_pats = _split(exclude)
     do_enum = enum if enum is not None else bool(_BARE_DOMAIN.match(target.lower().rstrip("/")))
 
     if do_enum:
@@ -81,9 +107,12 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         subs = (await find_subdomains(bare)).get("subdomains", [])
         if bare not in subs:
             subs = [bare, *subs]
-        _emit(observe, "enumerated", {"count": len(subs)})
-        hosts = await _live_web_hosts(subs, max_hosts)
+        in_scope = [s for s in subs if _in_scope(s, scope_pats, excl_pats)]
+        _emit(observe, "enumerated", {"count": len(subs), "in_scope": len(in_scope)})
+        hosts = await _live_web_hosts(in_scope, max_hosts)
     else:
+        if not _in_scope(bare, scope_pats, excl_pats):
+            return {"error": f"{bare} is outside the declared scope — refusing to scan it"}
         hosts = [target if target.startswith(("http://", "https://")) else "http://" + target]
     _emit(observe, "hosts", {"live": hosts})
 

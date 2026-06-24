@@ -1126,11 +1126,14 @@ def hunt(
     max_hosts: int = typer.Option(8, "--max-hosts", help="Max live hosts to scan"),
     severity: str = typer.Option("low,medium,high,critical", "--severity"),
     tags: str = typer.Option("", "--tags", help="restrict nuclei templates (e.g. cve,exposure)"),
+    scope: str = typer.Option("", "--scope",
+                              help="in-scope domain patterns (e.g. '*.api.x.com'); default target"),
+    exclude: str = typer.Option("", "--exclude", help="out-of-scope domain patterns (deny-list)"),
     out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
 ) -> None:
     """One-command bug-bounty hunt: enumerate the assets -> probe which are live -> nuclei-scan
     each -> ONE combined, submittable report. The tools find, the report drafts, YOU verify and
-    submit. AUTHORIZED programs only.
+    submit. AUTHORIZED programs only — pass --scope/--exclude to honour the program's scope.
     """
     import re as _re
     from datetime import date
@@ -1140,7 +1143,8 @@ def hunt(
 
     def _obs(kind: str, data: dict) -> None:
         if kind == "enumerated":
-            console.print(f"  [cyan]{data['count']} subdomain(s) found[/cyan]")
+            console.print(f"  [cyan]{data['count']} subdomain(s) found, "
+                          f"{data.get('in_scope', data['count'])} in scope[/cyan]")
         elif kind == "hosts":
             console.print(f"  [cyan]{len(data['live'])} live host(s) to scan[/cyan]")
         elif kind == "scan":
@@ -1150,7 +1154,7 @@ def hunt(
 
     console.print(f"[cyan]Hunting {target}…[/cyan]  (authorized programs only)")
     res = asyncio.run(run_hunt(target, enum=enum, max_hosts=max_hosts, severity=severity,
-                               tags=tags, observe=_obs))
+                               tags=tags, scope=scope, exclude=exclude, observe=_obs))
     if res.get("error"):
         console.print(f"[red]{res['error']}[/red]")
         raise typer.Exit(1)

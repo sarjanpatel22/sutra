@@ -64,3 +64,44 @@ async def test_hunt_bare_domain_enumerates_and_chains(monkeypatch):
 
 async def test_hunt_empty_target():
     assert "error" in await H.hunt("")
+
+
+def test_scope_matching():
+    assert H._matches("api.example.com", "example.com")        # a domain covers its subdomains
+    assert H._matches("api.example.com", "*.example.com")
+    assert H._matches("example.com", "example.com")
+    assert not H._matches("evil.com", "example.com")
+    assert not H._matches("notexample.com", "example.com")     # suffix ≠ subdomain
+    assert H._in_scope("a.x.com", ["x.com"], [])
+    assert not H._in_scope("a.x.com", ["x.com"], ["a.x.com"])  # exclude always wins
+    assert not H._in_scope("a.y.com", ["x.com"], [])           # not in the allow-list
+
+
+async def test_hunt_filters_out_of_scope(monkeypatch):
+    from friday.skills import recon, web_recon
+
+    async def fake_find(domain):
+        return {"subdomains": ["api.example.com", "legacy.example.com", "blog.other.com"]}
+
+    seen = {}
+
+    async def fake_live(hosts, max_hosts):
+        seen["hosts"] = hosts                                  # what passed the scope filter
+        return [f"https://{h}" for h in hosts]
+
+    async def fake_nuclei(target, severity="", tags=""):
+        return {"findings": []}
+
+    monkeypatch.setattr(recon, "find_subdomains", fake_find)
+    monkeypatch.setattr(H, "_live_web_hosts", fake_live)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+
+    await H.hunt("example.com", scope="*.example.com", exclude="legacy.example.com")
+    assert "api.example.com" in seen["hosts"]
+    assert "legacy.example.com" not in seen["hosts"]           # excluded (deny-list)
+    assert "blog.other.com" not in seen["hosts"]               # outside the allow-list
+
+
+async def test_hunt_refuses_out_of_scope_single_target():
+    r = await H.hunt("http://evil.com", scope="example.com")
+    assert "error" in r and "scope" in r["error"]
