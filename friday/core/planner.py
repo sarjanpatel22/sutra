@@ -366,6 +366,27 @@ def _step_prompt(plan: Plan, step: Step) -> str:
     )
 
 
+def _step_result_text(reply: str, history: list[dict], cap: int = 1600) -> str:
+    """What a finished step hands to LATER steps. The model's prose reply alone loses the real DATA
+    a tool produced (the actual open ports, the search hits) — so a later 'write it up' step works
+    blind and a weak model then FABRICATES plausible output (the live phantom: it invented Ubuntu
+    banners for ports that were not even open). So carry the real tool OUTPUT forward, not just the
+    summary. Bounded so one big result can't blow up the next step's prompt."""
+    tool_outs: list[str] = []
+    for m in history or []:
+        if not (isinstance(m, dict) and m.get("role") == "tool"):
+            continue
+        content = m.get("content")
+        if isinstance(content, str) and content.strip() and _tool_result_ok(content):
+            tool_outs.append(f"[{m.get('name', 'tool')}] {content.strip()}")
+    parts: list[str] = []
+    if tool_outs:
+        parts.append("tool output:\n" + "\n".join(tool_outs))
+    if reply and reply.strip():
+        parts.append("summary: " + reply.strip())
+    return ("\n\n".join(parts) or "(no output)")[:cap]
+
+
 async def run_plan(
     plan: Plan,
     *,
@@ -422,8 +443,8 @@ async def run_plan(
                     await asyncio.sleep(_retry_backoff_s())
                 continue
             step.status = DONE
-            step.result = (reply or "").strip()[:500]
-            ok = True
+            step.result = _step_result_text(reply, hist)  # carry REAL tool output forward, not
+            ok = True                                      # just prose — else later steps fabricate
             break
         if not ok:
             step.status = FAILED  # gave up after retries → skip it, keep the plan moving

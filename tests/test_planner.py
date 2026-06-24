@@ -706,3 +706,20 @@ async def test_run_to_completion_no_steps(monkeypatch):
     monkeypatch.setattr(planner, "make_plan", _make)
     out = await planner.run_to_completion("g")
     assert out.steps == []
+
+
+def test_step_result_carries_real_tool_output_forward():
+    # the live phantom: a 'scan then write' plan fabricated banners because the WRITE step only
+    # got the prose "scan complete", never the real ports. The result must carry the tool DATA.
+    scan = json.dumps({"host": "127.0.0.1", "open": [{"port": 5432, "banner": "postgres"}]})
+    hist = [
+        {"role": "assistant", "content": None},
+        {"role": "tool", "name": "port_scan", "content": scan},
+    ]
+    out = planner._step_result_text("Scan complete.", hist)
+    assert "5432" in out and "postgres" in out          # the REAL data flows to the next step
+    assert "summary: Scan complete." in out
+
+    # an errored tool result is NOT forwarded as if it were truth
+    bad = [{"role": "tool", "name": "x", "content": json.dumps({"error": "boom"})}]
+    assert "boom" not in planner._step_result_text("", bad)
