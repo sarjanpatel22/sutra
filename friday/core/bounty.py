@@ -71,10 +71,12 @@ def _dedup(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(groups.values())
 
 
-def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program: str = "") -> str:
+def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program: str = "",
+                        warnings: list[str] | None = None) -> str:
     """Assemble real findings into a submittable, TRIAGED markdown report — deduped across hosts,
     submit-worthy (medium+) findings first, informational noise condensed below. Pure formatting of
-    the tool's real output — no invented facts."""
+    the tool's real output — no invented facts. `warnings` (incomplete scans, failed enum) are
+    surfaced up top so '0 findings' is never mistaken for 'clean'."""
     deduped = sorted(_dedup(findings or []),
                      key=lambda f: _SEV_ORDER.get((f.get("severity") or "unknown").lower(), 9))
     priority = [f for f in deduped if (f.get("severity") or "").lower() in _PRIORITY]
@@ -91,6 +93,9 @@ def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program:
         "the program scope before submitting — never submit unconfirmed or out-of-scope items.",
         "",
     ]
+    if warnings:
+        head += ["> ⚠️ **Scan was INCOMPLETE — '0 findings' here does NOT mean 'clean'. Re-run "
+                 "before trusting it:**", "", *[f"> - {w}" for w in warnings], ""]
     if not deduped:
         return "\n".join(head + ["_No findings to report._"])
     body: list[str] = []

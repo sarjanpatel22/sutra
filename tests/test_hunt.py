@@ -26,12 +26,17 @@ async def test_is_live_web_detects_open_port(monkeypatch):
     assert await H._is_live_web("dead.com") is None
 
 
+async def _alive(host, timeout=2.0):
+    return f"http://{host}"
+
+
 async def test_hunt_single_target_scans_one_no_enum(monkeypatch):
     from friday.skills import web_recon
 
     async def fake_nuclei(target, severity="", tags=""):
         return {"findings": [{"id": "x", "name": "X", "severity": "medium", "matched_at": target}]}
 
+    monkeypatch.setattr(H, "_is_live_web", _alive)       # the liveness gate
     monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
     res = await H.hunt("http://localhost:3000")          # a URL → single target, auto no-enum
     assert res["hosts"] == ["http://localhost:3000"]
@@ -116,6 +121,7 @@ async def test_hunt_high_value_profile_targets_payable_tags(monkeypatch):
         seen["tags"] = tags
         return {"findings": []}
 
+    monkeypatch.setattr(H, "_is_live_web", _alive)
     monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
 
     await H.hunt("http://x.com", profile="high-value")               # default goes for money
@@ -124,3 +130,47 @@ async def test_hunt_high_value_profile_targets_payable_tags(monkeypatch):
     assert seen["tags"] == "cve"
     await H.hunt("http://x.com", profile="all")                      # 'all' = no tag filter
     assert seen["tags"] == ""
+
+
+async def test_hunt_surfaces_enum_failure_not_silent(monkeypatch):
+    from friday.skills import recon, web_recon
+
+    async def failed_enum(domain):
+        return {"error": "'subfinder' is not installed"}
+
+    async def fake_live(hosts, max_hosts):
+        return []
+
+    async def fake_nuclei(target, severity="", tags=""):
+        return {"findings": []}
+
+    monkeypatch.setattr(recon, "find_subdomains", failed_enum)
+    monkeypatch.setattr(H, "_live_web_hosts", fake_live)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+
+    res = await H.hunt("example.com")                    # bare domain → enum, which fails
+    assert any("enumeration failed" in w for w in res["warnings"])   # not silently '0 assets'
+    assert "INCOMPLETE" in res["report"]                 # the report flags it
+
+
+async def test_hunt_surfaces_scan_timeout_not_clean(monkeypatch):
+    from friday.skills import web_recon
+
+    async def timed_out(target, severity="", tags=""):
+        return {"findings": [], "note": "timed out before finishing"}
+
+    monkeypatch.setattr(H, "_is_live_web", _alive)
+    monkeypatch.setattr(web_recon, "nuclei_scan", timed_out)
+
+    res = await H.hunt("http://x.com")
+    assert any("timed out" in w for w in res["warnings"])  # 0 findings ≠ clean
+    assert "INCOMPLETE" in res["report"]
+
+
+async def test_hunt_dead_single_target_fails_fast(monkeypatch):
+    async def dead(host, timeout=2.0):
+        return None
+
+    monkeypatch.setattr(H, "_is_live_web", dead)
+    res = await H.hunt("http://192.0.2.1")               # never reachable → must not run a scan
+    assert "error" in res and "not reachable" in res["error"]

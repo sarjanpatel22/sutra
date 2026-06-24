@@ -45,6 +45,13 @@ def test_report_dedups_same_finding_across_hosts():
     assert "1 submit-worthy" in r                          # deduped to one
 
 
+def test_report_flags_incomplete_scan():
+    # 0 findings + a scan warning must NOT read as 'clean' — it flags the incompleteness up top
+    r = bounty.draft_bounty_report("t", [], warnings=["host.x.com: timed out before finishing"])
+    assert "INCOMPLETE" in r and "timed out" in r
+    assert "No findings to report" in r
+
+
 def test_report_separates_signal_from_noise():
     med = _finding(severity="medium", name="Real exposure", id="exp")
     info = _finding(severity="info", name="Tech detect", id="tech")

@@ -1163,6 +1163,8 @@ def hunt(
         raise typer.Exit(1)
     findings, hosts = res["findings"], res["hosts"]
     console.print(f"[bold]{len(findings)} finding(s) across {len(hosts)} host(s).[/bold]")
+    for w in res.get("warnings", []):  # incomplete scans — '0 findings' is NOT 'clean'
+        console.print(f"  [yellow]⚠ {w}[/yellow]")
     slug = _re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")[:50] or "target"
     path = Path(out) if out else (
         Path.home() / ".local" / "share" / "friday" / "bounty" / f"hunt-{slug}-{date.today()}.md")

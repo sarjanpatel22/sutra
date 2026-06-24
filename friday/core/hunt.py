@@ -115,9 +115,14 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     excl_pats = _split(exclude)
     do_enum = enum if enum is not None else bool(_BARE_DOMAIN.match(target.lower().rstrip("/")))
 
+    warnings: list[str] = []  # so '0 findings' is never silently mistaken for 'clean'
     if do_enum:
         _emit(observe, "enum", {"domain": bare})
-        subs = (await find_subdomains(bare)).get("subdomains", [])
+        sub_res = await find_subdomains(bare)
+        if sub_res.get("error"):  # a failed enum must NOT look like 'no assets'
+            warnings.append(f"subdomain enumeration failed ({sub_res['error']}) — surface is "
+                            f"incomplete; only the apex was scanned")
+        subs = sub_res.get("subdomains", [])
         if bare not in subs:
             subs = [bare, *subs]
         in_scope = [s for s in subs if _in_scope(s, scope_pats, excl_pats)]
@@ -126,6 +131,10 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     else:
         if not _in_scope(bare, scope_pats, excl_pats):
             return {"error": f"{bare} is outside the declared scope — refusing to scan it"}
+        # liveness gate: don't burn a full scan on a host that isn't even up
+        if await _is_live_web(bare) is None:
+            return {"target": target, "hosts": [], "findings": [], "warnings": [],
+                    "error": f"{bare} is not reachable on 80/443 — nothing to scan"}
         hosts = [target if target.startswith(("http://", "https://")) else "http://" + target]
     _emit(observe, "hosts", {"live": hosts})
 
@@ -138,7 +147,9 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         for f in host_findings:
             f["host"] = h
             findings.append(f)
+        if not host_findings and res.get("note"):  # a timed-out/incomplete scan ≠ a clean one
+            warnings.append(f"{h}: {res['note']}")
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
-    return {"target": target, "hosts": hosts, "findings": findings,
-            "report": draft_bounty_report(target, findings)}
+    return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,
+            "report": draft_bounty_report(target, findings, warnings=warnings)}
