@@ -1,0 +1,106 @@
+<!doctype html>
+<!--
+  Sutra — Learning dashboard. A glanceable, auto-refreshing window into what Sutra is learning and
+  has learned. Polls /api/learning (served by friday/gui/learning_dashboard.py). Pure stdlib serve,
+  vanilla JS, no build toolchain — same discipline as the orb.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sutra — Learning</title>
+<style>
+  :root {
+    --obsidian: #0c0d10; --panel: #15171c; --line: #23262e;
+    --champagne: #e8d5a3; --gold: #c9a85e; --text: #d7d8dc; --dim: #7f828c; --live: #6ee7a8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 700px at 50% -10%, #16171c 0%, var(--obsidian) 60%);
+    color: var(--text); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100vh; padding: 28px clamp(16px, 5vw, 64px) 64px;
+  }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0; font-weight: 600;
+       background: linear-gradient(90deg, var(--champagne), var(--gold));
+       -webkit-background-clip: text; background-clip: text; color: transparent; letter-spacing: .3px; }
+  .status { display: flex; gap: 18px; flex-wrap: wrap; color: var(--dim); font-size: 13px; margin-bottom: 22px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px;
+         vertical-align: middle; background: var(--dim); }
+  .dot.on { background: var(--live); box-shadow: 0 0 10px var(--live); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .card { background: linear-gradient(180deg, var(--panel), #111317); border: 1px solid var(--line);
+          border-radius: 14px; padding: 18px 20px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--gold);
+             margin: 0 0 14px; font-weight: 600; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 8px 0; border-bottom: 1px solid #1c1f26; }
+  li:last-child { border-bottom: none; }
+  .topic { color: var(--champagne); font-weight: 600; margin-right: 6px; }
+  .date { color: var(--gold); font-variant-numeric: tabular-nums; margin-right: 10px; }
+  .chunks { float: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .empty { color: var(--dim); font-style: italic; }
+  .principle::before { content: "◆ "; color: var(--gold); }
+  footer { margin-top: 26px; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🧠 Sutra — Learning</h1>
+    <div class="status" id="status"><span>connecting…</span></div>
+  </header>
+  <div class="grid">
+    <div class="card"><h2>Doctrine it has earned</h2><ul id="doctrine"></ul></div>
+    <div class="card"><h2>Recent study passes</h2><ul id="digests"></ul></div>
+    <div class="card"><h2>Lessons from real engagements</h2><ul id="lessons"></ul></div>
+    <div class="card"><h2>Knowledge base (recallable)</h2><ul id="collections"></ul></div>
+  </div>
+  <footer id="foot">auto-refreshes every 5s · learning runs by itself via the study timer</footer>
+
+<script>
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const empty = msg => `<li class="empty">${esc(msg)}</li>`;
+
+function render(d) {
+  const totalChunks = (d.collections || []).reduce((a, c) => a + (c.chunks || 0), 0);
+  document.getElementById("status").innerHTML =
+    `<span><span class="dot ${d.timer_active ? "on" : ""}"></span>` +
+    `study timer ${d.timer_active ? "active" : "idle"}</span>` +
+    `<span>last pass: ${esc(d.last_study)}</span>` +
+    `<span>${totalChunks} chunks / ${(d.collections || []).length} collections</span>`;
+
+  document.getElementById("doctrine").innerHTML = (d.doctrine || []).length
+    ? d.doctrine.map(p => `<li class="principle">${esc(p)}</li>`).join("")
+    : empty("no earned principles yet — runs + study passes grow these");
+
+  document.getElementById("digests").innerHTML = (d.digests || []).length
+    ? d.digests.map(x => `<li><span class="date">${esc(x.date)}</span>${esc(x.headline)}</li>`).join("")
+    : empty("no study passes recorded yet");
+
+  document.getElementById("lessons").innerHTML = (d.lessons || []).length
+    ? d.lessons.map(x => `<li><span class="topic">${esc(x.topic)}</span>${esc(x.lesson)}</li>`).join("")
+    : empty("no lessons yet — these fill from real engagements");
+
+  document.getElementById("collections").innerHTML = (d.collections || []).length
+    ? d.collections.map(c => `<li>${esc(c.name)}<span class="chunks">${c.chunks} chunks</span></li>`).join("")
+    : empty("no knowledge ingested yet — sutra rag ingest <doc>");
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/learning", { cache: "no-store" });
+    render(await r.json());
+    document.getElementById("foot").textContent =
+      "auto-refreshes every 5s · learning runs by itself via the study timer · updated " +
+      new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("status").innerHTML = '<span class="empty">dashboard offline</span>';
+  }
+}
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>

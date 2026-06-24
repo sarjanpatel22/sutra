@@ -1234,13 +1234,21 @@ def _render_learning(snap: Any) -> Any:
 @app.command()
 def learning(
     watch: bool = typer.Option(False, "--watch", "-w", help="Live view; refreshes until Ctrl+C"),
+    web: bool = typer.Option(False, "--web", help="Open the live browser dashboard instead"),
+    port: int = typer.Option(8721, "--port", help="Port for --web"),
     interval: float = typer.Option(5.0, "--interval", help="Refresh seconds in --watch mode"),
 ) -> None:
     """Show what Sutra is learning right now and what it has learned — its earned doctrine, recent
     study passes, lessons from real engagements, and the knowledge base it can recall. --watch keeps
-    it live. (Learning itself auto-runs via the study timer; this is just the window into it.)"""
+    the terminal view live; --web opens a browser dashboard. (Learning itself auto-runs via the
+    study timer; this is just the window into it.)"""
     from friday.core import learning as learn
 
+    if web:
+        from friday.gui.learning_dashboard import serve
+        console.print(f"[cyan]Learning dashboard → http://127.0.0.1:{port}/[/cyan] (Ctrl+C stops)")
+        serve(port=port)
+        return
     if not watch:
         console.print(_render_learning(learn.snapshot()))
         return

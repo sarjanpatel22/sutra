@@ -75,3 +75,35 @@ def test_cli_learning_renders(monkeypatch):
     assert r.exit_code == 0, r.output
     assert "what it's learning" in r.output
     assert "Earned P1" in r.output and "bugbounty" in r.output and "learned a thing" in r.output
+
+
+def test_snapshot_dict_is_json_serializable(monkeypatch):
+    import json
+
+    monkeypatch.setattr(learning, "snapshot", lambda: learning.LearningSnapshot(
+        timer_active=True, last_study="x", doctrine=["P1"],
+        digests=[("2026-06-24", "head")], lessons=[("smb", "null")], collections=[("bb", 8)]))
+    d = learning.snapshot_dict()
+    json.dumps(d)  # must not raise — it's what the web dashboard returns
+    assert d["digests"] == [{"date": "2026-06-24", "headline": "head"}]
+    assert d["collections"] == [{"name": "bb", "chunks": 8}]
+
+
+def test_dashboard_serves_html_and_json(monkeypatch):
+    import json
+    import urllib.request
+
+    monkeypatch.setattr(learning, "snapshot_dict", lambda: {
+        "timer_active": True, "last_study": "x", "doctrine": ["P1"],
+        "digests": [], "lessons": [], "collections": []})
+    from friday.gui import learning_dashboard
+
+    httpd = learning_dashboard.serve_background(port=0, open_browser=False)
+    try:
+        p = httpd.server_address[1]
+        html = urllib.request.urlopen(f"http://127.0.0.1:{p}/", timeout=3).read().decode()
+        assert "Sutra — Learning" in html and "/api/learning" in html
+        raw = urllib.request.urlopen(f"http://127.0.0.1:{p}/api/learning", timeout=3).read()
+        assert json.loads(raw)["doctrine"] == ["P1"]
+    finally:
+        httpd.shutdown()

@@ -17,6 +17,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -106,3 +107,16 @@ def snapshot() -> LearningSnapshot:
         timer_active=_timer_active(), last_study=last, doctrine=doctrine,
         digests=digests, lessons=lessons, collections=_list_collections(),
     )
+
+
+def snapshot_dict() -> dict[str, Any]:
+    """The snapshot as a JSON-serialisable dict — what the web dashboard polls."""
+    s = snapshot()
+    return {
+        "timer_active": s.timer_active,
+        "last_study": s.last_study,
+        "doctrine": s.doctrine,
+        "digests": [{"date": d, "headline": h} for d, h in s.digests],
+        "lessons": [{"topic": t, "lesson": ln} for t, ln in s.lessons],
+        "collections": [{"name": n, "chunks": c} for n, c in s.collections],
+    }
