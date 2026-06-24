@@ -28,9 +28,10 @@ def _classification(f: dict[str, Any]) -> str:
 def _finding_section(f: dict[str, Any]) -> str:
     name = f.get("name") or f.get("id") or "Finding"
     sev = (f.get("severity") or "unknown").upper()
-    url = f.get("matched_at") or ""
+    urls = f.get("affected") or ([f["matched_at"]] if f.get("matched_at") else [])
+    url = urls[0] if urls else ""
     out = [f"## [{sev}] {name}", "",
-           f"- **Affected:** {url}",
+           f"- **Affected:** {', '.join(urls) if urls else '(see template)'}",
            f"- **Classification:** {_classification(f)}",
            f"- **Detection:** nuclei template `{f.get('id', '')}`", ""]
     if f.get("description"):
@@ -50,28 +51,59 @@ def _finding_section(f: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program: str = "") -> str:
-    """Assemble real findings into a submittable markdown report, worst-severity first. Pure
-    formatting of the tool's real output — no invented facts."""
-    findings = sorted(findings or [], key=lambda f: _SEV_ORDER.get(f.get("severity", "unknown"), 9))
-    counts: dict[str, int] = {}
+_PRIORITY = {"critical", "high", "medium"}
+
+
+def _dedup(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge findings of the same template (fired across multiple hosts) into one entry listing
+    every affected URL — so a hunt shows '1 finding · 5 hosts', not 5 duplicate sections."""
+    groups: dict[str, dict[str, Any]] = {}
     for f in findings:
-        s = (f.get("severity") or "unknown").lower()
-        counts[s] = counts.get(s, 0) + 1
-    summary = ", ".join(f"{n} {s}" for s, n in sorted(counts.items(),
-                                                      key=lambda x: _SEV_ORDER.get(x[0], 9)))
+        key = str(f.get("id") or f.get("name") or id(f))
+        g = groups.get(key)
+        if g is None:
+            g = dict(f)
+            g["affected"] = []
+            groups[key] = g
+        url = f.get("matched_at") or ""
+        if url and url not in g["affected"]:
+            g["affected"].append(url)
+    return list(groups.values())
+
+
+def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program: str = "") -> str:
+    """Assemble real findings into a submittable, TRIAGED markdown report — deduped across hosts,
+    submit-worthy (medium+) findings first, informational noise condensed below. Pure formatting of
+    the tool's real output — no invented facts."""
+    deduped = sorted(_dedup(findings or []),
+                     key=lambda f: _SEV_ORDER.get((f.get("severity") or "unknown").lower(), 9))
+    priority = [f for f in deduped if (f.get("severity") or "").lower() in _PRIORITY]
+    info = [f for f in deduped if f not in priority]
     dateline = f"_Drafted {date.today().isoformat()}"
     dateline += (f" · program: {program}" if program else "") + "_"
     head = [
         f"# Bug-bounty report — {target}",
         dateline,
         "",
-        f"**Findings:** {len(findings)}" + (f" ({summary})" if summary else ""),
+        f"**Findings:** {len(deduped)} — {len(priority)} submit-worthy, {len(info)} informational",
         "",
         "> Drafted from real scanner output (nuclei). VERIFY each finding and its impact against "
         "the program scope before submitting — never submit unconfirmed or out-of-scope items.",
         "",
     ]
-    if not findings:
+    if not deduped:
         return "\n".join(head + ["_No findings to report._"])
-    return "\n".join(head + ["---", ""] + [_finding_section(f) for f in findings])
+    body: list[str] = []
+    if priority:
+        body += ["## Submit-worthy findings (triage these first)", ""]
+        body += [_finding_section(f) for f in priority]
+    if info:
+        body += ["## Informational / lower priority", "",
+                 "_Usually low or no bounty — submit only if the program rewards this class:_", ""]
+        for f in info:
+            n = len(f.get("affected") or [])
+            host_note = f" · {n} hosts" if n > 1 else ""
+            body.append(f"- **[{(f.get('severity') or '?').upper()}]** "
+                        f"{f.get('name') or f.get('id')}{host_note} — `{f.get('id', '')}`")
+        body.append("")
+    return "\n".join(head + ["---", ""] + body)

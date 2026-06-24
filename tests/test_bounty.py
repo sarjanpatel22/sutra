@@ -30,10 +30,29 @@ def test_draft_report_grounds_every_field_in_real_data():
 
 
 def test_draft_report_sorts_worst_first():
-    findings = [_finding(severity="low", name="Low one"),
-                _finding(severity="critical", name="Crit one")]
+    findings = [_finding(severity="low", name="Low one", id="low-tmpl"),
+                _finding(severity="critical", name="Crit one", id="crit-tmpl")]
     r = bounty.draft_bounty_report("t", findings)
     assert r.index("Crit one") < r.index("Low one")       # critical before low
+
+
+def test_report_dedups_same_finding_across_hosts():
+    f1 = _finding(matched_at="http://a.x.com/metrics")
+    f2 = _finding(matched_at="http://b.x.com/metrics")    # same template id, different host
+    r = bounty.draft_bounty_report("x.com", [f1, f2])
+    assert r.count("## [MEDIUM] Prometheus Metrics") == 1  # one section, not two
+    assert "http://a.x.com/metrics" in r and "http://b.x.com/metrics" in r  # both hosts listed
+    assert "1 submit-worthy" in r                          # deduped to one
+
+
+def test_report_separates_signal_from_noise():
+    med = _finding(severity="medium", name="Real exposure", id="exp")
+    info = _finding(severity="info", name="Tech detect", id="tech")
+    r = bounty.draft_bounty_report("prog", [med, info])
+    assert "Submit-worthy findings" in r and "Informational" in r
+    assert r.index("Real exposure") < r.index("## Informational")  # signal above the noise section
+    assert "Tech detect" in r                              # noise condensed, not a full section
+    assert "1 submit-worthy, 1 informational" in r
 
 
 def test_draft_report_empty():
