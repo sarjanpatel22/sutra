@@ -13,6 +13,7 @@ install never breaks (gobuster/ffuf live on the Kali box, not CI). Authorized ta
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import urllib.error
@@ -92,6 +93,83 @@ async def web_enum(url: str, mode: str = "dirs", wordlist: str = "") -> dict[str
                 "found": [{"path": h} for h in hits]}
 
     return {"error": "no web-enum tool installed (need gobuster or ffuf)"}
+
+
+_SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "unknown": 5}
+
+
+def _parse_nuclei(out: str) -> list[dict[str, Any]]:
+    """Parse nuclei -jsonl stdout into clean, triageable findings (sorted worst-first). Each line
+    is one finding; non-JSON lines (any stray logs) are skipped."""
+    findings: list[dict[str, Any]] = []
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        info = d.get("info") or {}
+        findings.append({
+            "id": d.get("template-id") or d.get("templateID") or "?",
+            "name": info.get("name") or "?",
+            "severity": str(info.get("severity") or "unknown").lower(),
+            "matched_at": d.get("matched-at") or d.get("matched") or d.get("host") or "",
+            "tags": info.get("tags") or [],
+        })
+    findings.sort(key=lambda f: _SEV_ORDER.get(f["severity"], 9))
+    return findings
+
+
+@skill(
+    name="nuclei_scan",
+    description=(
+        "Scan a web target for KNOWN vulnerabilities, misconfigurations, exposures and CVEs with "
+        "nuclei and its community templates — the core bug-bounty FIND step. Returns the real "
+        "findings (template id, name, severity, the exact matched URL) as structured data, so they "
+        "can be triaged and reported without guessing. severity = comma list to include "
+        "(info,low,medium,high,critical; default skips info noise); tags = restrict templates "
+        "(e.g. cve,exposure,misconfiguration,takeover). Active scan — AUTHORIZED targets only."
+    ),
+    auto_confirm=False,  # active vulnerability scan — gated like web_enum / port_scan
+    timeout_s=300,
+)
+async def nuclei_scan(target: str, severity: str = "low,medium,high,critical",
+                      tags: str = "") -> dict[str, Any]:
+    """Scan a target for known vulnerabilities with nuclei.
+
+    target: URL or host (http(s)://host[:port]); a bare host defaults to http://.
+    severity: comma list to include (info,low,medium,high,critical). Default skips info noise.
+    tags: optional comma list to restrict the template set (e.g. 'cve,exposure,takeover').
+    """
+    target = (target or "").strip()
+    if not target:
+        return {"error": "no target to scan"}
+    if not target.startswith(("http://", "https://")):
+        target = "http://" + target
+    nuclei = shutil.which("nuclei")
+    if not nuclei:
+        return {"error": "'nuclei' is not installed"}
+    cmd = [nuclei, "-u", target, "-jsonl", "-silent", "-disable-update-check",
+           "-no-color", "-rate-limit", "60", "-timeout", "8"]
+    if (sev := (severity or "").strip()):
+        cmd += ["-severity", sev]
+    if (tg := (tags or "").strip()):
+        cmd += ["-tags", tg]
+    rc, out, err = await _run(cmd, timeout=285)
+    findings = _parse_nuclei(out)
+    result: dict[str, Any] = {"target": target, "tool": "nuclei",
+                              "count": len(findings), "findings": findings}
+    if not findings:
+        low = (err or "").lower()
+        if "no templates" in low or "could not find" in low or "template" in low and "error" in low:
+            result["note"] = "no templates loaded — run: nuclei -update-templates"
+        elif rc == -1:
+            result["note"] = "timed out before finishing — narrow with tags= or a higher severity="
+        else:
+            result["note"] = "no findings at this severity (try lower severity or specific tags)"
+    return result
 
 
 _SECURITY_HEADERS = (

@@ -105,9 +105,53 @@ async def test_web_enum_bad_mode(tmp_path):
     assert "error" in out and "mode" in out["error"]
 
 
+# --- nuclei_scan (the bug-bounty find step — mocked subprocess) --------------------------
+
+async def test_nuclei_scan_parses_and_sorts_findings(monkeypatch):
+    import json
+
+    monkeypatch.setattr(web_recon.shutil, "which", lambda b: "/usr/bin/nuclei")
+    sample = "\n".join([
+        json.dumps({"template-id": "tech-detect", "matched-at": "http://t",
+                    "info": {"name": "Tech", "severity": "info", "tags": ["tech"]}}),
+        json.dumps({"template-id": "prometheus-metrics", "matched-at": "http://t/metrics",
+                    "info": {"name": "Exposed Metrics", "severity": "medium",
+                             "tags": ["exposure"]}}),
+        "[INF] a stray log line that is not json",
+    ])
+
+    async def fake_run(cmd, timeout=20):
+        assert "-jsonl" in cmd and "http://t" in cmd
+        return (0, sample, "")
+
+    monkeypatch.setattr(web_recon, "_run", fake_run)
+    r = await web_recon.nuclei_scan("t")                       # bare host → http://
+    assert r["target"] == "http://t" and r["count"] == 2      # the log line is skipped
+    assert r["findings"][0]["id"] == "prometheus-metrics"     # sorted worst-first (medium > info)
+    assert r["findings"][0]["severity"] == "medium" and r["findings"][0]["tags"] == ["exposure"]
+
+
+async def test_nuclei_scan_missing_binary(monkeypatch):
+    monkeypatch.setattr(web_recon.shutil, "which", lambda b: None)
+    r = await web_recon.nuclei_scan("http://t")
+    assert "error" in r and "nuclei" in r["error"]
+
+
+async def test_nuclei_scan_no_findings_flags_templates(monkeypatch):
+    monkeypatch.setattr(web_recon.shutil, "which", lambda b: "/usr/bin/nuclei")
+
+    async def fake_run(cmd, timeout=20):
+        return (0, "", "no templates found to execute")
+
+    monkeypatch.setattr(web_recon, "_run", fake_run)
+    r = await web_recon.nuclei_scan("http://t")
+    assert r["count"] == 0 and "update-templates" in r["note"]
+
+
 def test_web_recon_gating():
     from friday.skills import registry
 
     registry.autodiscover()
     assert registry.get("web_enum").auto_confirm is False    # active brute → gated
     assert registry.get("http_headers").auto_confirm is True  # passive GET → auto
+    assert registry.get("nuclei_scan").auto_confirm is False  # active vuln scan → gated
