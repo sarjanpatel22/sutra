@@ -147,8 +147,8 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         for f in host_findings:
             f["host"] = h
             findings.append(f)
-        if not host_findings and res.get("note"):  # a timed-out/incomplete scan ≠ a clean one
-            warnings.append(f"{h}: {res['note']}")
+        if res.get("incomplete"):  # timeout/no-templates — even WITH partial findings, flag it
+            warnings.append(f"{h}: {res.get('note', 'scan incomplete')}")
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
     return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,

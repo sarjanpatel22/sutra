@@ -157,13 +157,13 @@ async def test_hunt_surfaces_scan_timeout_not_clean(monkeypatch):
     from friday.skills import web_recon
 
     async def timed_out(target, severity="", tags=""):
-        return {"findings": [], "note": "timed out before finishing"}
+        return {"findings": [], "note": "scan TIMED OUT — partial", "incomplete": True}
 
     monkeypatch.setattr(H, "_is_live_web", _alive)
     monkeypatch.setattr(web_recon, "nuclei_scan", timed_out)
 
     res = await H.hunt("http://x.com")
-    assert any("timed out" in w for w in res["warnings"])  # 0 findings ≠ clean
+    assert any("TIMED OUT" in w for w in res["warnings"])  # 0 findings ≠ clean
     assert "INCOMPLETE" in res["report"]
 
 

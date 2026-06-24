@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -158,22 +160,41 @@ async def nuclei_scan(target: str, severity: str = "low,medium,high,critical",
     nuclei = shutil.which("nuclei")
     if not nuclei:
         return {"error": "'nuclei' is not installed"}
-    cmd = [nuclei, "-u", target, "-jsonl", "-silent", "-disable-update-check",
+    # Write findings to a FILE, not just stdout: _run discards stdout on timeout, so a long scan
+    # that already found real bugs would lose them. The file keeps whatever nuclei wrote before it
+    # was killed, so a partial scan still returns its findings (real money — never thrown away).
+    fd, outfile = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)
+    cmd = [nuclei, "-u", target, "-jsonl", "-o", outfile, "-silent", "-disable-update-check",
            "-no-color", "-rate-limit", "60", "-timeout", "8"]
     if (sev := (severity or "").strip()):
         cmd += ["-severity", sev]
     if (tg := (tags or "").strip()):
         cmd += ["-tags", tg]
-    rc, out, err = await _run(cmd, timeout=285)
-    findings = _parse_nuclei(out)
+    try:
+        rc, out, err = await _run(cmd, timeout=285)
+        try:
+            file_out = Path(outfile).read_text()
+        except OSError:
+            file_out = ""
+    finally:
+        try:
+            os.unlink(outfile)
+        except OSError:
+            pass
+    findings = _parse_nuclei(file_out or out)  # prefer the file; fall back to stdout
     result: dict[str, Any] = {"target": target, "tool": "nuclei",
                               "count": len(findings), "findings": findings}
-    if not findings:
+    if rc == -1:  # timed out — the findings here are PARTIAL, flag it even if some were recovered
+        result["incomplete"] = True
+        result["note"] = (
+            f"scan TIMED OUT — results are partial ({len(findings)} found so far); "
+            "re-run (narrow with tags= or a higher severity=) for full coverage")
+    elif not findings:
         low = (err or "").lower()
-        if "no templates" in low or "could not find" in low or "template" in low and "error" in low:
+        if "no templates" in low or ("template" in low and "error" in low):
+            result["incomplete"] = True  # a real failure, not a clean result
             result["note"] = "no templates loaded — run: nuclei -update-templates"
-        elif rc == -1:
-            result["note"] = "timed out before finishing — narrow with tags= or a higher severity="
         else:
             result["note"] = "no findings at this severity (try lower severity or specific tags)"
     return result

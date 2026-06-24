@@ -131,6 +131,26 @@ async def test_nuclei_scan_parses_and_sorts_findings(monkeypatch):
     assert r["findings"][0]["severity"] == "medium" and r["findings"][0]["tags"] == ["exposure"]
 
 
+async def test_nuclei_scan_recovers_partial_findings_on_timeout(monkeypatch):
+    # the killer gap: a scan that finds bugs then TIMES OUT must not lose them. nuclei writes to
+    # the -o file as it goes; we read that file even when _run discards stdout on timeout.
+    import json
+    from pathlib import Path
+
+    monkeypatch.setattr(web_recon.shutil, "which", lambda b: "/usr/bin/nuclei")
+    finding = json.dumps({"template-id": "exposed-secret", "matched-at": "http://t/.env",
+                          "info": {"name": "Exposed env", "severity": "high"}})
+
+    async def fake_run(cmd, timeout=20):
+        Path(cmd[cmd.index("-o") + 1]).write_text(finding + "\n")  # nuclei wrote it pre-kill
+        return (-1, "", "timed out after 285s")                    # run TIMED OUT, no stdout
+
+    monkeypatch.setattr(web_recon, "_run", fake_run)
+    r = await web_recon.nuclei_scan("http://t")
+    assert r["count"] == 1 and r["findings"][0]["id"] == "exposed-secret"  # recovered, not lost!
+    assert r["incomplete"] is True and "TIMED OUT" in r["note"]            # but flagged as partial
+
+
 async def test_nuclei_scan_missing_binary(monkeypatch):
     monkeypatch.setattr(web_recon.shutil, "which", lambda b: None)
     r = await web_recon.nuclei_scan("http://t")
