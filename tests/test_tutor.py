@@ -29,6 +29,52 @@ async def test_tutor_teaches_with_no_tools(monkeypatch):
     assert "methodolog" in seen["system"].lower() or "mentor" in seen["system"].lower()
 
 
+class _FakeStore:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __len__(self):
+        return len(self._chunks)
+
+    def search(self, query, k):
+        return self._chunks[:k]
+
+
+def test_knowledge_block_injects_passages(monkeypatch):
+    chunk = {"text": "Test for SSRF in URL fetchers and webhooks.", "source": "bug_bounty.md"}
+    monkeypatch.setattr("friday.rag.store.RagStore", lambda c: _FakeStore([chunk]))
+    block = agent._knowledge_block("ssrf")
+    assert "SSRF in URL fetchers" in block and "teach from this" in block
+
+
+def test_knowledge_block_empty_when_collection_empty(monkeypatch):
+    monkeypatch.setattr("friday.rag.store.RagStore", lambda c: _FakeStore([]))
+    assert agent._knowledge_block("ssrf") == ""
+
+
+def test_knowledge_block_graceful_on_error(monkeypatch):
+    def _boom(c):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr("friday.rag.store.RagStore", _boom)
+    assert agent._knowledge_block("ssrf") == ""  # never breaks the lesson
+
+
+async def test_tutor_injects_knowledge(monkeypatch):
+    seen = {}
+
+    async def _fake_complete(messages, tier=None, tools=None, **kw):
+        seen["system"] = messages[0]["content"]
+        return _Resp("ok")
+
+    monkeypatch.setattr(agent, "complete", _fake_complete)
+    monkeypatch.setattr("friday.core.dreaming.lessons_block", lambda *a, **k: "")
+    monkeypatch.setattr(agent, "_knowledge_block",
+                        lambda *a, **k: "\n\nReference knowledge: test SSRF via cloud metadata.")
+    await agent.tutor("how do I find ssrf")
+    assert "SSRF via cloud metadata" in seen["system"]  # the knowledge reached the model
+
+
 async def test_tutor_injects_dreaming_lessons(monkeypatch):
     seen = {}
 

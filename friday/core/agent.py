@@ -921,6 +921,28 @@ def _tutor_wants_reveal(text: str) -> bool:
     return any(p in t for p in _TUTOR_REVEAL_TRIGGERS)
 
 
+def _knowledge_block(topic: str, *, k: int = 3) -> str:
+    """Relevant passages from the ingested knowledge base (e.g. the bug-bounty methodology) for the
+    tutor to teach from. Collection = TUTOR_KNOWLEDGE_COLLECTION (default 'bugbounty'). Empty and
+    silent on any failure — ingested knowledge is a bonus to the lesson, never a blocker."""
+    collection = os.getenv("TUTOR_KNOWLEDGE_COLLECTION", "bugbounty").strip() or "bugbounty"
+    try:
+        from friday.rag.store import RagStore
+        store = RagStore(collection)
+        if len(store) == 0:
+            return ""
+        hits = store.search(topic, k)
+    except Exception:  # noqa: BLE001 — Ollama down / missing collection → just skip knowledge
+        return ""
+    passages = "\n\n".join(h["text"].strip()[:800] for h in hits if h.get("text"))
+    if not passages:
+        return ""
+    return (
+        "\n\nReference knowledge (from your ingested methodology — teach from this and cite it):\n"
+        f"{passages}"
+    )
+
+
 async def tutor(
     topic: str,
     *,
@@ -943,7 +965,7 @@ async def tutor(
         return "Tell me what you want to learn, or where you're stuck on a box."
     from friday.core import dreaming, skill_profile
 
-    system = TUTOR_SYSTEM_PROMPT + dreaming.lessons_block(topic)
+    system = TUTOR_SYSTEM_PROMPT + _knowledge_block(topic) + dreaming.lessons_block(topic)
     profile = skill_profile.summarize()  # adapt depth to what he's already shown he knows
     if profile:
         system += "\n\n" + profile
