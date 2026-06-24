@@ -78,14 +78,27 @@ def _emit(observe: ObserveFn, kind: str, data: dict[str, Any]) -> None:
             pass
 
 
+# The bug-bounty finding classes that actually PAY *and* are automatable — subdomain takeover,
+# exposed secrets/config/backups, default logins, exposed panels. The default hunt targets these
+# (the money) and stays FAST; 'cve' is a deeper opt-in pass (thousands of templates, slower) and
+# 'all' is no tag filter. Info-level tech/fingerprint noise is deliberately excluded.
+_PROFILES = {
+    "high-value": "takeover,exposure,default-login,config,backup,panel,exposed-panel",
+    "cve": "cve",
+    "all": "",
+}
+
+
 async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
                severity: str = "low,medium,high,critical", tags: str = "",
-               scope: str = "", exclude: str = "",
+               profile: str = "high-value", scope: str = "", exclude: str = "",
                observe: ObserveFn = None) -> dict[str, Any]:
     """Run a whole-program hunt and draft ONE combined report.
 
     target: a bare domain (auto-enumerated) or a URL/host (scanned directly).
     enum: force subdomain enumeration on/off; None = auto-detect from the target shape.
+    profile: which template set to target — 'high-value' (default: the classes that pay), 'all'
+        (everything), or a literal nuclei tag list. An explicit `tags=` always overrides it.
     scope: comma/space allow-list of in-scope domain patterns (default: the target apex only, so a
         hunt never wanders off the program). exclude: deny-list that always wins.
     Returns {target, hosts, findings, report}.
@@ -116,10 +129,11 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         hosts = [target if target.startswith(("http://", "https://")) else "http://" + target]
     _emit(observe, "hosts", {"live": hosts})
 
+    scan_tags = (tags or "").strip() or _PROFILES.get(profile, profile)  # explicit tags win
     findings: list[dict[str, Any]] = []
     for h in hosts:
         _emit(observe, "scan", {"host": h})
-        res = await nuclei_scan(h, severity=severity, tags=tags)
+        res = await nuclei_scan(h, severity=severity, tags=scan_tags)
         host_findings = res.get("findings", [])
         for f in host_findings:
             f["host"] = h

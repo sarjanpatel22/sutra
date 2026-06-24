@@ -105,3 +105,22 @@ async def test_hunt_filters_out_of_scope(monkeypatch):
 async def test_hunt_refuses_out_of_scope_single_target():
     r = await H.hunt("http://evil.com", scope="example.com")
     assert "error" in r and "scope" in r["error"]
+
+
+async def test_hunt_high_value_profile_targets_payable_tags(monkeypatch):
+    from friday.skills import web_recon
+
+    seen = {}
+
+    async def fake_nuclei(target, severity="", tags=""):
+        seen["tags"] = tags
+        return {"findings": []}
+
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+
+    await H.hunt("http://x.com", profile="high-value")               # default goes for money
+    assert "takeover" in seen["tags"] and "default-login" in seen["tags"]
+    await H.hunt("http://x.com", profile="high-value", tags="cve")   # explicit tags override
+    assert seen["tags"] == "cve"
+    await H.hunt("http://x.com", profile="all")                      # 'all' = no tag filter
+    assert seen["tags"] == ""

@@ -1125,7 +1125,9 @@ def hunt(
                               help="Force subdomain enumeration on/off (default: auto-detect)"),
     max_hosts: int = typer.Option(8, "--max-hosts", help="Max live hosts to scan"),
     severity: str = typer.Option("low,medium,high,critical", "--severity"),
-    tags: str = typer.Option("", "--tags", help="restrict nuclei templates (e.g. cve,exposure)"),
+    tags: str = typer.Option("", "--tags", help="restrict nuclei templates (overrides --profile)"),
+    profile: str = typer.Option("high-value", "--profile",
+                                help="template set: high-value (the classes that pay) / all"),
     scope: str = typer.Option("", "--scope",
                               help="in-scope domain patterns (e.g. '*.api.x.com'); default target"),
     exclude: str = typer.Option("", "--exclude", help="out-of-scope domain patterns (deny-list)"),
@@ -1154,7 +1156,8 @@ def hunt(
 
     console.print(f"[cyan]Hunting {target}…[/cyan]  (authorized programs only)")
     res = asyncio.run(run_hunt(target, enum=enum, max_hosts=max_hosts, severity=severity,
-                               tags=tags, scope=scope, exclude=exclude, observe=_obs))
+                               tags=tags, profile=profile, scope=scope, exclude=exclude,
+                               observe=_obs))
     if res.get("error"):
         console.print(f"[red]{res['error']}[/red]")
         raise typer.Exit(1)
