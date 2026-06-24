@@ -123,6 +123,39 @@ async def whois(query: str) -> dict[str, Any]:
 
 
 @skill(
+    name="find_subdomains",
+    description=(
+        "Discover a domain's subdomains with subfinder — PASSIVE OSINT (queries public sources "
+        "like certificate-transparency logs; sends NO traffic to the target). The #1 bounty recon "
+        "move: surfacing forgotten assets where the vulnerabilities (and the bounties) hide. "
+        "Returns the subdomain list; then probe the live ones with port_scan / nuclei_scan. "
+        "Authorized programs only."
+    ),
+    auto_confirm=True,  # passive OSINT, no traffic to the target — like dns_lookup / whois
+    timeout_s=130,
+)
+async def find_subdomains(domain: str) -> dict[str, Any]:
+    """Enumerate a domain's subdomains (passive, via subfinder).
+
+    domain: The apex domain (example.com); a URL/host[:port] is reduced to its bare domain.
+    """
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return {"error": "no domain to enumerate"}
+    domain = domain.split("://")[-1].split("/")[0].split(":")[0]  # URL/host → bare domain
+    sf = shutil.which("subfinder")
+    if not sf:
+        return {"error": "'subfinder' is not installed"}
+    rc, out, err = await _run([sf, "-d", domain, "-silent"], timeout=120)
+    subs = sorted({s.strip().lower() for s in (out or "").splitlines()
+                   if s.strip() and "." in s and " " not in s.strip()})
+    result: dict[str, Any] = {"domain": domain, "count": len(subs), "subdomains": subs}
+    if not subs and (err or "").strip():
+        result["note"] = err.strip()[:160]
+    return result
+
+
+@skill(
     name="searchsploit",
     description=(
         "Search Exploit-DB (offline, via searchsploit) for public exploits matching a product/term "

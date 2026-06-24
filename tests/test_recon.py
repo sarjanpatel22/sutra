@@ -127,14 +127,36 @@ async def test_searchsploit_missing_binary(monkeypatch):
     assert "error" in await recon.searchsploit("anything")
 
 
+# --- find_subdomains (passive OSINT — mocked subprocess) ----------------------------
+
+async def test_find_subdomains_parses_and_cleans(monkeypatch):
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/subfinder")
+
+    async def fake_run(cmd, timeout=20):
+        assert "-d" in cmd and "example.com" in cmd     # URL was reduced to the bare domain
+        return (0, "b.example.com\na.example.com\nA.EXAMPLE.COM\nnot a domain\n\n", "")
+
+    monkeypatch.setattr(recon, "_run", fake_run)
+    r = await recon.find_subdomains("https://example.com/path?q=1")
+    assert r["domain"] == "example.com"
+    assert r["subdomains"] == ["a.example.com", "b.example.com"]  # deduped/sorted, junk dropped
+    assert r["count"] == 2
+
+
+async def test_find_subdomains_missing_binary(monkeypatch):
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    r = await recon.find_subdomains("example.com")
+    assert "error" in r and "subfinder" in r["error"]
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
     from friday.skills import registry
 
     registry.autodiscover()
-    for passive in ("dns_lookup", "whois", "searchsploit"):
-        assert registry.get(passive).auto_confirm is True
+    for passive in ("dns_lookup", "whois", "searchsploit", "find_subdomains"):
+        assert registry.get(passive).auto_confirm is True  # passive OSINT → auto
     assert registry.get("port_scan").auto_confirm is False  # active probe → gated
     assert registry.get("crack_hash").auto_confirm is False  # intensive crack → gated
     assert registry.get("discover_hosts").auto_confirm is False  # active sweep → gated
