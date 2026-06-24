@@ -647,3 +647,62 @@ async def test_synthesize_plan_falls_back_on_model_error(plans_dir, monkeypatch)
     p.status = "done"
     out = await planner.synthesize_plan(p)
     assert "all 1 step" in out                                 # never raises — polish only
+
+
+# --- run_to_completion: drive a goal all the way to the end ----------------------------
+
+async def test_run_to_completion_drives_past_a_failed_step(monkeypatch):
+    p = planner.new_plan("g", ["a", "b"])
+
+    async def _make(goal, *, tier=None, max_steps=12):
+        return p
+
+    async def _run(plan, *, confirm=None, observe=None):
+        plan.steps[0].status = planner.DONE
+        plan.steps[1].status = planner.FAILED      # one step fails the first time
+        return plan
+
+    async def _resume(slug, *, confirm=None, observe=None, retry_failed=True):
+        p.steps[1].status = planner.DONE           # it succeeds on the resume pass
+        return p
+
+    monkeypatch.setattr(planner, "make_plan", _make)
+    monkeypatch.setattr(planner, "run_plan", _run)
+    monkeypatch.setattr(planner, "resume_plan", _resume)
+
+    out = await planner.run_to_completion("g")
+    assert out.is_complete()                       # drove to the end, not stopping at the fail
+
+
+async def test_run_to_completion_stops_when_genuinely_stuck(monkeypatch):
+    p = planner.new_plan("g", ["a", "b"])
+    calls = {"resume": 0}
+
+    async def _make(goal, *, tier=None, max_steps=12):
+        return p
+
+    async def _run(plan, *, confirm=None, observe=None):
+        plan.steps[0].status = planner.DONE
+        plan.steps[1].status = planner.FAILED
+        return plan
+
+    async def _resume(slug, *, confirm=None, observe=None, retry_failed=True):
+        calls["resume"] += 1
+        return p                                    # never makes further progress
+
+    monkeypatch.setattr(planner, "make_plan", _make)
+    monkeypatch.setattr(planner, "run_plan", _run)
+    monkeypatch.setattr(planner, "resume_plan", _resume)
+
+    out = await planner.run_to_completion("g", max_passes=5)
+    assert not out.is_complete()
+    assert calls["resume"] == 1                     # bailed after one no-progress pass, no spin
+
+
+async def test_run_to_completion_no_steps(monkeypatch):
+    async def _make(goal, *, tier=None, max_steps=12):
+        return planner.new_plan("g", [])
+
+    monkeypatch.setattr(planner, "make_plan", _make)
+    out = await planner.run_to_completion("g")
+    assert out.steps == []

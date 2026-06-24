@@ -458,6 +458,41 @@ async def resume_plan(
     return await run_plan(plan, confirm=confirm, observe=observe)
 
 
+async def run_to_completion(
+    goal: str,
+    *,
+    tier: Tier = Tier.HEAVY,
+    max_passes: int = 4,
+    confirm: ConfirmFn | None = None,
+    observe: ObserveFn | None = None,
+) -> Plan:
+    """Plan a goal and DRIVE IT TO COMPLETION in one call: run the plan, then keep resuming
+    (re-attempting any FAILED steps) until every step is DONE or a pass makes no further progress.
+    Trades time for finishing — the point is to complete the task, not stop at the first failed
+    step. run_plan's per-step retries handle transient failures; this outer loop handles steps that
+    only succeed on a LATER pass, once the steps they depend on have produced their results. Bounded
+    by max_passes and a no-progress guard, so it always terminates honestly: done, or genuinely
+    stuck (and still resumable later). Budget pauses are left as 'paused' for an explicit resume."""
+    plan = await make_plan(goal, tier=tier)
+    if not plan.steps:
+        return plan
+    plan = await run_plan(plan, confirm=confirm, observe=observe)
+    for _ in range(max(0, max_passes)):
+        if plan.is_complete() or plan.status == "paused":
+            break
+        done_before = plan.progress()[0]
+        resumed = await resume_plan(plan.slug, confirm=confirm, observe=observe)
+        if resumed is None:
+            break
+        plan = resumed
+        if observe:
+            done, total = plan.progress()
+            observe("completion_pass", {"done": done, "total": total})
+        if plan.progress()[0] <= done_before:
+            break  # no forward progress this pass → genuinely stuck, stop instead of spinning
+    return plan
+
+
 # --- final synthesis: tie the executed steps into one coherent outcome -------------
 
 _SYNTH_SYSTEM = (

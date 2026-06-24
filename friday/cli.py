@@ -1516,6 +1516,41 @@ def plan_run(
     asyncio.run(_run())
 
 
+@plan_app.command("do")
+def plan_do(
+    goal: str = typer.Argument(..., help="The goal to plan and drive all the way to completion"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve gated steps (hands-free)"),
+    passes: int = typer.Option(
+        4, "--passes", help="Max extra resume passes to finish steps that failed the first time"),
+) -> None:
+    """Plan a goal and DRIVE IT TO COMPLETION — runs the plan, then keeps re-attempting the steps
+    that failed until the whole task is done or it's genuinely stuck. Trades time for finishing."""
+    from friday.core.planner import run_to_completion, synthesize_plan
+
+    async def _run() -> None:
+        out = await run_to_completion(goal, max_passes=passes,
+                                      confirm=_plan_confirm(yes), observe=_plan_observe)
+        if not out.steps:
+            console.print("[red]couldn't break that into steps — try rephrasing the goal.[/red]")
+            return
+        console.print("\n[bold]Result:[/bold]")
+        _render_plan(out)
+        done, total = out.progress()
+        if out.is_complete():
+            with console.status("[cyan]summarizing…[/cyan]"):
+                summary = await synthesize_plan(out)
+            console.print(Panel(Markdown(summary), title="Outcome", border_style="cyan",
+                                padding=(0, 1)))
+        elif out.status == "paused":
+            console.print(f"\n[yellow]paused (budget)[/yellow] — resume: "
+                          f"[cyan]sutra plan resume {out.slug}[/cyan]")
+        else:
+            console.print(f"\n[yellow]{done}/{total} steps done[/yellow] — stuck on the rest; "
+                          f"pick it up later: [cyan]sutra plan resume {out.slug}[/cyan]")
+
+    asyncio.run(_run())
+
+
 @plan_app.command("resume")
 def plan_resume(
     slug: str = typer.Argument(..., help="Plan slug to resume (see: sutra plan list)"),
