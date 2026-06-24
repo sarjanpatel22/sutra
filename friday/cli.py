@@ -1118,6 +1118,57 @@ def bounty(
 
 
 @app.command()
+def hunt(
+    target: str = typer.Argument(..., help="Program domain (auto-enumerated) or a URL/host. "
+                                           "AUTHORIZED programs only"),
+    enum: bool = typer.Option(None, "--enum/--no-enum",
+                              help="Force subdomain enumeration on/off (default: auto-detect)"),
+    max_hosts: int = typer.Option(8, "--max-hosts", help="Max live hosts to scan"),
+    severity: str = typer.Option("low,medium,high,critical", "--severity"),
+    tags: str = typer.Option("", "--tags", help="restrict nuclei templates (e.g. cve,exposure)"),
+    out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
+) -> None:
+    """One-command bug-bounty hunt: enumerate the assets -> probe which are live -> nuclei-scan
+    each -> ONE combined, submittable report. The tools find, the report drafts, YOU verify and
+    submit. AUTHORIZED programs only.
+    """
+    import re as _re
+    from datetime import date
+    from pathlib import Path
+
+    from friday.core.hunt import hunt as run_hunt
+
+    def _obs(kind: str, data: dict) -> None:
+        if kind == "enumerated":
+            console.print(f"  [cyan]{data['count']} subdomain(s) found[/cyan]")
+        elif kind == "hosts":
+            console.print(f"  [cyan]{len(data['live'])} live host(s) to scan[/cyan]")
+        elif kind == "scan":
+            console.print(f"  [dim]scanning {data['host']}…[/dim]")
+        elif kind == "scanned" and data.get("found"):
+            console.print(f"  [green]{data['found']} finding(s) on {data['host']}[/green]")
+
+    console.print(f"[cyan]Hunting {target}…[/cyan]  (authorized programs only)")
+    res = asyncio.run(run_hunt(target, enum=enum, max_hosts=max_hosts, severity=severity,
+                               tags=tags, observe=_obs))
+    if res.get("error"):
+        console.print(f"[red]{res['error']}[/red]")
+        raise typer.Exit(1)
+    findings, hosts = res["findings"], res["hosts"]
+    console.print(f"[bold]{len(findings)} finding(s) across {len(hosts)} host(s).[/bold]")
+    slug = _re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")[:50] or "target"
+    path = Path(out) if out else (
+        Path.home() / ".local" / "share" / "friday" / "bounty" / f"hunt-{slug}-{date.today()}.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(res["report"])
+    preview = res["report"][:1800] + ("\n\n…(full report saved)" if len(res["report"]) > 1800
+                                      else "")
+    console.print(Panel(Markdown(preview), title="[bold]Hunt — draft report[/bold]",
+                        border_style="cyan", padding=(0, 1)))
+    console.print(f"[bold]Saved:[/bold] {path}  [dim](verify each finding before submitting)[/dim]")
+
+
+@app.command()
 def train(
     dataset_only: bool = typer.Option(
         False, "--dataset-only",
