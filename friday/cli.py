@@ -1077,6 +1077,47 @@ def pwn(
 
 
 @app.command()
+def bounty(
+    target: str = typer.Argument(..., help="Target URL/host to hunt (AUTHORIZED targets only)"),
+    severity: str = typer.Option("low,medium,high,critical", "--severity",
+                                 help="nuclei severities to include"),
+    tags: str = typer.Option("", "--tags", help="restrict nuclei templates (e.g. cve,exposure)"),
+    program: str = typer.Option("", "--program", help="program name for the report header"),
+    out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
+) -> None:
+    """Hunt a target for known vulns and draft a submittable bug-bounty report. AUTHORIZED ONLY.
+
+    The TOOL finds (nuclei, real grounded output) -> this DRAFTS the report (repro, CWE, CVSS,
+    references) -> YOU verify and submit. Nothing is invented; every fact comes from the scan.
+    """
+    import re as _re
+    from datetime import date
+    from pathlib import Path
+
+    from friday.core.bounty import draft_bounty_report
+    from friday.skills.web_recon import nuclei_scan
+
+    console.print(f"[cyan]Scanning {target} with nuclei…[/cyan]  (authorized targets only)")
+    res = asyncio.run(nuclei_scan(target, severity=severity, tags=tags))
+    if res.get("error"):
+        console.print(f"[red]{res['error']}[/red]")
+        raise typer.Exit(1)
+    findings = res.get("findings", [])
+    console.print(f"[green]{len(findings)} finding(s)[/green]"
+                  + (f" — {res['note']}" if res.get("note") else ""))
+    report = draft_bounty_report(target, findings, program=program)
+    slug = _re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")[:50] or "target"
+    path = Path(out) if out else (
+        Path.home() / ".local" / "share" / "friday" / "bounty" / f"{slug}-{date.today()}.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report)
+    preview = report[:1800] + ("\n\n…(full report saved)" if len(report) > 1800 else "")
+    console.print(Panel(Markdown(preview), title="[bold]Draft bounty report[/bold]",
+                        border_style="cyan", padding=(0, 1)))
+    console.print(f"[bold]Saved:[/bold] {path}  [dim](verify before submitting)[/dim]")
+
+
+@app.command()
 def train(
     dataset_only: bool = typer.Option(
         False, "--dataset-only",

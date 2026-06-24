@@ -111,12 +111,19 @@ def _parse_nuclei(out: str) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
         info = d.get("info") or {}
+        cls = info.get("classification") or {}
         findings.append({
             "id": d.get("template-id") or d.get("templateID") or "?",
             "name": info.get("name") or "?",
             "severity": str(info.get("severity") or "unknown").lower(),
             "matched_at": d.get("matched-at") or d.get("matched") or d.get("host") or "",
             "tags": info.get("tags") or [],
+            # report-grade fields — all real tool output, so a drafted report can't fabricate:
+            "description": info.get("description") or "",
+            "reference": info.get("reference") or [],
+            "cwe": cls.get("cwe-id") or [],
+            "cvss": cls.get("cvss-score"),
+            "curl": d.get("curl-command") or "",  # ready-to-paste reproduction
         })
     findings.sort(key=lambda f: _SEV_ORDER.get(f["severity"], 9))
     return findings
