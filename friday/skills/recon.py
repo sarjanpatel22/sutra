@@ -14,6 +14,7 @@ rest are passive public lookups (auto_confirm=True). Authorized targets only.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import os
 import re
@@ -226,17 +227,52 @@ async def port_scan(host: str, ports: str = "top") -> dict[str, Any]:
     return {"host": host, "scanned": len(targets), "open": open_ports}
 
 
-# Wordlists for cracking, in order of preference. rockyou is the CTF standard; on Kali it often
-# ships gzipped (rockyou.txt.gz), so the uncompressed seclists subset is the practical default.
+# The full rockyou (14M) is the CTF standard — prefer it uncompressed if it exists.
 _CRACK_WORDLISTS = (
     "/usr/share/wordlists/rockyou.txt",
+)
+# Kali ships rockyou GZIPPED, so the full list is present but John can't read it directly. Extract
+# it once into a cache and reuse it — this beats the smaller subsets below, which only have a tiny
+# fraction of the passwords (live-found: the seclists rockyou-75 subset is ~59k vs rockyou's 14M).
+_GZ_WORDLISTS = ("/usr/share/wordlists/rockyou.txt.gz",)
+_WORDLIST_CACHE = Path.home() / ".cache" / "friday" / "rockyou.txt"
+# Fallbacks if the full rockyou is unavailable: the curated subset, then a weak web-dir list.
+_FALLBACK_WORDLISTS = (
     "/usr/share/seclists/Passwords/Leaked-Databases/rockyou-75.txt",
     "/usr/share/wordlists/dirb/common.txt",
 )
 
 
+def _extract_gzipped_wordlist() -> str | None:
+    """Kali ships rockyou as rockyou.txt.gz; John needs it uncompressed. Extract the full list
+    once into the cache (atomic write) and return that path. Best-effort: None if it can't."""
+    if _WORDLIST_CACHE.is_file() and _WORDLIST_CACHE.stat().st_size > 0:
+        return str(_WORDLIST_CACHE)  # already extracted on a prior run
+    for gz in _GZ_WORDLISTS:
+        if not Path(gz).is_file():
+            continue
+        try:
+            _WORDLIST_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _WORDLIST_CACHE.with_suffix(".tmp")
+            with gzip.open(gz, "rt", errors="ignore") as src, open(tmp, "w") as dst:
+                shutil.copyfileobj(src, dst)
+            tmp.replace(_WORDLIST_CACHE)  # atomic — never leaves a half-written cache
+            return str(_WORDLIST_CACHE)
+        except OSError:
+            Path(_WORDLIST_CACHE).with_suffix(".tmp").unlink(missing_ok=True)
+    return None
+
+
 def _default_crack_wordlist() -> str | None:
-    return next((w for w in _CRACK_WORDLISTS if Path(w).is_file()), None)
+    """Best available password wordlist: a real uncompressed list, else the gzipped rockyou
+    extracted to cache (the common Kali case), else a weak last-ditch fallback."""
+    for w in _CRACK_WORDLISTS:
+        if Path(w).is_file():
+            return w
+    extracted = _extract_gzipped_wordlist()
+    if extracted:
+        return extracted
+    return next((w for w in _FALLBACK_WORDLISTS if Path(w).is_file()), None)
 
 
 def _parse_john_show(out: str) -> str | None:

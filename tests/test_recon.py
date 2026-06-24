@@ -163,6 +163,40 @@ async def test_crack_hash_returns_password(monkeypatch, tmp_path):
     assert out["cracked"] is True and out["password"] == "password"
 
 
+def test_default_wordlist_prefers_uncompressed(monkeypatch, tmp_path):
+    real = tmp_path / "rockyou.txt"
+    real.write_text("a\nb\n")
+    monkeypatch.setattr(recon, "_CRACK_WORDLISTS", (str(real),))
+    monkeypatch.setattr(recon, "_GZ_WORDLISTS", ("/nonexistent.gz",))
+    assert recon._default_crack_wordlist() == str(real)  # no extraction when a real list exists
+
+
+def test_default_wordlist_extracts_gzipped_rockyou(monkeypatch, tmp_path):
+    # stock Kali: no uncompressed list, but rockyou.txt.gz is present → extract the full thing
+    import gzip as _gz
+
+    gzp = tmp_path / "rockyou.txt.gz"
+    with _gz.open(gzp, "wt") as f:
+        f.write("password\nletmein\nhunter2\n")
+    cache = tmp_path / "cache" / "rockyou.txt"
+    monkeypatch.setattr(recon, "_CRACK_WORDLISTS", ())
+    monkeypatch.setattr(recon, "_FALLBACK_WORDLISTS", ())
+    monkeypatch.setattr(recon, "_GZ_WORDLISTS", (str(gzp),))
+    monkeypatch.setattr(recon, "_WORDLIST_CACHE", cache)
+
+    assert recon._default_crack_wordlist() == str(cache)
+    assert "hunter2" in cache.read_text()                       # full list extracted, not truncated
+    assert recon._default_crack_wordlist() == str(cache)        # second call reuses the cache
+
+
+def test_default_wordlist_none_when_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(recon, "_CRACK_WORDLISTS", ())
+    monkeypatch.setattr(recon, "_GZ_WORDLISTS", ("/nonexistent.gz",))
+    monkeypatch.setattr(recon, "_FALLBACK_WORDLISTS", ())
+    monkeypatch.setattr(recon, "_WORDLIST_CACHE", tmp_path / "nope.txt")  # isolate from real cache
+    assert recon._default_crack_wordlist() is None
+
+
 async def test_crack_hash_passes_rules_for_tougher_passwords(monkeypatch, tmp_path):
     wl = tmp_path / "wl.txt"
     wl.write_text("raspberry\n")
