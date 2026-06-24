@@ -30,13 +30,17 @@ async def _alive(host, timeout=2.0):
     return f"http://{host}"
 
 
+async def _reachable(url, timeout=3.0):
+    return True
+
+
 async def test_hunt_single_target_scans_one_no_enum(monkeypatch):
     from friday.skills import web_recon
 
     async def fake_nuclei(target, severity="", tags=""):
         return {"findings": [{"id": "x", "name": "X", "severity": "medium", "matched_at": target}]}
 
-    monkeypatch.setattr(H, "_is_live_web", _alive)       # the liveness gate
+    monkeypatch.setattr(H, "_url_reachable", _reachable)  # port-aware liveness gate
     monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
     res = await H.hunt("http://localhost:3000")          # a URL → single target, auto no-enum
     assert res["hosts"] == ["http://localhost:3000"]
@@ -121,7 +125,7 @@ async def test_hunt_high_value_profile_targets_payable_tags(monkeypatch):
         seen["tags"] = tags
         return {"findings": []}
 
-    monkeypatch.setattr(H, "_is_live_web", _alive)
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
     monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
 
     await H.hunt("http://x.com", profile="high-value")               # default goes for money
@@ -159,7 +163,7 @@ async def test_hunt_surfaces_scan_timeout_not_clean(monkeypatch):
     async def timed_out(target, severity="", tags=""):
         return {"findings": [], "note": "scan TIMED OUT — partial", "incomplete": True}
 
-    monkeypatch.setattr(H, "_is_live_web", _alive)
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
     monkeypatch.setattr(web_recon, "nuclei_scan", timed_out)
 
     res = await H.hunt("http://x.com")
@@ -168,9 +172,22 @@ async def test_hunt_surfaces_scan_timeout_not_clean(monkeypatch):
 
 
 async def test_hunt_dead_single_target_fails_fast(monkeypatch):
-    async def dead(host, timeout=2.0):
-        return None
+    async def unreachable(url, timeout=3.0):
+        return False
 
-    monkeypatch.setattr(H, "_is_live_web", dead)
+    monkeypatch.setattr(H, "_url_reachable", unreachable)
     res = await H.hunt("http://192.0.2.1")               # never reachable → must not run a scan
     assert "error" in res and "not reachable" in res["error"]
+
+
+async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
+    # the live-caught bug: a target on :3000 must be probed on :3000, not 80/443
+    seen = {}
+
+    async def fake_open(host, port):
+        seen["port"] = port
+        raise OSError("refused")  # doesn't matter; we only assert the PORT we probed
+
+    monkeypatch.setattr(H.asyncio, "open_connection", fake_open)
+    await H._url_reachable("http://localhost:3000")
+    assert seen["port"] == 3000                          # honored the explicit port, not 80/443

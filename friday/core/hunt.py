@@ -14,6 +14,7 @@ import asyncio
 import re
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlparse
 
 ObserveFn = Callable[[str, dict[str, Any]], None] | None
 
@@ -56,6 +57,27 @@ async def _is_live_web(host: str, timeout: float = 2.0) -> str | None:
             pass
         return f"{scheme}://{host}"
     return None
+
+
+async def _url_reachable(url: str, timeout: float = 3.0) -> bool:
+    """Can we open a TCP connection to the URL's host:port? Honors an EXPLICIT port (e.g. :3000),
+    else the scheme default (443/80) — so a target on a non-standard port isn't wrongly judged
+    'down' (the bug that made `sutra hunt http://host:3000` refuse a live target)."""
+    parsed = urlparse(url if "://" in url else "http://" + url)
+    host = parsed.hostname
+    if not host:
+        return False
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+    return True
 
 
 async def _live_web_hosts(hosts: list[str], max_hosts: int) -> list[str]:
@@ -131,11 +153,12 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     else:
         if not _in_scope(bare, scope_pats, excl_pats):
             return {"error": f"{bare} is outside the declared scope — refusing to scan it"}
-        # liveness gate: don't burn a full scan on a host that isn't even up
-        if await _is_live_web(bare) is None:
+        host_url = target if target.startswith(("http://", "https://")) else "http://" + target
+        # liveness gate: don't burn a full scan on a host that isn't up — honors an explicit port
+        if not await _url_reachable(host_url):
             return {"target": target, "hosts": [], "findings": [], "warnings": [],
-                    "error": f"{bare} is not reachable on 80/443 — nothing to scan"}
-        hosts = [target if target.startswith(("http://", "https://")) else "http://" + target]
+                    "error": f"{bare} is not reachable — nothing to scan"}
+        hosts = [host_url]
     _emit(observe, "hosts", {"live": hosts})
 
     scan_tags = (tags or "").strip() or _PROFILES.get(profile, profile)  # explicit tags win
