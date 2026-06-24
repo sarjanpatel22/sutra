@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import ipaddress
 import json
 import os
 import re
@@ -225,6 +226,84 @@ async def port_scan(host: str, ports: str = "top") -> dict[str, Any]:
     found = await asyncio.gather(*[_probe(p) for p in targets])
     open_ports = [{"port": r[0], "banner": r[1]} for r in found if r]
     return {"host": host, "scanned": len(targets), "open": open_ports}
+
+
+def _local_subnet_24() -> str | None:
+    """This machine's local /24 (e.g. 192.168.2.0/24), from the default-route source IP. No packets
+    are sent — connecting a UDP socket only selects the source address."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+    parts = ip.split(".")
+    return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24" if len(parts) == 4 else None
+
+
+def _hosts_from_cidr(cidr: str) -> list[str]:
+    """Host IPs in a CIDR, capped to a /24 so a sweep can't run away across a huge range."""
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return []
+    if net.num_addresses > 256:
+        return []
+    return [str(h) for h in net.hosts()] or [str(net.network_address)]
+
+
+@skill(
+    name="discover_hosts",
+    description=(
+        "Find live hosts on a local subnet via a fast async TCP-connect sweep on common ports (no "
+        "root, no nmap). subnet = a CIDR like 192.168.1.0/24 (blank = auto-detect this machine's "
+        "/24). Returns reachable hosts + which probed ports answered. Authorized networks only."
+    ),
+    auto_confirm=False,  # active network sweep — gated like port_scan
+    timeout_s=60,
+)
+async def discover_hosts(subnet: str = "",
+                         ports: str = "22,80,443,445,3389,53,8080") -> dict[str, Any]:
+    """Discover live hosts on a subnet — the recon step before port_scan.
+
+    subnet: CIDR (192.168.1.0/24). Blank = auto-detect this host's /24.
+    ports: TCP ports to probe per host; a host answering ANY of them is reported live.
+    """
+    subnet = (subnet or "").strip() or _local_subnet_24() or ""
+    if not subnet:
+        return {"error": "could not determine a subnet — pass one like 192.168.1.0/24"}
+    hosts = _hosts_from_cidr(subnet)
+    if not hosts:
+        return {"error": f"invalid or too-large subnet {subnet!r} (max /24)"}
+    probe_ports = _parse_ports(ports)
+    if not probe_ports:
+        return {"error": f"no valid ports parsed from {ports!r}"}
+    sem = asyncio.Semaphore(256)  # bound total concurrent sockets
+
+    async def _probe(host: str, port: int, found: list[int]) -> None:
+        async with sem:
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout=1.0)
+            except (OSError, TimeoutError):
+                return
+            found.append(port)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    async def _scan_host(host: str) -> dict[str, Any] | None:
+        found: list[int] = []
+        await asyncio.gather(*[_probe(host, p, found) for p in probe_ports])
+        return {"host": host, "ports": sorted(found)} if found else None
+
+    results = await asyncio.gather(*[_scan_host(h) for h in hosts])
+    live = [r for r in results if r]
+    return {"subnet": subnet, "scanned": len(hosts), "live": live}
 
 
 # The full rockyou (14M) is the CTF standard — prefer it uncompressed if it exists.

@@ -137,6 +137,51 @@ def test_recon_skills_registered_with_correct_gating():
         assert registry.get(passive).auto_confirm is True
     assert registry.get("port_scan").auto_confirm is False  # active probe → gated
     assert registry.get("crack_hash").auto_confirm is False  # intensive crack → gated
+    assert registry.get("discover_hosts").auto_confirm is False  # active sweep → gated
+
+
+# --- discover_hosts (hermetic — mocked socket layer) --------------------------------
+
+def test_hosts_from_cidr_enumerates_and_caps():
+    assert recon._hosts_from_cidr("10.0.0.0/30") == ["10.0.0.1", "10.0.0.2"]
+    assert recon._hosts_from_cidr("10.0.0.0/16") == []   # too large → refused (max /24)
+    assert recon._hosts_from_cidr("not-a-cidr") == []
+
+
+async def test_discover_hosts_finds_only_live(monkeypatch):
+    class _W:  # minimal writer
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    async def fake_open(host, port):
+        if host == "10.0.0.5" and port == 80:
+            return object(), _W()
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(recon.asyncio, "open_connection", fake_open)
+    out = await recon.discover_hosts(subnet="10.0.0.4/30", ports="22,80")
+    assert out["subnet"] == "10.0.0.4/30" and out["scanned"] == 2
+    assert out["live"] == [{"host": "10.0.0.5", "ports": [80]}]  # .6 answered nothing → omitted
+
+
+async def test_discover_hosts_auto_detects_subnet(monkeypatch):
+    monkeypatch.setattr(recon, "_local_subnet_24", lambda: "10.9.9.0/24")
+
+    async def fake_open(host, port):
+        raise OSError("refused")
+
+    monkeypatch.setattr(recon.asyncio, "open_connection", fake_open)
+    out = await recon.discover_hosts(ports="22")
+    assert out["subnet"] == "10.9.9.0/24" and out["live"] == []
+
+
+async def test_discover_hosts_rejects_bad_subnet(monkeypatch):
+    monkeypatch.setattr(recon, "_local_subnet_24", lambda: None)
+    assert "error" in await recon.discover_hosts(subnet="10.0.0.0/8")   # too large
+    assert "error" in await recon.discover_hosts(subnet="")             # no subnet detectable
 
 
 # --- crack_hash ---------------------------------------------------------------------
