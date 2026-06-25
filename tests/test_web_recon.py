@@ -54,11 +54,16 @@ async def test_http_headers_no_url():
 
 # --- web_enum -----------------------------------------------------------------------
 
+async def _no_wildcard(url):  # hermetic: skip the real catch-all HTTP probe in tests
+    return None
+
+
 async def test_web_enum_parses_gobuster_output(monkeypatch, tmp_path):
     wl = tmp_path / "wl.txt"
     wl.write_text("admin\nlogin\n")
     monkeypatch.setattr(web_recon.shutil, "which",
                         lambda b: "/usr/bin/gobuster" if b == "gobuster" else None)
+    monkeypatch.setattr(web_recon, "_wildcard_len", _no_wildcard)
 
     async def fake_run(cmd, timeout=20):
         return (0, "/admin (Status: 301) [Size: 312]\n/login (Status: 200) [Size: 1024]\n", "")
@@ -74,6 +79,7 @@ async def test_web_enum_defaults_bare_host_to_http(monkeypatch, tmp_path):
     wl.write_text("a\n")
     seen: dict = {}
     monkeypatch.setattr(web_recon.shutil, "which", lambda b: "/usr/bin/gobuster")
+    monkeypatch.setattr(web_recon, "_wildcard_len", _no_wildcard)
 
     async def fake_run(cmd, timeout=20):
         seen["cmd"] = cmd
@@ -82,6 +88,29 @@ async def test_web_enum_defaults_bare_host_to_http(monkeypatch, tmp_path):
     monkeypatch.setattr(web_recon, "_run", fake_run)
     await web_recon.web_enum("10.10.1.1", wordlist=str(wl))
     assert "http://10.10.1.1" in seen["cmd"]
+
+
+async def test_web_enum_excludes_spa_wildcard_length(monkeypatch, tmp_path):
+    # the live-caught SPA case: every path 200s the app shell → exclude that length so real paths
+    # (a /ftp dir of a different size) still surface instead of gobuster aborting
+    wl = tmp_path / "wl.txt"
+    wl.write_text("ftp\n")
+    seen: dict = {}
+    monkeypatch.setattr(web_recon.shutil, "which", lambda b: "/usr/bin/gobuster")
+
+    async def spa(url):
+        return 9903                                          # catch-all 200 body length
+
+    monkeypatch.setattr(web_recon, "_wildcard_len", spa)
+
+    async def fake_run(cmd, timeout=20):
+        seen["cmd"] = cmd
+        return (0, "/ftp (Status: 200) [Size: 512]\n", "")
+
+    monkeypatch.setattr(web_recon, "_run", fake_run)
+    out = await web_recon.web_enum("http://spa", wordlist=str(wl))
+    assert "--exclude-length" in seen["cmd"] and "9903" in seen["cmd"]    # shell length filtered
+    assert out["found"][0]["path"] == "/ftp"                             # the real path surfaces
 
 
 async def test_web_enum_no_tool_installed(monkeypatch, tmp_path):

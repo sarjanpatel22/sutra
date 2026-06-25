@@ -1131,6 +1131,9 @@ def hunt(
     scope: str = typer.Option("", "--scope",
                               help="in-scope domain patterns (e.g. '*.api.x.com'); default target"),
     exclude: str = typer.Option("", "--exclude", help="out-of-scope domain patterns (deny-list)"),
+    content: bool = typer.Option(False, "--content/--no-content",
+                                 help="also brute-force hidden paths/files (slower; finds exposed "
+                                      "backups/.git/panels nuclei misses)"),
     out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
 ) -> None:
     """One-command bug-bounty hunt: enumerate the assets -> probe which are live -> nuclei-scan
@@ -1151,13 +1154,17 @@ def hunt(
             console.print(f"  [cyan]{len(data['live'])} live host(s) to scan[/cyan]")
         elif kind == "scan":
             console.print(f"  [dim]scanning {data['host']}…[/dim]")
+        elif kind == "content":
+            console.print(f"  [dim]content discovery on {data['host']}…[/dim]")
+        elif kind == "content_found" and data.get("found"):
+            console.print(f"  [green]{data['found']} sensitive path(s) on {data['host']}[/green]")
         elif kind == "scanned" and data.get("found"):
             console.print(f"  [green]{data['found']} finding(s) on {data['host']}[/green]")
 
     console.print(f"[cyan]Hunting {target}…[/cyan]  (authorized programs only)")
     res = asyncio.run(run_hunt(target, enum=enum, max_hosts=max_hosts, severity=severity,
                                tags=tags, profile=profile, scope=scope, exclude=exclude,
-                               observe=_obs))
+                               content=content, observe=_obs))
     if res.get("error"):
         console.print(f"[red]{res['error']}[/red]")
         raise typer.Exit(1)

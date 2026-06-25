@@ -110,11 +110,50 @@ _PROFILES = {
     "all": "",
 }
 
+# Sensitive paths that, if reachable, are real bounty material — content discovery (gobuster)
+# surfaces the app-specific ones nuclei's generic templates never check. Tier the signal so the
+# report triages honestly: HOT = secrets/backups/VCS (medium); WARM = panels/config/logs (low).
+_HOT_PATH = re.compile(
+    r"\.git|\.env|\.sql|\.bak|\.backup|backup|\.tar|\.zip|\.dump|id_rsa|\.htpasswd|"
+    r"credential|secret|\.pem|\.key", re.I)
+_WARM_PATH = re.compile(
+    r"admin|/config|phpinfo|\.log|swagger|actuator|\.htaccess|console|/debug|/ftp", re.I)
+
+
+async def _content_findings(host: str) -> tuple[list[dict[str, Any]], str | None]:
+    """Content-brute a host → turn DISCOVERED sensitive paths into findings-to-verify. The
+    app-specific coverage nuclei's templates miss (a forgotten /backup.zip, exposed /.git, a /ftp
+    dir). Returns (findings, optional-warning)."""
+    from friday.skills.web_recon import web_enum
+    res = await web_enum(host)
+    if res.get("error"):
+        return [], f"content discovery skipped on {host}: {res['error']}"
+    out: list[dict[str, Any]] = []
+    for hit in res.get("found", []):
+        path, status = hit.get("path", ""), hit.get("status")
+        if status not in (200, 301, 302, 403):
+            continue
+        hot = bool(_HOT_PATH.search(path))
+        if not (hot or _WARM_PATH.search(path)):
+            continue
+        url = host.rstrip("/") + path
+        out.append({
+            "id": f"content{path.rstrip('/').replace('/', '-') or '-root'}",
+            "name": f"Discovered sensitive path {path} (HTTP {status})",
+            "severity": "medium" if hot else "low",
+            "matched_at": url,
+            "description": "Surfaced by content discovery (gobuster), not a templated check — an "
+                           "app-specific path nuclei may not cover. VERIFY it actually exposes "
+                           "sensitive data or functionality before reporting.",
+            "curl": f"curl -i '{url}'",
+        })
+    return out, None
+
 
 async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
                severity: str = "low,medium,high,critical", tags: str = "",
                profile: str = "high-value", scope: str = "", exclude: str = "",
-               observe: ObserveFn = None) -> dict[str, Any]:
+               content: bool = False, observe: ObserveFn = None) -> dict[str, Any]:
     """Run a whole-program hunt and draft ONE combined report.
 
     target: a bare domain (auto-enumerated) or a URL/host (scanned directly).
@@ -123,6 +162,9 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         (everything), or a literal nuclei tag list. An explicit `tags=` always overrides it.
     scope: comma/space allow-list of in-scope domain patterns (default: the target apex only, so a
         hunt never wanders off the program). exclude: deny-list that always wins.
+    content: opt-in deeper pass — brute-force each host for hidden paths/files (gobuster) and add
+        discovered SENSITIVE ones (a forgotten /backup.zip, /.git) as findings nuclei misses.
+        Slower and active; off by default so the standard hunt stays fast.
     Returns {target, hosts, findings, report}.
     """
     from friday.core.bounty import draft_bounty_report
@@ -172,6 +214,15 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
             findings.append(f)
         if res.get("incomplete"):  # timeout/no-templates — even WITH partial findings, flag it
             warnings.append(f"{h}: {res.get('note', 'scan incomplete')}")
+        if content:  # opt-in: surface app-specific exposed paths nuclei's templates don't check
+            _emit(observe, "content", {"host": h})
+            cfinds, cwarn = await _content_findings(h)
+            for f in cfinds:
+                f["host"] = h
+                findings.append(f)
+            if cwarn:
+                warnings.append(cwarn)
+            _emit(observe, "content_found", {"host": h, "found": len(cfinds)})
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
     return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,

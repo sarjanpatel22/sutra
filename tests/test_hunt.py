@@ -180,6 +180,51 @@ async def test_hunt_dead_single_target_fails_fast(monkeypatch):
     assert "error" in res and "not reachable" in res["error"]
 
 
+async def test_hunt_content_discovery_surfaces_sensitive_paths(monkeypatch):
+    from friday.skills import web_recon
+
+    async def fake_nuclei(target, severity="", tags=""):
+        return {"findings": []}
+
+    async def fake_enum(url, mode="dirs", wordlist=""):
+        return {"found": [
+            {"path": "/.git/config", "status": 200, "size": 92},   # HOT (VCS) → medium
+            {"path": "/admin", "status": 200, "size": 500},        # WARM (panel) → low
+            {"path": "/about", "status": 200, "size": 1200},       # benign → ignored
+        ]}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(web_recon, "web_enum", fake_enum)
+
+    res = await H.hunt("http://x.com", content=True)
+    git = next(f for f in res["findings"] if ".git" in f["matched_at"])
+    assert git["severity"] == "medium"                                   # HOT path = submit-worthy
+    admin = next(f for f in res["findings"] if "/admin" in f["matched_at"])
+    assert admin["severity"] == "low"                                    # WARM = low
+    assert not any("/about" in f["matched_at"] for f in res["findings"])  # benign path excluded
+
+    res2 = await H.hunt("http://x.com")                                  # content OFF by default
+    assert res2["findings"] == []                                        # no brute-force, no noise
+
+
+async def test_hunt_content_discovery_graceful_without_wordlist(monkeypatch):
+    from friday.skills import web_recon
+
+    async def fake_nuclei(target, severity="", tags=""):
+        return {"findings": []}
+
+    async def no_wordlist(url, mode="dirs", wordlist=""):
+        return {"error": "no wordlist found — install seclists/dirb"}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(web_recon, "web_enum", no_wordlist)
+
+    res = await H.hunt("http://x.com", content=True)                     # must not crash
+    assert any("content discovery skipped" in w for w in res["warnings"])
+
+
 async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
     # the live-caught bug: a target on :3000 must be probed on :3000, not 80/443
     seen = {}

@@ -40,6 +40,22 @@ def _default_wordlist() -> str | None:
     return next((w for w in _WORDLISTS if Path(w).is_file()), None)
 
 
+async def _wildcard_len(url: str) -> int | None:
+    """Probe a random path: if a SPA/catch-all answers 200 (every route returns the app shell),
+    return its body length so brute-force can EXCLUDE that length — otherwise every word is a false
+    200 and gobuster aborts. Returns None when a missing path 404s normally (no catch-all)."""
+    probe = url.rstrip("/") + "/zz" + os.urandom(6).hex()
+
+    def _get() -> int | None:
+        try:
+            with urllib.request.urlopen(probe, timeout=8) as r:  # noqa: S310
+                return len(r.read()) if r.status == 200 else None
+        except (urllib.error.HTTPError, OSError):
+            return None
+
+    return await asyncio.to_thread(_get)
+
+
 @skill(
     name="web_enum",
     description=(
@@ -72,9 +88,12 @@ async def web_enum(url: str, mode: str = "dirs", wordlist: str = "") -> dict[str
     gobuster = shutil.which("gobuster")
     if gobuster:
         sub = "dir" if mode == "dirs" else "vhost"
-        rc, out, err = await _run(
-            [gobuster, sub, "-u", url, "-w", wl, "-q", "--no-error", "-t", "40"], timeout=115
-        )
+        cmd = [gobuster, sub, "-u", url, "-w", wl, "-q", "--no-error", "-t", "40"]
+        if mode == "dirs" and (wlen := await _wildcard_len(url)) is not None:
+            # SPA / catch-all: exclude the index-shell length so real paths still surface (else
+            # every word 200s and gobuster aborts — the exact failure seen against Juice Shop)
+            cmd += ["--exclude-length", str(wlen)]
+        rc, out, err = await _run(cmd, timeout=115)
         if rc != 0 and not out:
             return {"error": f"gobuster failed: {err.strip()[:200]}", "url": url}
         found = [
