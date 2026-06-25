@@ -90,3 +90,33 @@ def render_plan(suggestions: list[dict[str, str]]) -> str:
     lines += ["", "**On every live host:**"]
     lines += [f"- _{cls}_: {test}" for cls, test in _ALWAYS]
     return "\n".join(lines)
+
+
+def guided_plan(url: str) -> str:
+    """A BEGINNER walkthrough for testing one target, in order, plain English. Maps the surface to
+    the right bug classes (deterministic) and tells you exactly what to do + where to learn each —
+    so a non-expert can actually start. The skill comes from doing this on practice targets; this
+    is the hand-holding. `(bb_*)` = a knowledge doc → `sutra rag ask "..."` for the full how-to."""
+    out = [f"# Beginner walkthrough — testing {url}", "",
+           "_Authorized targets only, your own accounts, in scope. Do these BY HAND, in order. "
+           'Stuck on any step? Ask Sutra: `sutra rag ask "<your question>" -c bugbounty`._', "",
+           "## Step 0 — set up (do this once)",
+           "- Make **two accounts** you control (call them A and B) — your superpower for the #1 "
+           "bug class (access control).",
+           "- Browse the site through a **proxy** (Burp Suite or OWASP ZAP, both free) so you can "
+           "SEE every request and **replay** it with changes. This is how you actually test.", ""]
+    n, seen = 1, set()
+    for s in suggest_tests([], [url]):
+        if s["cls"] in seen:
+            continue
+        seen.add(s["cls"])
+        out += [f"## Step {n} — {s['cls']}", f"- **Where:** `{s['surface']}`",
+                f"- **What to try:** {s['test']}", ""]
+        n += 1
+    out += [f"## Step {n} — always do these (on any target)"]
+    out += [f"- **{cls}:** {test}" for cls, test in _ALWAYS]
+    out += ["", "---",
+            "**You don't know a bug class yet?** That's fine — read its doc and practice it on a "
+            "SAFE target first (OWASP Juice Shop, or PortSwigger's free Web Security Academy). "
+            'Then have Sutra check you: `sutra rag ask "explain IDOR like I am new"`.']
+    return "\n".join(out)

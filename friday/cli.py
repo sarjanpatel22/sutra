@@ -1327,6 +1327,21 @@ def learn() -> None:
     console.print(Panel(msg, title="[bold green]Sutra learn[/bold green]", border_style="green"))
 
 
+@app.command()
+def coach(
+    url: str = typer.Argument(..., help="a target URL/endpoint to get a guided test plan for"),
+) -> None:
+    """Beginner walkthrough: point it at a target and Sutra tells you — step by step, in plain
+    English — what to test, how, and where to learn each piece. It maps the surface to the right
+    bug classes; YOU do the manual testing (that's the skill, and it's learnable). New to a class?
+    Practice it on a safe target (Juice Shop / PortSwigger Academy) first.
+    """
+    from rich.markdown import Markdown
+
+    from friday.core.coach import guided_plan
+    console.print(Markdown(guided_plan(url)))
+
+
 def _render_learning(snap: Any) -> Any:
     """Build the Rich view of what Sutra is learning / has learned from a LearningSnapshot."""
     from rich.console import Group

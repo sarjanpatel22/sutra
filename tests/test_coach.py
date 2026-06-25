@@ -39,3 +39,12 @@ def test_report_appends_coach_plan():
 def test_report_coaches_even_with_zero_findings():
     r = bounty.draft_bounty_report("x.com", [], surfaces=["http://x.com/admin"])
     assert "No findings to report" in r and "Manual tests to try next" in r
+
+
+def test_guided_plan_is_beginner_ordered_walkthrough():
+    p = coach.guided_plan("https://x.com/api/users/1042")
+    assert "Beginner walkthrough" in p
+    assert "two accounts" in p.lower() and "proxy" in p.lower()       # Step 0 setup for a newcomer
+    assert "Access control" in p                                      # /api → the right class
+    assert "Juice Shop" in p or "PortSwigger" in p                    # points at safe practice
+
