@@ -1162,6 +1162,9 @@ def hunt(
             console.print(f"  [dim]content discovery on {data['host']}…[/dim]")
         elif kind == "content_found" and data.get("found"):
             console.print(f"  [green]{data['found']} sensitive path(s) on {data['host']}[/green]")
+        elif kind == "crawled" and data.get("found"):
+            console.print(f"  [cyan]{data['found']} URL(s)/endpoints mapped on {data['host']}"
+                          f"[/cyan]")
         elif kind == "active":
             console.print(f"  [dim]active DAST testing on {data['host']}…[/dim]")
         elif kind == "active_found" and data.get("found"):

@@ -213,6 +213,21 @@ async def test_nuclei_scan_no_findings_flags_templates(monkeypatch):
     assert r["count"] == 0 and "update-templates" in r["note"]
 
 
+def test_js_path_regex_extracts_api_endpoints():
+    sample = ('fetch("/rest/products/search");this.get("api/Cards");'
+              'x="/assets/main.css";call("/api/SecurityAnswers/1")')
+    hits = [m.group(1) for m in web_recon._JS_PATH.finditer(sample)]
+    assert any("rest/products/search" in h for h in hits)     # API path pulled out of the JS
+    assert any("api/Cards" in h for h in hits)
+    assert not any("assets" in h for h in hits)               # non-API asset path ignored
+
+
+async def test_crawl_graceful_without_hakrawler(monkeypatch):
+    monkeypatch.setattr(web_recon.shutil, "which", lambda b: None)
+    r = await web_recon.crawl("http://x")
+    assert "error" in r and "hakrawler" in r["error"]
+
+
 def test_web_recon_gating():
     from friday.skills import registry
 
@@ -220,3 +235,4 @@ def test_web_recon_gating():
     assert registry.get("web_enum").auto_confirm is False    # active brute → gated
     assert registry.get("http_headers").auto_confirm is True  # passive GET → auto
     assert registry.get("nuclei_scan").auto_confirm is False  # active vuln scan → gated
+    assert registry.get("crawl").auto_confirm is False        # active crawl → gated

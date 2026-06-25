@@ -245,6 +245,24 @@ async def test_hunt_active_runs_a_dast_pass(monkeypatch):
     assert any(f.get("active") for f in res["findings"])   # active finding is tagged as such
 
 
+async def test_hunt_active_crawls_and_feeds_coach(monkeypatch):
+    from friday.skills import web_recon
+
+    async def fake_nuclei(target, severity="", tags="", active=False):
+        return {"findings": []}
+
+    async def fake_crawl(url, depth=2):
+        return {"count": 2, "urls": ["http://x.com/api/Cards", "http://x.com/rest/admin"]}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(web_recon, "crawl", fake_crawl)
+
+    res = await H.hunt("http://x.com", active=True)
+    assert "http://x.com/api/Cards" in res["crawled"]       # crawled the real surface
+    assert "/api/Cards" in res["report"]                    # coach worklist covers the endpoint
+
+
 async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
     # the live-caught bug: a target on :3000 must be probed on :3000, not 80/443
     seen = {}

@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 from friday.skills.recon import _run  # shared subprocess helper (returncode, stdout, stderr)
 from friday.skills.registry import skill
@@ -224,6 +225,76 @@ async def nuclei_scan(target: str, severity: str = "low,medium,high,critical",
         else:
             result["note"] = "no findings at this severity (try lower severity or specific tags)"
     return result
+
+
+# API paths hidden inside JS bundles — the real surface on a SPA where the HTML has almost no
+# links. Match quoted absolute-ish paths that look like endpoints (/rest/.., api/.., etc.).
+_JS_PATH = re.compile(
+    r"""["'`](/?(?:rest|api|graphql|socket\.io|v\d|admin|account|users?|products?|orders?|"""
+    r"""search|login|auth|upload|file|download|metrics|config|internal)/[\w./{}:-]{1,80})["'`]""",
+    re.I)
+
+
+async def _js_endpoints(js_urls: list[str], base: str) -> list[str]:
+    """Fetch the JS bundles and pull out the API endpoint paths they reference — joined to full URLs
+    against the base. Bounded (a few files) and best-effort (skips anything that won't load)."""
+    found: set[str] = set()
+    for ju in js_urls[:8]:
+        def _fetch(u: str = ju) -> str:
+            try:
+                with urllib.request.urlopen(u, timeout=8) as r:  # noqa: S310
+                    return r.read(3_000_000).decode("utf-8", "replace")
+            except (urllib.error.URLError, OSError):
+                return ""
+
+        body = await asyncio.to_thread(_fetch)
+        for m in _JS_PATH.finditer(body):
+            found.add(urljoin(base, m.group(1)))
+    return sorted(found)
+
+
+@skill(
+    name="crawl",
+    description=(
+        "Crawl a web target to discover its URLs and parameter'd endpoints — the real attack "
+        "surface, and the AMMO for active DAST testing (every ?param= is a place to test for "
+        "SSRF/SQLi/injection). Wraps hakrawler (follows links + parses JavaScript). Returns the "
+        "discovered URLs, splitting out the ones with parameters. Active crawl — AUTHORIZED only."
+    ),
+    auto_confirm=False,  # active crawl (real requests) — gated like web_enum
+    timeout_s=120,
+)
+async def crawl(url: str, depth: int = 2) -> dict[str, Any]:
+    """Crawl a target and return its discovered URLs, with the parameter'd ones split out. Also
+    reads the JavaScript bundles for API endpoints (the real surface on a SPA).
+
+    url: base URL/host (http(s)://host[:port]); a bare host defaults to http://.
+    depth: crawl recursion depth (default 2).
+    """
+    url = (url or "").strip()
+    if not url:
+        return {"error": "no url to crawl"}
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    hak = shutil.which("hakrawler")
+    if not hak:
+        return {"error": "'hakrawler' is not installed"}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            hak, "-d", str(depth), stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, _ = await asyncio.wait_for(
+            proc.communicate(input=(url + "\n").encode()), timeout=110)
+    except (OSError, TimeoutError) as e:
+        return {"error": f"crawl failed: {str(e)[:120]}", "url": url}
+    urls = sorted({ln.strip() for ln in out.decode("utf-8", "replace").splitlines()
+                   if ln.strip().startswith(("http://", "https://"))})
+    js = [u for u in urls if u.lower().split("?")[0].endswith(".js")]
+    endpoints = await _js_endpoints(js, url) if js else []  # API paths hidden inside the JS (SPAs)
+    allurls = sorted(set(urls) | set(endpoints))
+    params = [u for u in allurls if "?" in u and "=" in u]  # the DAST ammo
+    return {"url": url, "tool": "hakrawler", "count": len(allurls), "urls": allurls[:200],
+            "endpoints": endpoints[:100], "with_params": params[:100]}
 
 
 _SECURITY_HEADERS = (

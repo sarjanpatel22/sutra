@@ -173,11 +173,12 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     """
     from friday.core.bounty import draft_bounty_report
     from friday.skills.recon import find_subdomains
-    from friday.skills.web_recon import nuclei_scan
+    from friday.skills.web_recon import crawl, nuclei_scan
 
     target = (target or "").strip()
     if not target:
         return {"error": "no target to hunt"}
+    crawled: list[str] = []  # API endpoints pulled from each host (feed the coach the real surface)
     bare = target.split("://")[-1].split("/")[0].split(":")[0].lower()
     scope_pats = _split(scope) or [bare]  # default: stay on the target's own domain
     excl_pats = _split(exclude)
@@ -228,6 +229,10 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
                 warnings.append(cwarn)
             _emit(observe, "content_found", {"host": h, "found": len(cfinds)})
         if active:  # opt-in DAST: actively fuzz params for SSRF/injection (the payable classes)
+            _emit(observe, "crawl", {"host": h})
+            cr = await crawl(h)  # find the real surface (API endpoints hidden in the JS)
+            crawled += cr.get("urls", [])
+            _emit(observe, "crawled", {"host": h, "found": cr.get("count", 0)})
             _emit(observe, "active", {"host": h})
             ares = await nuclei_scan(h, severity=severity, active=True)
             afinds = ares.get("findings", [])
@@ -241,4 +246,6 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
     return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,
-            "report": draft_bounty_report(target, findings, warnings=warnings, surfaces=hosts)}
+            "crawled": crawled,
+            "report": draft_bounty_report(target, findings, warnings=warnings,
+                                          surfaces=hosts + crawled)}
