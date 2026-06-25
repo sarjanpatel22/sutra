@@ -226,4 +226,4 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
     return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,
-            "report": draft_bounty_report(target, findings, warnings=warnings)}
+            "report": draft_bounty_report(target, findings, warnings=warnings, surfaces=hosts)}

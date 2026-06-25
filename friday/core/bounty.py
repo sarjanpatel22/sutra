@@ -72,11 +72,13 @@ def _dedup(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program: str = "",
-                        warnings: list[str] | None = None) -> str:
+                        warnings: list[str] | None = None,
+                        surfaces: list[str] | None = None) -> str:
     """Assemble real findings into a submittable, TRIAGED markdown report — deduped across hosts,
     submit-worthy (medium+) findings first, informational noise condensed below. Pure formatting of
     the tool's real output — no invented facts. `warnings` (incomplete scans, failed enum) are
-    surfaced up top so '0 findings' is never mistaken for 'clean'."""
+    surfaced up top so '0 findings' is never mistaken for 'clean'. `surfaces` (the live hosts) feed
+    the coach — a deterministic manual-test plan appended at the end (the scanner-blind moves)."""
     deduped = sorted(_dedup(findings or []),
                      key=lambda f: _SEV_ORDER.get((f.get("severity") or "unknown").lower(), 9))
     priority = [f for f in deduped if (f.get("severity") or "").lower() in _PRIORITY]
@@ -96,8 +98,13 @@ def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program:
     if warnings:
         head += ["> ⚠️ **Scan was INCOMPLETE — '0 findings' here does NOT mean 'clean'. Re-run "
                  "before trusting it:**", "", *[f"> - {w}" for w in warnings], ""]
+    # the coach: a deterministic manual-test plan from the real surfaces (scanner-blind moves)
+    plan = ""
+    if deduped or surfaces:
+        from friday.core.coach import render_plan, suggest_tests
+        plan = "\n\n" + render_plan(suggest_tests(deduped, surfaces))
     if not deduped:
-        return "\n".join(head + ["_No findings to report._"])
+        return "\n".join(head + ["_No findings to report._"]) + plan
     body: list[str] = []
     if priority:
         body += ["## Submit-worthy findings (triage these first)", ""]
@@ -111,4 +118,4 @@ def draft_bounty_report(target: str, findings: list[dict[str, Any]], *, program:
             body.append(f"- **[{(f.get('severity') or '?').upper()}]** "
                         f"{f.get('name') or f.get('id')}{host_note} — `{f.get('id', '')}`")
         body.append("")
-    return "\n".join(head + ["---", ""] + body)
+    return "\n".join(head + ["---", ""] + body) + plan

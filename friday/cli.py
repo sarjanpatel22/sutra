@@ -1105,7 +1105,7 @@ def bounty(
     findings = res.get("findings", [])
     console.print(f"[green]{len(findings)} finding(s)[/green]"
                   + (f" — {res['note']}" if res.get("note") else ""))
-    report = draft_bounty_report(target, findings, program=program)
+    report = draft_bounty_report(target, findings, program=program, surfaces=[target])
     slug = _re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")[:50] or "target"
     path = Path(out) if out else (
         Path.home() / ".local" / "share" / "friday" / "bounty" / f"{slug}-{date.today()}.md")
