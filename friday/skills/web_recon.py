@@ -158,18 +158,23 @@ def _parse_nuclei(out: str) -> list[dict[str, Any]]:
         "findings (template id, name, severity, the exact matched URL) as structured data, so they "
         "can be triaged and reported without guessing. severity = comma list to include "
         "(info,low,medium,high,critical; default skips info noise); tags = restrict templates "
-        "(e.g. cve,exposure,misconfiguration,takeover). Active scan — AUTHORIZED targets only."
+        "(e.g. cve,exposure,misconfiguration,takeover). active=True runs nuclei's DAST/fuzzing "
+        "engine instead — ACTIVELY testing parameters for SSRF/SQLi/injection with out-of-band "
+        "proof (interactsh), the payable classes a passive scan misses. Active scan — AUTHORIZED."
     ),
     auto_confirm=False,  # active vulnerability scan — gated like web_enum / port_scan
     timeout_s=300,
 )
 async def nuclei_scan(target: str, severity: str = "low,medium,high,critical",
-                      tags: str = "") -> dict[str, Any]:
+                      tags: str = "", active: bool = False) -> dict[str, Any]:
     """Scan a target for known vulnerabilities with nuclei.
 
     target: URL or host (http(s)://host[:port]); a bare host defaults to http://.
     severity: comma list to include (info,low,medium,high,critical). Default skips info noise.
     tags: optional comma list to restrict the template set (e.g. 'cve,exposure,takeover').
+    active: run the DAST/fuzzing engine (-dast) — actively probe params for SSRF/SQLi/injection
+        with out-of-band callback proof. Smarter (not brute-force) but more intrusive; feed it
+        URLs WITH parameters for the real payoff. Findings still need human verification.
     """
     target = (target or "").strip()
     if not target:
@@ -186,9 +191,11 @@ async def nuclei_scan(target: str, severity: str = "low,medium,high,critical",
     os.close(fd)
     cmd = [nuclei, "-u", target, "-jsonl", "-o", outfile, "-silent", "-disable-update-check",
            "-no-color", "-rate-limit", "60", "-timeout", "8"]
+    if active:  # DAST/fuzzing: actively test params for SSRF/SQLi/injection (OOB-proof, not brute)
+        cmd.append("-dast")
     if (sev := (severity or "").strip()):
         cmd += ["-severity", sev]
-    if (tg := (tags or "").strip()):
+    if (tg := (tags or "").strip()) and not active:  # profile tags are for passive templates
         cmd += ["-tags", tg]
     try:
         rc, out, err = await _run(cmd, timeout=285)

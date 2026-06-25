@@ -1134,6 +1134,10 @@ def hunt(
     content: bool = typer.Option(False, "--content/--no-content",
                                  help="also brute-force hidden paths/files (slower; finds exposed "
                                       "backups/.git/panels nuclei misses)"),
+    active: bool = typer.Option(False, "--active/--no-active",
+                                help="DAST: actively probe params for SSRF/SQLi/injection (smarter "
+                                     "than brute-force, more intrusive — only if the program "
+                                     "ALLOWS active testing)"),
     out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
 ) -> None:
     """One-command bug-bounty hunt: enumerate the assets -> probe which are live -> nuclei-scan
@@ -1158,13 +1162,17 @@ def hunt(
             console.print(f"  [dim]content discovery on {data['host']}…[/dim]")
         elif kind == "content_found" and data.get("found"):
             console.print(f"  [green]{data['found']} sensitive path(s) on {data['host']}[/green]")
+        elif kind == "active":
+            console.print(f"  [dim]active DAST testing on {data['host']}…[/dim]")
+        elif kind == "active_found" and data.get("found"):
+            console.print(f"  [magenta]{data['found']} active DAST finding(s)[/magenta]")
         elif kind == "scanned" and data.get("found"):
             console.print(f"  [green]{data['found']} finding(s) on {data['host']}[/green]")
 
     console.print(f"[cyan]Hunting {target}…[/cyan]  (authorized programs only)")
     res = asyncio.run(run_hunt(target, enum=enum, max_hosts=max_hosts, severity=severity,
                                tags=tags, profile=profile, scope=scope, exclude=exclude,
-                               content=content, observe=_obs))
+                               content=content, active=active, observe=_obs))
     if res.get("error"):
         console.print(f"[red]{res['error']}[/red]")
         raise typer.Exit(1)

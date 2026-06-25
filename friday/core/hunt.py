@@ -153,7 +153,8 @@ async def _content_findings(host: str) -> tuple[list[dict[str, Any]], str | None
 async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
                severity: str = "low,medium,high,critical", tags: str = "",
                profile: str = "high-value", scope: str = "", exclude: str = "",
-               content: bool = False, observe: ObserveFn = None) -> dict[str, Any]:
+               content: bool = False, active: bool = False,
+               observe: ObserveFn = None) -> dict[str, Any]:
     """Run a whole-program hunt and draft ONE combined report.
 
     target: a bare domain (auto-enumerated) or a URL/host (scanned directly).
@@ -165,6 +166,9 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     content: opt-in deeper pass — brute-force each host for hidden paths/files (gobuster) and add
         discovered SENSITIVE ones (a forgotten /backup.zip, /.git) as findings nuclei misses.
         Slower and active; off by default so the standard hunt stays fast.
+    active: opt-in DAST pass — nuclei's fuzzing engine actively probes parameters for SSRF/SQLi/
+        injection with out-of-band proof (the payable classes, not brute-force). More intrusive;
+        confirm the program ALLOWS active testing first.
     Returns {target, hosts, findings, report}.
     """
     from friday.core.bounty import draft_bounty_report
@@ -223,6 +227,17 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
             if cwarn:
                 warnings.append(cwarn)
             _emit(observe, "content_found", {"host": h, "found": len(cfinds)})
+        if active:  # opt-in DAST: actively fuzz params for SSRF/injection (the payable classes)
+            _emit(observe, "active", {"host": h})
+            ares = await nuclei_scan(h, severity=severity, active=True)
+            afinds = ares.get("findings", [])
+            for f in afinds:
+                f["host"] = h
+                f["active"] = True
+                findings.append(f)
+            if ares.get("incomplete"):
+                warnings.append(f"{h} (active): {ares.get('note', 'scan incomplete')}")
+            _emit(observe, "active_found", {"host": h, "found": len(afinds)})
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
     return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,

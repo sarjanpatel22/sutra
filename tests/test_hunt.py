@@ -225,6 +225,26 @@ async def test_hunt_content_discovery_graceful_without_wordlist(monkeypatch):
     assert any("content discovery skipped" in w for w in res["warnings"])
 
 
+async def test_hunt_active_runs_a_dast_pass(monkeypatch):
+    from friday.skills import web_recon
+
+    calls = []
+
+    async def fake_nuclei(target, severity="", tags="", active=False):
+        calls.append(active)
+        if active:
+            return {"findings": [{"id": "ssrf", "name": "SSRF", "severity": "high",
+                                  "matched_at": target}]}
+        return {"findings": []}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+
+    res = await H.hunt("http://x.com", active=True)
+    assert True in calls                                   # a DAST pass actually ran
+    assert any(f.get("active") for f in res["findings"])   # active finding is tagged as such
+
+
 async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
     # the live-caught bug: a target on :3000 must be probed on :3000, not 80/443
     seen = {}

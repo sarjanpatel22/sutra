@@ -180,6 +180,22 @@ async def test_nuclei_scan_recovers_partial_findings_on_timeout(monkeypatch):
     assert r["incomplete"] is True and "TIMED OUT" in r["note"]            # but flagged as partial
 
 
+async def test_nuclei_scan_active_runs_dast(monkeypatch):
+    # active=True flips nuclei into DAST/fuzzing mode (SSRF/injection), and drops the passive
+    # profile tags (they don't apply to the fuzzing template set)
+    monkeypatch.setattr(web_recon.shutil, "which", lambda b: "/usr/bin/nuclei")
+    seen: dict = {}
+
+    async def fake_run(cmd, timeout=20):
+        seen["cmd"] = cmd
+        return (0, "", "")
+
+    monkeypatch.setattr(web_recon, "_run", fake_run)
+    await web_recon.nuclei_scan("http://t/page?id=1", tags="exposure", active=True)
+    assert "-dast" in seen["cmd"]                          # active testing engine on
+    assert "-tags" not in seen["cmd"]                      # passive profile tags dropped
+
+
 async def test_nuclei_scan_missing_binary(monkeypatch):
     monkeypatch.setattr(web_recon.shutil, "which", lambda b: None)
     r = await web_recon.nuclei_scan("http://t")
