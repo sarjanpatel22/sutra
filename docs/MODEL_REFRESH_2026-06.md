@@ -240,3 +240,25 @@ verified active (incl. `llama-4-scout`, tested live 2026-06-15) and is the corre
 $0/local-first pick on Sutra's actual skill registry. (`llama-4-maverick` is
 decommissioned, but it isn't referenced anywhere in the code.) The lasting win from
 this pass is the RAG re-ingest (151 chunks) and the benchmark baselines above.
+
+---
+
+## Update 2026-06-24 — Groq deprecates `llama-4-scout` (its LAST vision model)
+
+Groq emailed: **Llama 4 Scout 17B is deprecated, decommissioned 2026-07-17** (free/dev
+tier). Recommended text replacements: `openai/gpt-oss-120b` / `qwen/qwen3.6-27b`. A live
+`GET /v1/models` confirmed **Scout is Groq's only vision-capable model** — every other Groq
+model is text-only. So Groq is exiting vision entirely.
+
+**Migration shipped:**
+- **Text tier** (`router.py` MEDIUM): dropped the dead `groq/meta-llama/llama-4-scout-17b`;
+  `groq/openai/gpt-oss-120b` and `groq/qwen/qwen3.6-27b` were already in rotation (a free
+  capability *upgrade* — 120B/27B » 17B).
+- **Vision** (`constants.py`): repointed to **`gemini/gemini-2.5-flash`** (free tier, already
+  wired into the router, `GEMINI_API_KEY` present). Verified live — reads text off an image.
+  Constant renamed `VISION_MODEL` with `GROQ_VISION_MODEL` kept as a legacy alias (so the 5
+  vision call sites + `test_constants.py` are untouched). `$0` local fallback available:
+  `ollama_chat/gemma3:4b` is multimodal.
+- Note: Gemini 2.5-flash has a thinking phase; it returns content fine at the call sites' real
+  `max_tokens` (120–300, verified). `reasoning_effort="disable"` is available if we want it
+  faster.

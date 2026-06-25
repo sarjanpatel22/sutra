@@ -82,8 +82,7 @@ TIER_MODELS: dict[Tier, list[str]] = {
         "groq/qwen/qwen3-32b",
         "groq/qwen/qwen3.6-27b",
         "groq/llama-3.3-70b-versatile",
-        "groq/openai/gpt-oss-120b",
-        "groq/meta-llama/llama-4-scout-17b-16e-instruct",
+        "groq/openai/gpt-oss-120b",  # Groq's recommended replacement for the retired llama-4-scout
         "gemini/gemini-2.5-flash",
         "groq/llama-3.1-8b-instant",
         "groq/openai/gpt-oss-20b",
