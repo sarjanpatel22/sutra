@@ -1303,6 +1303,27 @@ def study(
     console.print(Panel(body, title="[bold green]Sutra study[/bold green]", border_style="green"))
 
 
+@app.command()
+def learn() -> None:
+    """Fast-learn the knowledge base (docs/knowledge/) into Sutra's recall — the bug-bounty coaching
+    corpus (vuln classes: how to find, confirm, escalate). Idempotent + fast: re-runs embed only
+    what's new, so it's safe to run on a timer or at startup. Deepens what Sutra can TEACH you and
+    where it knows bugs hide — it does NOT change the model's weights (the tools find, the coach
+    guides, you exploit).
+    """
+    from friday.core.knowledge import learn_knowledge
+
+    with console.status("[cyan]learning the knowledge base…[/cyan]"):
+        res = learn_knowledge()
+    if res.get("error"):
+        console.print(f"[yellow]{res['error']}[/yellow]")
+        return
+    msg = (f"Learned {res['learned']} new chunk(s) from {res['files']} doc(s).\n"
+           f"Sutra now holds [bold]{res['total']}[/bold] chunks of bug-bounty knowledge to coach "
+           f"from.")
+    console.print(Panel(msg, title="[bold green]Sutra learn[/bold green]", border_style="green"))
+
+
 def _render_learning(snap: Any) -> Any:
     """Build the Rich view of what Sutra is learning / has learned from a LearningSnapshot."""
     from rich.console import Group
