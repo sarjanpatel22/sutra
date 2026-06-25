@@ -1239,15 +1239,18 @@ def _sutra_exec() -> str:
 
 
 def _install_study_timer() -> None:
-    """Write a systemd --user service + timer that runs `sutra study` continuously while the
-    machine is on (a few min after boot, then every 30 min). Each pass skips the model call when
-    nothing has changed, so this is cheap. Writes only to the user unit dir; turning it on stays
-    the operator's explicit step."""
+    """Write a systemd --user service + timer that runs `sutra learn` (refresh the knowledge base)
+    then `sutra study` (reflect on real runs) continuously while the machine is on (a few min after
+    boot, then every 30 min). Both are idempotent + cheap — learn embeds only new docs, study skips
+    the model call when nothing changed. Writes only to the user unit dir; turning it on stays the
+    operator's explicit step."""
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     (unit_dir / "sutra-study.service").write_text(
         "[Unit]\nDescription=Sutra self-improvement pass\n\n"
-        f"[Service]\nType=oneshot\nExecStart={_sutra_exec()} study\n")
+        f"[Service]\nType=oneshot\n"
+        f"ExecStart={_sutra_exec()} learn\n"   # refresh the knowledge base (idempotent + fast)
+        f"ExecStart={_sutra_exec()} study\n")  # then reflect on real runs
     (unit_dir / "sutra-study.timer").write_text(
         "[Unit]\nDescription=Sutra study — learn continuously while the machine is on\n\n"
         "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=30min\nPersistent=true\n\n"
