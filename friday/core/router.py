@@ -98,6 +98,16 @@ TIER_MODELS: dict[Tier, list[str]] = {
     ],
 }
 
+# Free 120B brain (NVIDIA NIM, OpenAI-compatible via LiteLLM). Inserted ABOVE the existing free
+# fallbacks ONLY when the key is present — so it's used for the reasoning that matters, falls back
+# to Groq/Gemini when its 40-rpm/1000-credit quota runs out, and never thrashes when no key is set.
+# Override the exact catalog id with NEMOTRON_MODEL if NVIDIA renames it.
+_NEMOTRON = os.getenv("NEMOTRON_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
+if os.getenv("NVIDIA_NIM_API_KEY"):
+    TIER_MODELS[Tier.REASON].insert(1, _NEMOTRON)   # strong free reasoner (after local $0)
+    TIER_MODELS[Tier.MEDIUM].insert(2, _NEMOTRON)   # strong free function-caller
+    TIER_MODELS[Tier.HEAVY].insert(1, _NEMOTRON)    # free long-chain fallback, under paid Claude
+
 _COST_PER_1K: dict[str, tuple[float, float]] = {
     "claude-opus-4-8":                       (0.015, 0.075),
     "claude-sonnet-4-6":                     (0.003, 0.015),
@@ -109,7 +119,7 @@ _COST_PER_1K: dict[str, tuple[float, float]] = {
 
 # Provider prefixes that are always free (local or free-tier APIs).
 # Guards against silently charging the default rate on a model-name typo.
-_FREE_PREFIXES = ("ollama/", "ollama_chat/", "groq/", "gemini/")
+_FREE_PREFIXES = ("ollama/", "ollama_chat/", "groq/", "gemini/", "nvidia_nim/")
 
 
 def _cache_token_counts(usage: Any) -> tuple[int, int]:
