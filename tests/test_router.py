@@ -20,6 +20,21 @@ def tmp_budget(tmp_path, monkeypatch):
     router._alert_callbacks.clear()
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_tiers(monkeypatch):
+    """Make the suite hermetic to the developer's real .env. router.py calls load_dotenv()
+    at import, so a local NVIDIA_NIM_API_KEY inserts nvidia_nim/* models into the tiers and
+    reorders the fallback chain these order-asserting tests rely on — green in CI (no key),
+    red on the dev box. Strip any env-injected NIM models so every test sees the base config."""
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    monkeypatch.setattr(
+        router,
+        "TIER_MODELS",
+        {tier: [m for m in models if not m.startswith("nvidia_nim/")]
+         for tier, models in router.TIER_MODELS.items()},
+    )
+
+
 def _tracker(daily=2.0, monthly=30.0):
     return BudgetTracker(daily_limit=daily, monthly_limit=monthly)
 
@@ -261,6 +276,30 @@ def test_tool_incapable_false_for_tool_capable_local(model):
 def test_tool_incapable_false_for_cloud(model):
     """Cloud models all function-call — never strip their tools."""
     assert router._tool_incapable(model) is False
+
+
+# --- _wire_nvidia_nim: free NIM brains, per-tier ordering ------------------
+
+def test_wire_nvidia_nim_orders_brains_per_tier():
+    """GLM leads the reasoning tiers (REASON/HEAVY); Nemotron leads the tool/agent tier
+    (MEDIUM) for its ~1s tool calls; the local/paid model at index 0 always stays first.
+    Locks the insert() index math so a future free-brain edit can't silently reorder the
+    fallback chain (the bug this would catch is a $-relevant misroute)."""
+    glm, nem = "nvidia_nim/test-glm", "nvidia_nim/test-nemotron"
+    tiers = {
+        Tier.REASON: ["ollama_chat/local", "gemini/flash"],
+        Tier.HEAVY: ["claude-sonnet-4-6", "groq/llama"],
+        Tier.MEDIUM: ["groq/a", "groq/b", "groq/c", "groq/d"],
+    }
+    router._wire_nvidia_nim(tiers, glm, nem)
+
+    for t in (Tier.REASON, Tier.HEAVY):
+        assert tiers[t][0] not in (glm, nem), "local/paid model must stay at index 0"
+        assert tiers[t][1] == glm and tiers[t][2] == nem, "GLM ahead of Nemotron in reasoning tiers"
+
+    med = tiers[Tier.MEDIUM]
+    assert med.index(nem) < med.index(glm), "Nemotron ahead of GLM in the tool/agent tier"
+    assert med[0] == "groq/a", "existing primary stays first"
 
 
 # --- _prefer_local_tools: inject qwen immediately before gemma -------------

@@ -98,15 +98,30 @@ TIER_MODELS: dict[Tier, list[str]] = {
     ],
 }
 
-# Free 120B brain (NVIDIA NIM, OpenAI-compatible via LiteLLM). Inserted ABOVE the existing free
-# fallbacks ONLY when the key is present — so it's used for the reasoning that matters, falls back
-# to Groq/Gemini when its 40-rpm/1000-credit quota runs out, and never thrashes when no key is set.
-# Override the exact catalog id with NEMOTRON_MODEL if NVIDIA renames it.
+# Two usable top free brains (NVIDIA NIM, OpenAI-compatible via LiteLLM), inserted ABOVE the free
+# fallbacks ONLY when the key is present — never thrashes when no key is set. LIVE-TESTED picks:
+# GLM-5.1 is the stronger REASONER (leaderboard 83, reliable), Nemotron the faster FUNCTION-CALLER
+# (1s tool calls). DeepSeek-V4-Pro and Kimi-K2.6 were rejected — they time out / return garbage on
+# the free tier (rank ≠ usable). So GLM leads the reasoning tiers, Nemotron leads the tool/agent
+# tier, and each backs the other. Override ids with NEMOTRON_MODEL / GLM_MODEL.
 _NEMOTRON = os.getenv("NEMOTRON_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
+_GLM = os.getenv("GLM_MODEL", "nvidia_nim/z-ai/glm-5.1")
+
+
+def _wire_nvidia_nim(tier_models: dict[Tier, list[str]], glm: str, nemotron: str) -> None:
+    """Insert the two free NVIDIA NIM brains into the free tiers IN PLACE, after the local/paid
+    model at index 0. GLM leads the reasoning tiers (REASON/HEAVY); Nemotron leads the tool/agent
+    tier (MEDIUM) for its ~1s tool calls, with GLM a reasoning-grade fallback behind it. A
+    standalone function so the ordering is unit-testable without import-time env juggling."""
+    for t in (Tier.REASON, Tier.HEAVY):           # reasoning tiers: GLM first, Nemotron behind it
+        tier_models[t].insert(1, nemotron)
+        tier_models[t].insert(1, glm)
+    tier_models[Tier.MEDIUM].insert(2, nemotron)  # tool/agent tier: Nemotron first (1s calls)
+    tier_models[Tier.MEDIUM].insert(3, glm)       # GLM as a reasoning-grade fallback
+
+
 if os.getenv("NVIDIA_NIM_API_KEY"):
-    TIER_MODELS[Tier.REASON].insert(1, _NEMOTRON)   # strong free reasoner (after local $0)
-    TIER_MODELS[Tier.MEDIUM].insert(2, _NEMOTRON)   # strong free function-caller
-    TIER_MODELS[Tier.HEAVY].insert(1, _NEMOTRON)    # free long-chain fallback, under paid Claude
+    _wire_nvidia_nim(TIER_MODELS, _GLM, _NEMOTRON)
 
 _COST_PER_1K: dict[str, tuple[float, float]] = {
     "claude-opus-4-8":                       (0.015, 0.075),
