@@ -52,6 +52,31 @@ async def test_ignores_unreflected_params():
     assert out["discovered"] == ["id"]
 
 
+async def test_echo_all_app_not_reported():
+    # app that reflects EVERY param (echoes the query) must not yield false positives
+    class _Echo(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            q = parse_qs(urlparse(self.path).query)
+            body = "<html>" + " ".join(v[0] for v in q.values()) + "</html>"
+            data = body.encode()
+            self.send_response_only(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Echo)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        out = await param_discovery.find_params(f"http://127.0.0.1:{srv.server_address[1]}/")
+    finally:
+        srv.shutdown()
+    assert out["discovered"] == []  # no false positives
+    assert "arbitrary parameters" in out["note"]
+
+
 async def test_no_params_reflected():
     out = await _find(set())
     assert out["discovered"] == [] and out["findings"] == []

@@ -66,6 +66,33 @@ async def test_boolean_based_detected():
     assert "candidate" in f["name"] and "boolean" in f["name"]
 
 
+async def test_dynamic_page_not_false_flagged():
+    # a page whose length is random each load must NOT be flagged as boolean SQLi
+    import random
+
+    class _Dyn(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = "<html>" + "x" * random.randint(50, 400) + "</html>"
+            data = body.encode()
+            self.send_response_only(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Dyn)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        # several runs — the stability gate must keep all of them clean
+        for _ in range(6):
+            out = await sqli.check_sqli(f"http://127.0.0.1:{srv.server_address[1]}/item?id=1")
+            assert out["vulnerable"] is False, "dynamic page false-flagged as SQLi"
+    finally:
+        srv.shutdown()
+
+
 async def test_safe_endpoint_not_vulnerable():
     out = await _check("safe", "/item?id=1")
     assert out["vulnerable"] is False and out["findings"] == []

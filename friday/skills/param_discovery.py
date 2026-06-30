@@ -31,6 +31,8 @@ _WORDLIST = (
     "xml", "html", "text", "msg", "message", "error", "status", "code", "step", "tab", "section",
 )
 _CHUNK = 25  # params per request — keeps the URL a sane length
+# a param name no real app reads; if its canary reflects, the app echoes arbitrary params
+_CONTROL = "sutrazznotaparam"
 
 
 def _probe(url: str) -> tuple[int, str, str | None]:
@@ -82,25 +84,43 @@ async def find_params(url: str, extra: str = "") -> dict[str, Any]:
 
     words = list(dict.fromkeys([*_WORDLIST, *[w.strip() for w in extra.split(",") if w.strip()]]))
 
-    def _run() -> tuple[list[dict[str, Any]], bool]:
+    def _run() -> tuple[list[dict[str, Any]], bool, bool]:
         discovered: list[dict[str, Any]] = []
         reachable = False
+        echoes_all = False
         for i in range(0, len(words), _CHUNK):
             chunk = words[i : i + _CHUNK]
             # each candidate gets a unique canary so we can tell which one reflected
             canaries = {w: f"sfp{i + j}zz" for j, w in enumerate(chunk)}
+            canaries[_CONTROL] = f"sfpctrl{i}zz"  # control: a param the app can't legitimately read
             status, body, err = _probe(_with_params(url, canaries))
             if err is not None:
                 continue
             reachable = True
+            if canaries[_CONTROL] in (body or ""):
+                echoes_all = True  # the app reflects arbitrary params → reflection proves nothing
+                break
             for w, token in canaries.items():
-                if token in (body or ""):
+                if w != _CONTROL and token in (body or ""):
                     discovered.append({"param": w, "canary": token, "status": status})
-        return discovered, reachable
+        return discovered, reachable, echoes_all
 
-    discovered, reachable = await asyncio.to_thread(_run)
+    discovered, reachable, echoes_all = await asyncio.to_thread(_run)
     if not reachable:
         return {"error": f"could not reach {url}", "url": url}
+    if echoes_all:
+        return {
+            "url": url,
+            "tested": len(words),
+            "discovered": [],
+            "details": [],
+            "findings": [],
+            "note": (
+                "Target reflects arbitrary parameters (it echoes the query string), so reflection "
+                "can't distinguish real params here — discovery skipped to avoid false positives. "
+                "Use response-diff/wordlist tooling (e.g. arjun, x8) against this endpoint instead."
+            ),
+        }
 
     names = [d["param"] for d in discovered]
     findings = (

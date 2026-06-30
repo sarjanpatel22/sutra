@@ -118,6 +118,22 @@ async def check_sqli(url: str, param: str = "") -> dict[str, Any]:
         _, baseline, berr = _probe(url)
         reachable = berr is None
         base_len = len(baseline or "")
+        tol = base_len * 0.05 + 12  # "≈ baseline" tolerance
+        gap = base_len * 0.25 + 20  # "meaningfully different" threshold
+
+        def close(a: int, b: int) -> bool:
+            return abs(a - b) <= tol
+
+        def far(a: int, b: int) -> bool:
+            return abs(a - b) >= gap
+
+        # page-stability gate: a non-deterministic page makes boolean differentials meaningless,
+        # so only run the boolean test when two clean baselines agree.
+        boolean_ok = base_len > 0
+        if boolean_ok:
+            _, base2, be2 = _probe(url)
+            if be2 is not None or not close(len(base2), base_len):
+                boolean_ok = False
         for p in candidates:
             orig = _orig_value(url, p)
             # 1) error-based (confirmed)
@@ -136,24 +152,28 @@ async def check_sqli(url: str, param: str = "") -> dict[str, Any]:
                     })
                     hit = True
                     break
-            if hit or base_len == 0:
+            if hit or not boolean_ok:
                 continue
-            # 2) boolean-based (candidate) — only if no error and we have a baseline to compare
+            # 2) boolean-based (candidate) — only on a stable page; re-confirmed to kill variance
             for t_cond, f_cond in _BOOL_PAIRS:
                 _, t_body, te = _probe(_set_param(url, p, orig + t_cond))
                 _, f_body, fe = _probe(_set_param(url, p, orig + f_cond))
                 if te or fe:
                     continue
                 tl, fl = len(t_body), len(f_body)
-                true_like_base = abs(tl - base_len) <= base_len * 0.05 + 12
-                true_unlike_false = abs(tl - fl) >= base_len * 0.25 + 20
-                if true_like_base and true_unlike_false:
-                    findings.append({
-                        "id": "sqli-boolean", "param": p, "severity": "high",
-                        "payload": f"{orig}{t_cond} / {orig}{f_cond}", "confidence": "candidate",
-                        "evidence": f"true≈baseline ({tl}≈{base_len}B), false differs ({fl}B)",
-                    })
-                    break
+                if not (close(tl, base_len) and far(tl, fl)):
+                    continue
+                # re-request both to rule out a random fluke before flagging
+                _, t2, te2 = _probe(_set_param(url, p, orig + t_cond))
+                _, f2, fe2 = _probe(_set_param(url, p, orig + f_cond))
+                if te2 or fe2 or not (close(len(t2), base_len) and far(len(t2), len(f2))):
+                    continue
+                findings.append({
+                    "id": "sqli-boolean", "param": p, "severity": "high",
+                    "payload": f"{orig}{t_cond} / {orig}{f_cond}", "confidence": "candidate",
+                    "evidence": f"true≈base ({tl}≈{base_len}B), false≠ ({fl}B); reproduced",
+                })
+                break
         return findings, reachable
 
     findings, reachable = await asyncio.to_thread(_run)
