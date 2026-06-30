@@ -263,6 +263,47 @@ async def test_hunt_active_crawls_and_feeds_coach(monkeypatch):
     assert "/api/Cards" in res["report"]                    # coach worklist covers the endpoint
 
 
+async def test_hunt_probe_runs_injection_skills(monkeypatch):
+    from friday.skills import crlf, param_discovery, path_traversal, sqli, web_recon, xxe
+
+    async def fake_nuclei(target, severity="", tags="", active=False):
+        return {"findings": []}
+
+    async def fake_crawl(url, depth=2):
+        return {"count": 1, "urls": ["http://x.com/item?id=1"]}
+
+    async def fake_find_params(url, extra=""):
+        return {"discovered": ["q"], "findings": []}
+
+    async def fake_sqli(url, param=""):
+        return {"findings": [{"id": "sqli-error", "name": "SQLi", "severity": "high",
+                              "matched_at": url}]}
+
+    async def empty(url, param=""):
+        return {"findings": []}
+
+    async def empty_xxe(url):
+        return {"findings": []}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(web_recon, "crawl", fake_crawl)
+    monkeypatch.setattr(param_discovery, "find_params", fake_find_params)
+    monkeypatch.setattr(sqli, "check_sqli", fake_sqli)
+    monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
+    monkeypatch.setattr(crlf, "check_crlf", empty)
+    monkeypatch.setattr(xxe, "check_xxe", empty_xxe)
+
+    res = await H.hunt("http://x.com", probe=True)
+    sqli_f = next(f for f in res["findings"] if f["id"] == "sqli-error")
+    assert sqli_f["probe"] is True and sqli_f["host"] == "http://x.com"  # tagged + attributed
+    # both the find_params-synthesised URL and the crawled param URL were tested
+    assert any("?q=1" in f["matched_at"] for f in res["findings"])
+
+    res2 = await H.hunt("http://x.com")                       # probe OFF by default
+    assert res2["findings"] == []                             # no injection probes, no noise
+
+
 async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
     # the live-caught bug: a target on :3000 must be probed on :3000, not 80/443
     seen = {}

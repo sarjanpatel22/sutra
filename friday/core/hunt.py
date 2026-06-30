@@ -150,10 +150,46 @@ async def _content_findings(host: str) -> tuple[list[dict[str, Any]], str | None
     return out, None
 
 
+async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
+                              ) -> tuple[list[dict[str, Any]], str | None]:
+    """Run the targeted injection skills against a host: discover reflected params (find_params),
+    then test each parameterised URL for SQLi / LFI / CRLF, and try XXE on crawled endpoints. These
+    are confirmed-only skills, so what they return is real (no scanner false-clean). Complements
+    nuclei (templated) and DAST (fuzzed) with deterministic, signature-confirmed checks. Returns
+    (findings, optional-warning)."""
+    from friday.skills.crlf import check_crlf
+    from friday.skills.param_discovery import find_params
+    from friday.skills.path_traversal import check_path_traversal
+    from friday.skills.sqli import check_sqli
+    from friday.skills.xxe import check_xxe
+
+    findings: list[dict[str, Any]] = []
+    # 1) discover reflected params on the host root → a synthesised parameterised test URL
+    candidates: list[str] = []
+    fp = await find_params(host)
+    discovered = fp.get("discovered", [])
+    if discovered:
+        q = "&".join(f"{p}=1" for p in discovered[:6])
+        candidates.append(f"{host.rstrip('/')}/?{q}")
+    # 2) crawled URLs that already carry parameters
+    candidates += [u for u in urls if "?" in u and "=" in u]
+    cand = list(dict.fromkeys(candidates))[:max_urls]  # dedupe, preserve order, bound
+
+    for u in cand:
+        for fn in (check_sqli, check_path_traversal, check_crlf):
+            res = await fn(u)
+            findings.extend(res.get("findings", []))
+    # 3) XXE against crawled endpoints (no params needed; confirmed-only, so safe to try), capped
+    for u in [x for x in urls if "?" not in x][:max_urls]:
+        res = await check_xxe(u)
+        findings.extend(res.get("findings", []))
+    return findings, None
+
+
 async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
                severity: str = "low,medium,high,critical", tags: str = "",
                profile: str = "high-value", scope: str = "", exclude: str = "",
-               content: bool = False, active: bool = False,
+               content: bool = False, active: bool = False, probe: bool = False,
                observe: ObserveFn = None) -> dict[str, Any]:
     """Run a whole-program hunt and draft ONE combined report.
 
@@ -169,6 +205,10 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     active: opt-in DAST pass — nuclei's fuzzing engine actively probes parameters for SSRF/SQLi/
         injection with out-of-band proof (the payable classes, not brute-force). More intrusive;
         confirm the program ALLOWS active testing first.
+    probe: opt-in targeted-injection pass — discovers reflected params (find_params) and runs the
+        confirmed-only skills (check_sqli/path_traversal/crlf, and check_xxe on crawled endpoints)
+        against each parameterised URL. Deterministic, signature-confirmed checks that complement
+        nuclei + DAST. Intrusive; authorized + active-testing-allowed targets only.
     Returns {target, hosts, findings, report}.
     """
     from friday.core.bounty import draft_bounty_report
@@ -243,6 +283,21 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
             if ares.get("incomplete"):
                 warnings.append(f"{h} (active): {ares.get('note', 'scan incomplete')}")
             _emit(observe, "active_found", {"host": h, "found": len(afinds)})
+        if probe:  # opt-in: targeted confirmed-only injection probes (find_params → sqli/lfi/crlf)
+            _emit(observe, "probe", {"host": h})
+            host_urls = [u for u in crawled if urlparse(u).hostname == urlparse(h).hostname]
+            if not host_urls:  # no crawl ran (probe without active) — crawl this host now
+                cr = await crawl(h)
+                host_urls = cr.get("urls", [])
+                crawled += host_urls
+            pfinds, pwarn = await _web_probe_findings(h, host_urls)
+            for f in pfinds:
+                f["host"] = h
+                f.setdefault("probe", True)
+                findings.append(f)
+            if pwarn:
+                warnings.append(pwarn)
+            _emit(observe, "probe_found", {"host": h, "found": len(pfinds)})
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
     return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,
