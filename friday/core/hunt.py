@@ -158,6 +158,7 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     batching abuse). Confirmed-only skills, so what they return is real (no scanner false-clean) —
     complementing nuclei (templated) and DAST (fuzzed). Returns (findings, optional-warning)."""
     from friday.skills.api_discovery import discover_api
+    from friday.skills.cache_poison import check_cache_poisoning
     from friday.skills.crlf import check_crlf
     from friday.skills.csrf import check_csrf
     from friday.skills.dom_xss import dom_xss_scan
@@ -216,6 +217,8 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
                                "execution). Drive the source (URL #fragment / ?query) in a browser "
                                f"to confirm. Snippet: {c.get('snippet', '')[:120]}",
             })
+    # 7) Web cache poisoning on the host root (confirmed-only: reflect-then-persist, cache-busted)
+    findings.extend((await check_cache_poisoning(host)).get("findings", []))
     return findings, None
 
 
@@ -240,9 +243,10 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         confirm the program ALLOWS active testing first.
     probe: opt-in targeted-injection pass — discovers reflected params (find_params) and runs the
         confirmed-only skills (check_sqli/path_traversal/crlf/ssrf, check_xxe on crawled endpoints,
-        check_csrf, API/GraphQL-batching) against each parameterised URL, plus a static DOM-XSS
-        source→sink scan of the host's JS (high-confidence flows only). Deterministic, signature-
-        confirmed checks that complement nuclei + DAST. Authorized + active-testing-allowed only.
+        check_csrf, API/GraphQL-batching, web cache poisoning) against each parameterised URL, plus
+        a static DOM-XSS source→sink scan of the host's JS (high-confidence flows only).
+        Deterministic, signature-confirmed checks that complement nuclei + DAST. Authorized +
+        active-testing-allowed only.
     Returns {target, hosts, findings, report}.
     """
     from friday.core.bounty import draft_bounty_report

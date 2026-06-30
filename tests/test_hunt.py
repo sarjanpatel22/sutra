@@ -7,9 +7,10 @@ from friday.core import hunt as H
 
 @pytest.fixture(autouse=True)
 def _quiet_network_skills(monkeypatch):
-    """No-op the auto-wired network skills (dns_brute in enum, dom_xss_scan in probe) so every
-    hunt test stays hermetic. The dedicated wiring tests override these with populated fakes."""
-    from friday.skills import dns_brute, dom_xss
+    """No-op the auto-wired network skills (dns_brute in enum, dom_xss_scan + check_cache_poisoning
+    in probe) so every hunt test stays hermetic. Dedicated wiring tests override with populated
+    fakes."""
+    from friday.skills import cache_poison, dns_brute, dom_xss
 
     async def no_brute(domain, words="", known="", permute=True):
         return {"subdomains": []}
@@ -17,8 +18,12 @@ def _quiet_network_skills(monkeypatch):
     async def no_dom(url):
         return {"candidates": []}
 
+    async def no_cache(url):
+        return {"findings": []}
+
     monkeypatch.setattr(dns_brute, "dns_brute", no_brute)
     monkeypatch.setattr(dom_xss, "dom_xss_scan", no_dom)
+    monkeypatch.setattr(cache_poison, "check_cache_poisoning", no_cache)
 
 
 async def test_is_live_web_detects_open_port(monkeypatch):
@@ -429,6 +434,62 @@ async def test_hunt_probe_adds_dom_xss_high_confidence(monkeypatch):
     assert len(dom_finds) == 1                               # only the HIGH-confidence flow
     assert dom_finds[0]["severity"] == "low"
     assert "innerHTML" in dom_finds[0]["name"]
+
+
+async def test_hunt_probe_adds_confirmed_cache_poisoning(monkeypatch):
+    from friday.skills import (
+        api_discovery,
+        cache_poison,
+        crlf,
+        csrf,
+        graphql_batch,
+        param_discovery,
+        path_traversal,
+        sqli,
+        ssrf,
+        web_recon,
+        xxe,
+    )
+
+    async def fake_nuclei(target, severity="", tags="", active=False):
+        return {"findings": []}
+
+    async def fake_crawl(url, depth=2):
+        return {"count": 0, "urls": []}
+
+    async def empty(url, param=""):
+        return {"findings": []}
+
+    async def empty_one(url):
+        return {"findings": []}
+
+    async def empty_api(url):
+        return {"findings": [], "graphql": []}
+
+    async def fake_params(url, extra=""):
+        return {"discovered": [], "findings": []}
+
+    async def fake_cache(url):
+        return {"findings": [{"id": "cache-poison-x-forwarded-host", "name": "Web cache poisoning",
+                              "severity": "high", "matched_at": url}]}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(web_recon, "crawl", fake_crawl)
+    monkeypatch.setattr(param_discovery, "find_params", fake_params)
+    monkeypatch.setattr(sqli, "check_sqli", empty)
+    monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
+    monkeypatch.setattr(crlf, "check_crlf", empty)
+    monkeypatch.setattr(ssrf, "check_ssrf", empty)
+    monkeypatch.setattr(xxe, "check_xxe", empty_one)
+    monkeypatch.setattr(csrf, "check_csrf", empty_one)
+    monkeypatch.setattr(graphql_batch, "graphql_batch", empty_one)
+    monkeypatch.setattr(api_discovery, "discover_api", empty_api)
+    monkeypatch.setattr(cache_poison, "check_cache_poisoning", fake_cache)  # override autouse no-op
+
+    res = await H.hunt("http://x.com", probe=True)
+    cp = next(f for f in res["findings"] if f["id"].startswith("cache-poison-"))
+    assert cp["severity"] == "high" and cp["host"] == "http://x.com"
 
 
 async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
