@@ -1,8 +1,8 @@
 """sutra hunt — the one-command bug-bounty program run.
 
-Chains the pieces into a single flow over a whole program: find_subdomains (the assets) → probe
-which are live → nuclei_scan each → ONE combined, submittable bounty report. The TOOLS find (real,
-grounded output), the report assembles itself, YOU verify + submit. Authorized programs only.
+Chains the pieces into a single flow over a whole program: find_subdomains + dns_brute (the assets)
+→ probe which are live → nuclei_scan each → ONE combined, submittable bounty report. The TOOLS find
+(real, grounded output), the report assembles itself, YOU verify + submit. Authorized programs only.
 
 A bare domain (example.com) is auto-enumerated; a URL/host (http://x, host:port) is scanned as the
 single target. The live-host probe + the per-host scan cap keep a real program run bounded.
@@ -160,6 +160,7 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     from friday.skills.api_discovery import discover_api
     from friday.skills.crlf import check_crlf
     from friday.skills.csrf import check_csrf
+    from friday.skills.dom_xss import dom_xss_scan
     from friday.skills.graphql_batch import graphql_batch
     from friday.skills.param_discovery import find_params
     from friday.skills.path_traversal import check_path_traversal
@@ -194,6 +195,27 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     findings.extend(api.get("findings", []))
     for gql in api.get("graphql", [])[:max_urls]:
         findings.extend((await graphql_batch(gql)).get("findings", []))
+    # 6) DOM-XSS: scan the host + a few crawled pages for high-confidence source→sink flows. These
+    # are STATIC candidates (not confirmed execution), so only the strong ones go in, tagged.
+    seen_dom: set[str] = set()  # the same JS file reached from two pages → one finding, not two
+    for page in [host, *[u for u in urls if "?" not in u][:3]]:
+        dom = await dom_xss_scan(page)
+        for c in dom.get("candidates", []):
+            if c.get("confidence") != "high":
+                continue
+            fid = f"domxss-{c.get('file', '')}-{c.get('line', 0)}"
+            if fid in seen_dom:
+                continue
+            seen_dom.add(fid)
+            findings.append({
+                "id": fid,
+                "name": f"Possible DOM XSS: {c.get('source')} → {c.get('sink')}",
+                "severity": "low",
+                "matched_at": page,
+                "description": "Static source→sink flow in the page's JavaScript (not confirmed "
+                               "execution). Drive the source (URL #fragment / ?query) in a browser "
+                               f"to confirm. Snippet: {c.get('snippet', '')[:120]}",
+            })
     return findings, None
 
 
@@ -217,9 +239,10 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         injection with out-of-band proof (the payable classes, not brute-force). More intrusive;
         confirm the program ALLOWS active testing first.
     probe: opt-in targeted-injection pass — discovers reflected params (find_params) and runs the
-        confirmed-only skills (check_sqli/path_traversal/crlf, and check_xxe on crawled endpoints)
-        against each parameterised URL. Deterministic, signature-confirmed checks that complement
-        nuclei + DAST. Intrusive; authorized + active-testing-allowed targets only.
+        confirmed-only skills (check_sqli/path_traversal/crlf/ssrf, check_xxe on crawled endpoints,
+        check_csrf, API/GraphQL-batching) against each parameterised URL, plus a static DOM-XSS
+        source→sink scan of the host's JS (high-confidence flows only). Deterministic, signature-
+        confirmed checks that complement nuclei + DAST. Authorized + active-testing-allowed only.
     Returns {target, hosts, findings, report}.
     """
     from friday.core.bounty import draft_bounty_report
@@ -243,8 +266,17 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
             warnings.append(f"subdomain enumeration failed ({sub_res['error']}) — surface is "
                             f"incomplete; only the apex was scanned")
         subs = sub_res.get("subdomains", [])
+        # DNS brute-force: surface live assets the passive sources miss (resolved-only, wildcard-
+        # filtered), permuting the passive hits for env variants. Merged into the asset list.
+        from friday.skills.dns_brute import dns_brute
+        known = ",".join(subs[:50])
+        brute = await dns_brute(bare, known=known)
+        brute_hosts = [r["host"] for r in brute.get("subdomains", [])]
+        if brute_hosts:
+            _emit(observe, "dns_brute", {"found": len(brute_hosts)})
         if bare not in subs:
             subs = [bare, *subs]
+        subs = list(dict.fromkeys([*subs, *brute_hosts]))  # merge, dedupe, preserve order
         in_scope = [s for s in subs if _in_scope(s, scope_pats, excl_pats)]
         _emit(observe, "enumerated", {"count": len(subs), "in_scope": len(in_scope)})
         hosts = await _live_web_hosts(in_scope, max_hosts)

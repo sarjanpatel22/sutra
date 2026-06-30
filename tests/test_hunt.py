@@ -1,6 +1,24 @@
 """Tests for `sutra hunt` — the one-command program hunt (enumerate → probe → scan → report)."""
 
+import pytest
+
 from friday.core import hunt as H
+
+
+@pytest.fixture(autouse=True)
+def _quiet_network_skills(monkeypatch):
+    """No-op the auto-wired network skills (dns_brute in enum, dom_xss_scan in probe) so every
+    hunt test stays hermetic. The dedicated wiring tests override these with populated fakes."""
+    from friday.skills import dns_brute, dom_xss
+
+    async def no_brute(domain, words="", known="", permute=True):
+        return {"subdomains": []}
+
+    async def no_dom(url):
+        return {"candidates": []}
+
+    monkeypatch.setattr(dns_brute, "dns_brute", no_brute)
+    monkeypatch.setattr(dom_xss, "dom_xss_scan", no_dom)
 
 
 async def test_is_live_web_detects_open_port(monkeypatch):
@@ -320,6 +338,97 @@ async def test_hunt_probe_runs_injection_skills(monkeypatch):
 
     res2 = await H.hunt("http://x.com")                       # probe OFF by default
     assert res2["findings"] == []                             # no injection probes, no noise
+
+
+async def test_hunt_enum_merges_dns_brute_assets(monkeypatch):
+    from friday.skills import dns_brute, recon, web_recon
+
+    async def fake_find(domain):
+        return {"subdomains": ["a.example.com"]}            # passive sources find one
+
+    async def fake_brute(domain, words="", known="", permute=True):
+        assert domain == "example.com"
+        return {"subdomains": [{"host": "secret.example.com", "ips": ["10.0.0.9"]}]}  # DNS-only
+
+    seen = {}
+
+    async def fake_live(hosts, max_hosts):
+        seen["hosts"] = hosts
+        return ["https://a.example.com"]
+
+    async def fake_nuclei(target, severity="", tags=""):
+        return {"findings": []}
+
+    monkeypatch.setattr(recon, "find_subdomains", fake_find)
+    monkeypatch.setattr(dns_brute, "dns_brute", fake_brute)   # override the autouse no-op
+    monkeypatch.setattr(H, "_live_web_hosts", fake_live)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+
+    await H.hunt("example.com")
+    assert "secret.example.com" in seen["hosts"]             # brute-only asset reached liveness
+    assert "a.example.com" in seen["hosts"]                  # passive asset still present
+
+
+async def test_hunt_probe_adds_dom_xss_high_confidence(monkeypatch):
+    from friday.skills import (
+        api_discovery,
+        crlf,
+        csrf,
+        dom_xss,
+        graphql_batch,
+        param_discovery,
+        path_traversal,
+        sqli,
+        ssrf,
+        web_recon,
+        xxe,
+    )
+
+    async def fake_nuclei(target, severity="", tags="", active=False):
+        return {"findings": []}
+
+    async def fake_crawl(url, depth=2):
+        return {"count": 1, "urls": ["http://x.com/app"]}
+
+    async def empty(url, param=""):
+        return {"findings": []}
+
+    async def empty_one(url):
+        return {"findings": []}
+
+    async def empty_api(url):
+        return {"findings": [], "graphql": []}
+
+    async def fake_find_params(url, extra=""):
+        return {"discovered": [], "findings": []}
+
+    async def fake_dom(url):
+        return {"candidates": [
+            {"file": "app.js", "line": 12, "confidence": "high",
+             "source": "location.hash", "sink": "innerHTML", "snippet": "el.innerHTML=loc.hash"},
+            {"file": "app.js", "line": 30, "confidence": "low",
+             "source": "(elsewhere in file)", "sink": "eval", "snippet": "eval(x)"},
+        ]}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(web_recon, "crawl", fake_crawl)
+    monkeypatch.setattr(param_discovery, "find_params", fake_find_params)
+    monkeypatch.setattr(sqli, "check_sqli", empty)
+    monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
+    monkeypatch.setattr(crlf, "check_crlf", empty)
+    monkeypatch.setattr(ssrf, "check_ssrf", empty)
+    monkeypatch.setattr(xxe, "check_xxe", empty_one)
+    monkeypatch.setattr(csrf, "check_csrf", empty_one)
+    monkeypatch.setattr(graphql_batch, "graphql_batch", empty_one)
+    monkeypatch.setattr(api_discovery, "discover_api", empty_api)
+    monkeypatch.setattr(dom_xss, "dom_xss_scan", fake_dom)   # override the autouse no-op
+
+    res = await H.hunt("http://x.com", probe=True)
+    dom_finds = [f for f in res["findings"] if f["id"].startswith("domxss-")]
+    assert len(dom_finds) == 1                               # only the HIGH-confidence flow
+    assert dom_finds[0]["severity"] == "low"
+    assert "innerHTML" in dom_finds[0]["name"]
 
 
 async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
