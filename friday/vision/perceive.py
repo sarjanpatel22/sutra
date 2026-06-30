@@ -51,6 +51,16 @@ def grab(region: tuple[int, int, int, int] | None = None) -> np.ndarray:
     return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
 
 
+def screen_bounds() -> tuple[int, int, int, int]:
+    """Primary monitor bounds (left, top, width, height) in absolute coords — used to clamp a
+    window region so a grab can't read past the screen edge (which raises an X11 GetImage error)."""
+    import mss
+
+    with mss.mss() as sct:
+        m = sct.monitors[1]
+    return m["left"], m["top"], m["width"], m["height"]
+
+
 def _gray(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
 
@@ -123,7 +133,9 @@ def _ocr_tsv(img: np.ndarray, scale: float = 2.0) -> list[dict]:
     with tempfile.TemporaryDirectory() as d:
         p = str(Path(d) / "f.png")
         cv2.imwrite(p, _preprocess(img, scale))
-        out = subprocess.run(["tesseract", p, "stdout", "tsv"],
+        # --psm 11 = sparse text: find scattered UI labels regardless of page layout (the default
+        # psm 3 assumes a document and misses loose buttons/menus). Matches the old locate.py path.
+        out = subprocess.run(["tesseract", p, "stdout", "--psm", "11", "tsv"],
                              capture_output=True, text=True).stdout
     rows: list[dict] = []
     for ln in out.splitlines()[1:]:

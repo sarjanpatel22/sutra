@@ -20,8 +20,9 @@ def _el(text: str, x: int = 0, y: int = 0, w: int = 10, h: int = 10, conf: float
 
 
 def _ok_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make _locate believe the tools exist so it proceeds to OCR/match."""
-    monkeypatch.setattr(dc, "ocr_available", lambda: True)
+    """Make _locate believe the tools exist so it proceeds to OCR/match (hermetic: doesn't depend
+    on tesseract/mss/DISPLAY actually being present, so it passes in CI too)."""
+    monkeypatch.setattr(dc, "_perception_ready", lambda: (True, ""))
     monkeypatch.setattr(dc, "_XDOTOOL", "/usr/bin/xdotool")
 
 
@@ -117,12 +118,13 @@ async def test_act_empty_goal_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     assert clicks == []  # never clicked
 
 
-async def test_act_no_ocr_available_errors_no_click(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dc, "ocr_available", lambda: False)
+async def test_act_no_perception_deps_errors_no_click(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dc, "_perception_ready", lambda: (False, "tesseract"))
     monkeypatch.setattr(dc, "_XDOTOOL", "/usr/bin/xdotool")
     clicks = _click_recorder(monkeypatch)
     out = await act_on_screen("click Save")
     assert "error" in out
+    assert "tesseract" in out["error"]  # the gate names the missing dep
     assert clicks == []
 
 
@@ -244,6 +246,72 @@ async def test_type_into_no_match_does_not_type(monkeypatch: pytest.MonkeyPatch)
     assert out["acted"] is False  # honest no-match dict
     assert typed == []  # never typed
     assert clicks == []
+
+
+# --- active-window scoping (the fix that ignores other windows) --------------
+
+
+def _screen(monkeypatch: pytest.MonkeyPatch, w: int = 2560, h: int = 1440) -> None:
+    monkeypatch.setattr(dc.perceive, "screen_bounds", lambda: (0, 0, w, h))
+
+
+async def test_active_window_region_parses_geometry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dc, "_XDOTOOL", "/usr/bin/xdotool")
+    _screen(monkeypatch)
+
+    async def fake_out(cmd: list[str]) -> str:
+        return "WINDOW=123\nX=10\nY=97\nWIDTH=800\nHEIGHT=600\nSCREEN=0\n"
+
+    monkeypatch.setattr(dc, "_run_out", fake_out)
+    assert await dc._active_window_region() == (10, 97, 800, 600)  # fits → unchanged
+
+
+async def test_active_window_region_clamps_overrun(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A maximized window whose geometry runs past the screen edge (the bug the live smoke caught):
+    # the region must be clamped so an mss grab can't read out of bounds and raise an X11 error.
+    monkeypatch.setattr(dc, "_XDOTOOL", "/usr/bin/xdotool")
+    _screen(monkeypatch, 2560, 1440)
+
+    async def fake_out(cmd: list[str]) -> str:
+        return "X=10\nY=97\nWIDTH=2550\nHEIGHT=1369\n"  # 97+1369=1466 > 1440 → overruns bottom
+
+    monkeypatch.setattr(dc, "_run_out", fake_out)
+    assert await dc._active_window_region() == (10, 97, 2550, 1343)  # height clamped to fit
+
+
+async def test_active_window_region_none_on_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dc, "_XDOTOOL", "/usr/bin/xdotool")
+
+    async def fake_out(cmd: list[str]) -> str:
+        return "no geometry here"
+
+    monkeypatch.setattr(dc, "_run_out", fake_out)
+    assert await dc._active_window_region() is None
+
+
+async def test_active_window_region_none_without_xdotool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dc, "_XDOTOOL", None)
+    assert await dc._active_window_region() is None
+
+
+async def test_ocr_elements_offsets_region_coords_to_absolute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Window at (300, 150); a word OCR'd at region-local (40, 20) must come back at absolute
+    # (340, 170) so the click lands on the real control, not 40px from the screen's top-left.
+    monkeypatch.setattr(dc, "_MIN_CONF", 40.0)
+
+    async def fake_region() -> tuple[int, int, int, int]:
+        return (300, 150, 800, 600)
+
+    monkeypatch.setattr(dc, "_active_window_region", fake_region)
+    monkeypatch.setattr(dc.perceive, "grab", lambda region=None: object())
+    monkeypatch.setattr(
+        dc.perceive, "ocr_words",
+        lambda img: [{"t": "Save", "x": 40, "y": 20, "w": 30, "h": 12, "conf": 95.0}])
+    els = await dc._ocr_elements()
+    assert len(els) == 1
+    assert (els[0].x, els[0].y) == (340, 170)  # region origin added back → absolute coords
 
 
 # --- registration ------------------------------------------------------------

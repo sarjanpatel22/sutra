@@ -11,24 +11,89 @@ controls (or a supplied template image) — if nothing matches it reports what i
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import os
 import re
 import shutil
 from typing import Any
 
 from friday.skills.registry import skill
 from friday.vision import perceive
-from friday.vision.locate import Element, ocr_available
+from friday.vision.locate import Element
 
 _XDOTOOL = shutil.which("xdotool")
+_TESSERACT = shutil.which("tesseract")
 _MIN_CONF = 40.0  # drop low-confidence OCR noise, matching the old parse_tsv threshold
 
 
+def _perception_ready() -> tuple[bool, str]:
+    """Are the deps the FAST path actually uses present? (mss + tesseract + xdotool + a display.)
+
+    The old gate required ImageMagick `import`, which this path no longer uses (it captures with
+    mss) — so it would refuse on a perfectly capable box. This checks the real dependencies and
+    names the missing one.
+    """
+    missing = []
+    if importlib.util.find_spec("mss") is None:
+        missing.append("mss (pip install -e .)")
+    if not _TESSERACT:
+        missing.append("tesseract")
+    if not _XDOTOOL:
+        missing.append("xdotool")
+    if not os.getenv("DISPLAY"):
+        missing.append("an X11 display (DISPLAY unset)")
+    return (not missing), ", ".join(missing)
+
+
+async def _active_window_region() -> tuple[int, int, int, int] | None:
+    """The focused window's geometry (x, y, w, h) via xdotool, or None if it can't be determined.
+
+    Scoping OCR to the active window is what makes the take-over reliable: it reads ONLY the window
+    being acted on, never my own terminal or other windows behind it — the exact noise that made
+    full-screen OCR flaky. Falls back to None (→ full-screen grab) on any failure."""
+    if not _XDOTOOL:
+        return None
+    try:
+        out = await _run_out([_XDOTOOL, "getactivewindow", "getwindowgeometry", "--shell"])
+    except Exception:  # noqa: BLE001 — no active window / headless → fall back to full screen
+        return None
+    vals: dict[str, str] = {}
+    for line in out.splitlines():
+        k, _, v = line.partition("=")
+        vals[k.strip()] = v.strip()
+    try:
+        x, y, w, h = (int(vals[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
+    except (KeyError, ValueError):
+        return None
+    # Clamp into the screen: a maximized window's geometry (with decorations) overruns the screen
+    # edge, and an out-of-bounds region makes mss raise an X11 GetImage error. Clamping keeps the
+    # grab valid; absolute coords stay correct because we offset by the CLAMPED origin.
+    try:
+        sl, st, sw, sh = perceive.screen_bounds()
+    except Exception:  # noqa: BLE001 — can't read bounds → don't clamp, the grab fallback covers it
+        sl, st, sw, sh = 0, 0, 1 << 30, 1 << 30
+    x2, y2 = min(x + w, sl + sw), min(y + h, st + sh)
+    x, y = max(x, sl), max(y, st)
+    w, h = x2 - x, y2 - y
+    return (x, y, w, h) if w > 0 and h > 0 else None
+
+
 async def _ocr_elements() -> list[Element]:
-    """Fast perception: grab the screen (mss) + preprocessed OCR → confident text Elements."""
+    """Fast perception: grab the FOCUSED WINDOW (mss) + preprocessed OCR → text Elements with
+    ABSOLUTE screen coords. Scoping to the active window means we never OCR other windows (incl. my
+    own terminal), and per-window preprocessing (one tone) makes the Otsu/invert binarization
+    correct — both of which a full-screen grab gets wrong. Falls back to full screen if needed."""
+    region = await _active_window_region()
+
     def _grab_ocr() -> list[Element]:
-        img = perceive.grab()
+        ox, oy = (region[0], region[1]) if region else (0, 0)
+        try:
+            img = perceive.grab(region)
+        except Exception:  # noqa: BLE001 — region grab failed → full screen, never give up on a grab
+            img = perceive.grab(None)
+            ox, oy = 0, 0
         return [
-            Element(text=r["t"], x=r["x"], y=r["y"], w=r["w"], h=r["h"], conf=r["conf"])
+            Element(text=r["t"], x=r["x"] + ox, y=r["y"] + oy, w=r["w"], h=r["h"], conf=r["conf"])
             for r in perceive.ocr_words(img)
             if r["t"].strip() and r["conf"] >= _MIN_CONF
         ]
@@ -84,6 +149,15 @@ async def _run(cmd: list[str]) -> None:
         *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
     )
     await proc.wait()
+
+
+async def _run_out(cmd: list[str]) -> str:
+    """Run a command and return its stdout (used to read window geometry)."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+    out, _ = await proc.communicate()
+    return out.decode("utf-8", "replace")
 
 
 async def click_xy(x: int, y: int, button: int = 1) -> None:
@@ -147,8 +221,9 @@ async def _locate(goal: str) -> tuple[Element, str] | dict[str, Any]:
     """
     if not goal:
         return {"error": "Tell me what to act on."}
-    if not ocr_available() or not _XDOTOOL:
-        return {"error": "Desktop control needs tesseract + xdotool installed."}
+    ready, missing = _perception_ready()
+    if not ready:
+        return {"error": f"Desktop control needs: {missing}."}
     try:
         elements = await _ocr_elements()
     except Exception as e:  # noqa: BLE001 — degrade honestly, never crash the turn

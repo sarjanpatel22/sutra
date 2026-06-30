@@ -37,6 +37,7 @@ from friday.core.monitor import (
 _CORE_IMPORTS = [
     "litellm", "anthropic", "httpx", "pydantic", "dotenv",
     "keyring", "rich", "typer", "numpy", "psutil",
+    "cv2", "mss",  # fast screen perception (template match + mss capture) — base deps
 ]
 # Each optional extra -> the import names it provides.
 _DEP_GROUPS: dict[str, list[str]] = {
