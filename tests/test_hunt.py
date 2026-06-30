@@ -264,7 +264,7 @@ async def test_hunt_active_crawls_and_feeds_coach(monkeypatch):
 
 
 async def test_hunt_probe_runs_injection_skills(monkeypatch):
-    from friday.skills import crlf, param_discovery, path_traversal, sqli, web_recon, xxe
+    from friday.skills import crlf, param_discovery, path_traversal, sqli, ssrf, web_recon, xxe
 
     async def fake_nuclei(target, severity="", tags="", active=False):
         return {"findings": []}
@@ -292,6 +292,7 @@ async def test_hunt_probe_runs_injection_skills(monkeypatch):
     monkeypatch.setattr(sqli, "check_sqli", fake_sqli)
     monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
     monkeypatch.setattr(crlf, "check_crlf", empty)
+    monkeypatch.setattr(ssrf, "check_ssrf", empty)  # keep hermetic (no real network)
     monkeypatch.setattr(xxe, "check_xxe", empty_xxe)
 
     res = await H.hunt("http://x.com", probe=True)

@@ -161,6 +161,7 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     from friday.skills.param_discovery import find_params
     from friday.skills.path_traversal import check_path_traversal
     from friday.skills.sqli import check_sqli
+    from friday.skills.ssrf import check_ssrf
     from friday.skills.xxe import check_xxe
 
     findings: list[dict[str, Any]] = []
@@ -176,7 +177,7 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     cand = list(dict.fromkeys(candidates))[:max_urls]  # dedupe, preserve order, bound
 
     for u in cand:
-        for fn in (check_sqli, check_path_traversal, check_crlf):
+        for fn in (check_sqli, check_path_traversal, check_crlf, check_ssrf):
             res = await fn(u)
             findings.extend(res.get("findings", []))
     # 3) XXE against crawled endpoints (no params needed; confirmed-only, so safe to try), capped
