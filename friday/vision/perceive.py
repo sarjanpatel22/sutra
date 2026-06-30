@@ -129,10 +129,21 @@ def _ocr_tsv(img: np.ndarray, scale: float = 2.0) -> list[dict]:
     for ln in out.splitlines()[1:]:
         c = ln.split("\t")
         if len(c) == 12 and c[11].strip():  # map coords back from the upscaled image
-            rows.append({"x": int(int(c[6]) / scale), "y": int(int(c[7]) / scale),
-                         "w": int(int(c[8]) / scale), "h": int(int(c[9]) / scale),
-                         "line": (c[2], c[3], c[4]), "t": c[11]})
+            x, y = int(int(c[6]) / scale), int(int(c[7]) / scale)
+            w, h = int(int(c[8]) / scale), int(int(c[9]) / scale)
+            try:
+                conf = float(c[10])
+            except ValueError:
+                conf = -1.0
+            rows.append({"x": x, "y": y, "w": w, "h": h, "cx": x + w // 2, "cy": y + h // 2,
+                         "conf": conf, "line": (c[2], c[3], c[4]), "t": c[11]})
     return rows
+
+
+def ocr_words(image: np.ndarray, scale: float = 2.0) -> list[dict]:
+    """Public OCR: every on-screen word with absolute coords, centre, and tesseract confidence.
+    Preprocessed (upscale + binarize) so small light-on-dark UI text reads reliably."""
+    return _ocr_tsv(image, scale)
 
 
 def locate_text(image: np.ndarray, query: str,

@@ -1,10 +1,11 @@
 """Desktop take-over: find the on-screen control for a goal and actually click it.
 
-The "…then take the order" half of guide_me — guidance that ACTS. Locates text
-controls by OCR (friday.vision.locate, real coordinates) and clicks/types via xdotool.
-IRREVERSIBLE (moves the mouse, clicks the live desktop) so both skills are confirmation-
-gated. Reliability comes from OCR ground-truth coordinates, not pixel-guessing; honest
-limit: text-labelled controls only — if nothing matches it reports what it CAN see.
+The "…then take the order" half of guide_me — guidance that ACTS. Perception runs on the fast
+engine (friday.vision.perceive: mss capture + preprocessed region-clean OCR that reads small
+light-on-dark UI text, plus OpenCV template matching for a known button image). Clicks/types via
+xdotool. IRREVERSIBLE (moves the mouse, clicks the live desktop) so both skills are confirmation-
+gated. Reliability comes from real coordinates, not pixel-guessing; honest limit: text-labelled
+controls (or a supplied template image) — if nothing matches it reports what it CAN see.
 """
 
 from __future__ import annotations
@@ -15,9 +16,24 @@ import shutil
 from typing import Any
 
 from friday.skills.registry import skill
-from friday.vision.locate import Element, ocr_available, ocr_screen
+from friday.vision import perceive
+from friday.vision.locate import Element, ocr_available
 
 _XDOTOOL = shutil.which("xdotool")
+_MIN_CONF = 40.0  # drop low-confidence OCR noise, matching the old parse_tsv threshold
+
+
+async def _ocr_elements() -> list[Element]:
+    """Fast perception: grab the screen (mss) + preprocessed OCR → confident text Elements."""
+    def _grab_ocr() -> list[Element]:
+        img = perceive.grab()
+        return [
+            Element(text=r["t"], x=r["x"], y=r["y"], w=r["w"], h=r["h"], conf=r["conf"])
+            for r in perceive.ocr_words(img)
+            if r["t"].strip() and r["conf"] >= _MIN_CONF
+        ]
+
+    return await asyncio.to_thread(_grab_ocr)
 
 # Words that describe the ACTION/wrapper, not the target label — stripped before matching.
 _FILLER = re.compile(
@@ -134,7 +150,7 @@ async def _locate(goal: str) -> tuple[Element, str] | dict[str, Any]:
     if not ocr_available() or not _XDOTOOL:
         return {"error": "Desktop control needs tesseract + xdotool installed."}
     try:
-        elements = await ocr_screen()
+        elements = await _ocr_elements()
     except Exception as e:  # noqa: BLE001 — degrade honestly, never crash the turn
         return {"error": f"I couldn't read the screen: {str(e)[:120]}"}
     if not elements:
@@ -157,14 +173,38 @@ async def _locate(goal: str) -> tuple[Element, str] | dict[str, Any]:
     description=(
         "Actually CLICK a control on the user's real desktop — the take-over step "
         "after guidance. Give the goal/label (e.g. 'click the Search menu', 'press "
-        "Save'). Finds the control by its on-screen text and clicks its real location. "
-        "Text-labelled controls only. IRREVERSIBLE — requires confirmation."
+        "Save'), or template_path to an image of the exact button/icon to match and click "
+        "(the most reliable path — works for icon-only controls too). Finds the control's real "
+        "location and clicks it. IRREVERSIBLE — requires confirmation."
     ),
     auto_confirm=False,
     timeout_s=30,
 )
-async def act_on_screen(goal: str) -> dict[str, Any]:
-    """Locate the control matching `goal` by OCR and click it. Honest when unsure."""
+async def act_on_screen(goal: str = "", template_path: str = "") -> dict[str, Any]:
+    """Click the control matching `goal` (OCR) or `template_path` (image). Honest when unsure."""
+    if template_path.strip():  # fast, reliable path: match a known button image and click it
+        if not _XDOTOOL:
+            return {"error": "Desktop control needs xdotool installed."}
+
+        def _find() -> tuple[int, int] | None:
+            import cv2
+            tpl = cv2.imread(template_path)
+            if tpl is None:
+                return None
+            m = perceive.find_template(perceive.grab(), tpl)
+            return m.center if m else None
+
+        try:
+            xy = await asyncio.to_thread(_find)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"I couldn't read the screen: {str(e)[:120]}"}
+        if xy is None:
+            return {"acted": False, "goal": template_path,
+                    "note": f"Template not found on screen: {template_path}"}
+        await click_xy(*xy)
+        return {"acted": True, "goal": template_path, "target": "(template)",
+                "coords": list(xy), "matched_by": "template", "note": "Clicked matched template."}
+
     found = await _locate(goal.strip())
     if isinstance(found, dict):
         return found  # honest error / no-match

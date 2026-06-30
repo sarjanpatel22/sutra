@@ -29,7 +29,7 @@ def _ocr_returns(monkeypatch: pytest.MonkeyPatch, elements: list[Element]) -> No
     async def fake_ocr(*a: object, **k: object) -> list[Element]:
         return elements
 
-    monkeypatch.setattr(dc, "ocr_screen", fake_ocr)
+    monkeypatch.setattr(dc, "_ocr_elements", fake_ocr)  # perceive-backed OCR seam
 
 
 def _click_recorder(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
@@ -133,7 +133,7 @@ async def test_act_ocr_raising_returns_error(monkeypatch: pytest.MonkeyPatch) ->
     async def boom(*a: object, **k: object) -> list[Element]:
         raise RuntimeError("display gone")
 
-    monkeypatch.setattr(dc, "ocr_screen", boom)
+    monkeypatch.setattr(dc, "_ocr_elements", boom)
     out = await act_on_screen("click Save")
     assert "error" in out
     assert clicks == []
