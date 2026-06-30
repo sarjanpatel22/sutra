@@ -89,6 +89,35 @@ def test_parse_openapi_ignores_non_methods():
     assert routes == ["GET /x"]  # 'parameters'/'summary' are not HTTP methods
 
 
+async def test_versioned_swagger_path_is_probed():
+    # regression: petstore-style spec served at /v2/swagger.json must be discovered
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = _SPEC if self.path == "/v2/swagger.json" else "not found"
+            code = 200 if self.path == "/v2/swagger.json" else 404
+            data = body.encode()
+            self.send_response_only(code)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):  # noqa: N802
+            self.send_response_only(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        out = await api_discovery.discover_api(f"http://127.0.0.1:{srv.server_address[1]}/")
+    finally:
+        srv.shutdown()
+    assert len(out["specs"]) == 1 and "GET /orders" in out["endpoints"]
+
+
 async def test_unreachable_is_graceful():
     out = await api_discovery.discover_api("http://127.0.0.1:1/")
     assert "error" in out

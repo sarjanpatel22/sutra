@@ -20,9 +20,10 @@ from urllib.parse import urljoin, urlparse
 from friday.skills.registry import skill
 
 _SPEC_PATHS = (
-    "/swagger.json", "/swagger/v1/swagger.json", "/openapi.json", "/v2/api-docs", "/v3/api-docs",
+    "/swagger.json", "/swagger/v1/swagger.json", "/swagger/v2/swagger.json",
+    "/v2/swagger.json", "/v3/swagger.json", "/openapi.json", "/v2/api-docs", "/v3/api-docs",
     "/api-docs", "/api/swagger.json", "/api/openapi.json", "/api/v1/openapi.json",
-    "/.well-known/openapi.json", "/api.json", "/swagger/doc.json",
+    "/api/v2/swagger.json", "/.well-known/openapi.json", "/api.json", "/swagger/doc.json",
 )
 _GRAPHQL_PATHS = ("/graphql", "/api/graphql", "/v1/graphql", "/query", "/graphql/console")
 _METHODS = ("get", "post", "put", "delete", "patch", "head", "options")
