@@ -163,6 +163,7 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     from friday.skills.csrf import check_csrf
     from friday.skills.dom_xss import dom_xss_scan
     from friday.skills.graphql_batch import graphql_batch
+    from friday.skills.http_methods import check_http_methods
     from friday.skills.param_discovery import find_params
     from friday.skills.path_traversal import check_path_traversal
     from friday.skills.sqli import check_sqli
@@ -219,6 +220,8 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
             })
     # 7) Web cache poisoning on the host root (confirmed-only: reflect-then-persist, cache-busted)
     findings.extend((await check_cache_poisoning(host)).get("findings", []))
+    # 8) HTTP method audit on the host (TRACE/XST confirmed by echo; dangerous methods advertised)
+    findings.extend((await check_http_methods(host)).get("findings", []))
     return findings, None
 
 

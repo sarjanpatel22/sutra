@@ -10,7 +10,7 @@ def _quiet_network_skills(monkeypatch):
     """No-op the auto-wired network skills (dns_brute in enum, dom_xss_scan + check_cache_poisoning
     in probe) so every hunt test stays hermetic. Dedicated wiring tests override with populated
     fakes."""
-    from friday.skills import cache_poison, dns_brute, dom_xss
+    from friday.skills import cache_poison, dns_brute, dom_xss, http_methods
 
     async def no_brute(domain, words="", known="", permute=True):
         return {"subdomains": []}
@@ -18,12 +18,13 @@ def _quiet_network_skills(monkeypatch):
     async def no_dom(url):
         return {"candidates": []}
 
-    async def no_cache(url):
+    async def no_findings(url):
         return {"findings": []}
 
     monkeypatch.setattr(dns_brute, "dns_brute", no_brute)
     monkeypatch.setattr(dom_xss, "dom_xss_scan", no_dom)
-    monkeypatch.setattr(cache_poison, "check_cache_poisoning", no_cache)
+    monkeypatch.setattr(cache_poison, "check_cache_poisoning", no_findings)
+    monkeypatch.setattr(http_methods, "check_http_methods", no_findings)
 
 
 async def test_is_live_web_detects_open_port(monkeypatch):
