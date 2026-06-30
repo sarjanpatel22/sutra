@@ -1139,9 +1139,10 @@ def hunt(
                                      "than brute-force, more intrusive — only if the program "
                                      "ALLOWS active testing)"),
     probe: bool = typer.Option(False, "--probe/--no-probe",
-                               help="targeted confirmed-only injection probes: discover params "
-                                    "then test SQLi/LFI/CRLF/XXE (complements DAST — only if the "
-                                    "program ALLOWS active testing)"),
+                               help="targeted confirmed-only probes: discover params then test "
+                                    "SQLi/LFI/CRLF/SSRF/XXE + CSRF + API/GraphQL-batching "
+                                    "(complements DAST — only if the program ALLOWS active "
+                                    "testing)"),
     out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
 ) -> None:
     """One-command bug-bounty hunt: enumerate the assets -> probe which are live -> nuclei-scan

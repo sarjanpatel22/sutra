@@ -264,7 +264,18 @@ async def test_hunt_active_crawls_and_feeds_coach(monkeypatch):
 
 
 async def test_hunt_probe_runs_injection_skills(monkeypatch):
-    from friday.skills import crlf, param_discovery, path_traversal, sqli, ssrf, web_recon, xxe
+    from friday.skills import (
+        api_discovery,
+        crlf,
+        csrf,
+        graphql_batch,
+        param_discovery,
+        path_traversal,
+        sqli,
+        ssrf,
+        web_recon,
+        xxe,
+    )
 
     async def fake_nuclei(target, severity="", tags="", active=False):
         return {"findings": []}
@@ -282,8 +293,11 @@ async def test_hunt_probe_runs_injection_skills(monkeypatch):
     async def empty(url, param=""):
         return {"findings": []}
 
-    async def empty_xxe(url):
+    async def empty_one(url):  # single-arg skills (xxe / csrf / graphql_batch)
         return {"findings": []}
+
+    async def empty_api(url):
+        return {"findings": [], "graphql": []}
 
     monkeypatch.setattr(H, "_url_reachable", _reachable)
     monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
@@ -293,7 +307,10 @@ async def test_hunt_probe_runs_injection_skills(monkeypatch):
     monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
     monkeypatch.setattr(crlf, "check_crlf", empty)
     monkeypatch.setattr(ssrf, "check_ssrf", empty)  # keep hermetic (no real network)
-    monkeypatch.setattr(xxe, "check_xxe", empty_xxe)
+    monkeypatch.setattr(xxe, "check_xxe", empty_one)
+    monkeypatch.setattr(csrf, "check_csrf", empty_one)
+    monkeypatch.setattr(graphql_batch, "graphql_batch", empty_one)
+    monkeypatch.setattr(api_discovery, "discover_api", empty_api)
 
     res = await H.hunt("http://x.com", probe=True)
     sqli_f = next(f for f in res["findings"] if f["id"] == "sqli-error")

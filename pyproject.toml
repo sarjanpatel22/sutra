@@ -22,6 +22,8 @@ dependencies = [
     "typer>=0.12",
     "numpy>=1.26",   # core: recall index, dreaming, rag, voice ndarray ops
     "psutil>=5.9",   # core: system_info skill (CPU/RAM/disk/GPU) — imported at autodiscover
+    "opencv-python-headless>=4.9",  # vision: fast template match / element detection (CI-safe)
+    "mss>=9",        # vision: fast screen capture (~50 fps vs ~3 with ImageMagick)
 ]
 
 [project.optional-dependencies]

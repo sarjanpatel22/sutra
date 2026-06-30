@@ -153,11 +153,14 @@ async def _content_findings(host: str) -> tuple[list[dict[str, Any]], str | None
 async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
                               ) -> tuple[list[dict[str, Any]], str | None]:
     """Run the targeted injection skills against a host: discover reflected params (find_params),
-    then test each parameterised URL for SQLi / LFI / CRLF, and try XXE on crawled endpoints. These
-    are confirmed-only skills, so what they return is real (no scanner false-clean). Complements
-    nuclei (templated) and DAST (fuzzed) with deterministic, signature-confirmed checks. Returns
-    (findings, optional-warning)."""
+    then test each parameterised URL for SQLi / LFI / CRLF / SSRF, try XXE on crawled endpoints,
+    check the host for CSRF, and discover its API/GraphQL surface (testing any GraphQL endpoint for
+    batching abuse). Confirmed-only skills, so what they return is real (no scanner false-clean) —
+    complementing nuclei (templated) and DAST (fuzzed). Returns (findings, optional-warning)."""
+    from friday.skills.api_discovery import discover_api
     from friday.skills.crlf import check_crlf
+    from friday.skills.csrf import check_csrf
+    from friday.skills.graphql_batch import graphql_batch
     from friday.skills.param_discovery import find_params
     from friday.skills.path_traversal import check_path_traversal
     from friday.skills.sqli import check_sqli
@@ -184,6 +187,13 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     for u in [x for x in urls if "?" not in x][:max_urls]:
         res = await check_xxe(u)
         findings.extend(res.get("findings", []))
+    # 4) CSRF on the host (state-changing forms without tokens / weak SameSite cookies)
+    findings.extend((await check_csrf(host)).get("findings", []))
+    # 5) API surface → GraphQL batching abuse on any live GraphQL endpoint found
+    api = await discover_api(host)
+    findings.extend(api.get("findings", []))
+    for gql in api.get("graphql", [])[:max_urls]:
+        findings.extend((await graphql_batch(gql)).get("findings", []))
     return findings, None
 
 
