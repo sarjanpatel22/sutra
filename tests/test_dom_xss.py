@@ -50,6 +50,48 @@ def test_scan_sink_with_source_elsewhere_is_low() -> None:
     assert any(f["confidence"] == "low" and "elsewhere" in f["source"] for f in out)
 
 
+def test_minified_far_apart_source_sink_not_high() -> None:
+    # The whole minified file is ONE line: a source and a sink separated by kilobytes must NOT be
+    # a high flow (the bug that flagged 19 on an Angular bundle). May be a single LOW, never high.
+    line = "var a=location.hash;" + ("x;" * 2000) + "el.innerHTML=untrusted;"
+    out = _scan_js("main.min.js", line)
+    assert all(f["confidence"] != "high" for f in out)
+
+
+def test_minified_close_source_sink_still_high() -> None:
+    # A real flow on a minified line (source within proximity of the sink) IS still caught.
+    line = ("noise;" * 500) + "el.innerHTML=location.hash;" + ("noise;" * 500)
+    out = _scan_js("main.min.js", line)
+    assert any(f["confidence"] == "high" for f in out)
+
+
+def test_single_line_cannot_flood_with_highs() -> None:
+    # Many real-looking flows on one minified line are capped so one line can't dominate.
+    line = "el.innerHTML=location.hash;" * 20
+    out = _scan_js("main.min.js", line)
+    highs = [f for f in out if f["confidence"] == "high"]
+    assert len(highs) <= dx._MAX_HIGH_PER_LINE
+
+
+def test_bare_hash_or_search_method_not_a_source() -> None:
+    # The tightened source regex must NOT treat String.search / Array.hash-like as a DOM source.
+    assert _scan_js("app.js", "el.innerHTML = items.search(term);") == []
+    assert _scan_js("app.js", "node.innerHTML = obj.hash;") == []
+
+
+def test_lowercase_function_expression_is_not_a_sink() -> None:
+    # `function(` expressions are everywhere; only the capital-F `Function()` constructor is a sink.
+    assert _scan_js("app.js", "arr.map(function(x){ return location.hash; });") == []
+    out = _scan_js("app.js", "var f = new Function(location.hash);")  # the constructor IS a sink
+    assert any(c["confidence"] == "high" for c in out)
+
+
+def test_bare_location_does_not_self_match_navigation_sink() -> None:
+    # `location.replace("/home")` must not be read as source `location` → sink `location.replace`.
+    assert all(c["confidence"] != "high"
+               for c in _scan_js("app.js", 'window.location.replace("/home");'))
+
+
 def test_scan_reports_file_line_snippet() -> None:
     out = _scan_js("bundle.js", "x.innerHTML = document.URL;")
     assert out[0]["file"] == "bundle.js"
@@ -80,6 +122,31 @@ async def test_scan_finds_flows_in_inline_and_bundle(monkeypatch: pytest.MonkeyP
     assert out["scripts_scanned"] == 1
     assert out["high_confidence"] >= 2  # inline innerHTML + bundle document.write
     assert any(c["file"] == "app.js" for c in out["candidates"])
+
+
+async def test_scan_skips_framework_bundles(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A vendor/framework bundle is skipped (its sinks are library internals); the app bundle isn't.
+    page = ('<html><script src="/static/vendor.1a2b.js"></script>'
+            '<script src="/static/polyfills.js"></script>'
+            '<script src="/static/main.js"></script></html>')
+    bodies = {
+        "vendor.1a2b.js": "el.innerHTML=location.hash;",     # would flag, but must be skipped
+        "polyfills.js": "document.write(location.search);",  # skipped too
+        "main.js": "node.innerHTML=location.hash;",          # the app bundle — scanned
+    }
+
+    def fake(url: str) -> tuple[str, str | None]:
+        if url.rstrip("/").endswith("example.com"):
+            return page, None
+        return bodies.get(url.split("/")[-1], ""), None
+
+    monkeypatch.setattr(dx, "_fetch", fake)
+    out = await dom_xss_scan("http://example.com/")
+    assert out["skipped_bundles"] == 2
+    assert out["scripts_scanned"] == 1
+    files = {c["file"] for c in out["candidates"]}
+    assert "main.js" in files
+    assert not any("vendor" in f or "polyfill" in f for f in files)
 
 
 async def test_scan_unreachable_errors(monkeypatch: pytest.MonkeyPatch) -> None:
