@@ -1,8 +1,9 @@
 """sutra hunt — the one-command bug-bounty program run.
 
 Chains the pieces into a single flow over a whole program: find_subdomains + dns_brute (the assets)
-→ probe which are live → nuclei_scan each → ONE combined, submittable bounty report. The TOOLS find
-(real, grounded output), the report assembles itself, YOU verify + submit. Authorized programs only.
++ a passive Shodan record → probe which are live → nuclei_scan each → ONE combined, submittable
+bounty report. The TOOLS find (real, grounded output), the report assembles itself, YOU verify +
+submit. Authorized programs only.
 
 A bare domain (example.com) is auto-enumerated; a URL/host (http://x, host:port) is scanned as the
 single target. The live-host probe + the per-host scan cap keep a real program run bounded.
@@ -20,6 +21,36 @@ ObserveFn = Callable[[str, dict[str, Any]], None] | None
 
 # A bare apex/host (no scheme, port, or path) — the signal to enumerate subdomains.
 _BARE_DOMAIN = re.compile(r"^(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
+
+# A discovered param whose NAME reads like a chat/LLM message field — the only params worth firing
+# the (active) prompt-injection probe at, so a hunt doesn't blast injections at every parameter.
+_LLM_PARAM = re.compile(
+    r"^(?:message|msg|prompt|query|q|question|input|text|content|chat|ask)$", re.I)
+
+
+async def _shodan_leads(host: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Passive Shodan OSINT on the apex (run once per hunt, not per subdomain). Shodan-tagged CVEs
+    become LOW leads (verify before reporting — a cached tag isn't a confirmed finding); the record
+    summary is returned as context. Silently skipped when no API key is configured (CI-safe)."""
+    from friday.skills.shodan_recon import shodan_host
+    res = await shodan_host(host)
+    if res.get("error"):  # no key / unresolved / API error → skip quietly
+        return [], None
+    leads = [
+        {
+            "id": f"shodan-{cve}", "name": f"Shodan-tagged {cve} on {res.get('ip', host)}",
+            "severity": "low", "matched_at": res.get("ip", host), "host": host,
+            "description": "Shodan tagged this CVE for the host from its cached scan data. A LEAD, "
+                           "not a confirmed finding — re-verify the service/version is live and "
+                           "actually vulnerable (nuclei / manual) before reporting.",
+        }
+        for cve in (res.get("vulns") or [])[:20]
+    ]
+    if not (leads or res.get("ports")):
+        return [], None
+    summary = {"ip": res.get("ip"), "ports": res.get("ports", []),
+               "vulns": res.get("vulns", []), "org": res.get("org")}
+    return leads, summary
 
 
 def _split(spec: str) -> list[str]:
@@ -160,12 +191,14 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     from friday.skills.api_discovery import discover_api
     from friday.skills.cache_poison import check_cache_poisoning
     from friday.skills.crlf import check_crlf
+    from friday.skills.csp_analyze import analyze_csp
     from friday.skills.csrf import check_csrf
     from friday.skills.dom_xss import dom_xss_scan
     from friday.skills.graphql_batch import graphql_batch
     from friday.skills.http_methods import check_http_methods
     from friday.skills.param_discovery import find_params
     from friday.skills.path_traversal import check_path_traversal
+    from friday.skills.prompt_injection import check_prompt_injection
     from friday.skills.sqli import check_sqli
     from friday.skills.ssrf import check_ssrf
     from friday.skills.xxe import check_xxe
@@ -222,6 +255,33 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     findings.extend((await check_cache_poisoning(host)).get("findings", []))
     # 8) HTTP method audit on the host (TRACE/XST confirmed by echo; dangerous methods advertised)
     findings.extend((await check_http_methods(host)).get("findings", []))
+    # 9) CSP weakness: a present-but-bypassable policy leaves any XSS here exploitable. Only the
+    # HIGH-severity gaps go in, as ONE low lead per host — hardening context that raises XSS impact,
+    # not a bug on its own.
+    csp_issues = (await analyze_csp(host)).get("issues", [])
+    high_csp = [i for i in csp_issues if i.get("severity") == "high"]
+    if high_csp:
+        gaps = "; ".join(i["issue"] for i in high_csp)
+        findings.append({
+            "id": "csp-weak", "name": f"Weak CSP: {gaps[:120]}", "severity": "low",
+            "matched_at": host,
+            "description": f"Content-Security-Policy present but bypassable ({gaps}). Not a bug "
+                           "alone, but it removes the mitigation for any XSS here — raise the "
+                           "impact of a reflected/DOM XSS on this host accordingly.",
+        })
+    # 10) Prompt injection: if a discovered param looks like a chat/LLM message field, run the
+    # echo-proof injection probe against it (confirmed-only → no false positive). One is enough.
+    for p in discovered:
+        if not _LLM_PARAM.match(p):
+            continue
+        pi = await check_prompt_injection(host, param=p)
+        if pi.get("vulnerable"):
+            findings.append({
+                "id": f"prompt-injection-{p}", "name": f"Prompt injection via '{p}'",
+                "severity": "high", "matched_at": host,
+                "description": pi.get("note", "confirmed prompt injection (echo-proof reversal)"),
+            })
+        break
     return findings, None
 
 
@@ -246,11 +306,14 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         confirm the program ALLOWS active testing first.
     probe: opt-in targeted-injection pass — discovers reflected params (find_params) and runs the
         confirmed-only skills (check_sqli/path_traversal/crlf/ssrf, check_xxe on crawled endpoints,
-        check_csrf, API/GraphQL-batching, web cache poisoning) against each parameterised URL, plus
-        a static DOM-XSS source→sink scan of the host's JS (high-confidence flows only).
-        Deterministic, signature-confirmed checks that complement nuclei + DAST. Authorized +
-        active-testing-allowed only.
-    Returns {target, hosts, findings, report}.
+        check_csrf, API/GraphQL-batching, web cache poisoning, HTTP-method audit) against each
+        parameterised URL, plus a static DOM-XSS source→sink scan of the host's JS (high-confidence
+        flows only), a CSP-weakness check (bypassable policy → low lead), a WAF/CDN fingerprint
+        (context), and prompt-injection on any chat-like param. Deterministic, signature-confirmed
+        checks that complement nuclei + DAST. Authorized + active-testing-allowed only.
+    Returns {target, hosts, findings, warnings, crawled, context, report}. `context` carries
+        non-finding operator intel: a passive Shodan record (open ports / tagged CVEs) and any
+        WAF/CDN fingerprinted per host.
     """
     from friday.core.bounty import draft_bounty_report
     from friday.skills.recon import find_subdomains
@@ -266,6 +329,8 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
     do_enum = enum if enum is not None else bool(_BARE_DOMAIN.match(target.lower().rstrip("/")))
 
     warnings: list[str] = []  # so '0 findings' is never silently mistaken for 'clean'
+    context: dict[str, Any] = {}  # operator intel that isn't a finding (WAF fronting / Shodan)
+    shodan_leads: list[dict[str, Any]] = []
     if do_enum:
         _emit(observe, "enum", {"domain": bare})
         sub_res = await find_subdomains(bare)
@@ -287,6 +352,11 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         in_scope = [s for s in subs if _in_scope(s, scope_pats, excl_pats)]
         _emit(observe, "enumerated", {"count": len(subs), "in_scope": len(in_scope)})
         hosts = await _live_web_hosts(in_scope, max_hosts)
+        shodan_leads, shodan_ctx = await _shodan_leads(bare)  # passive OSINT on the apex, once
+        if shodan_ctx:
+            context["shodan"] = shodan_ctx
+            _emit(observe, "shodan", {"ports": len(shodan_ctx["ports"]),
+                                      "vulns": len(shodan_ctx["vulns"])})
     else:
         if not _in_scope(bare, scope_pats, excl_pats):
             return {"error": f"{bare} is outside the declared scope — refusing to scan it"}
@@ -296,10 +366,13 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
             return {"target": target, "hosts": [], "findings": [], "warnings": [],
                     "error": f"{bare} is not reachable — nothing to scan"}
         hosts = [host_url]
+        shodan_leads, shodan_ctx = await _shodan_leads(bare)  # passive OSINT on the target, once
+        if shodan_ctx:
+            context["shodan"] = shodan_ctx
     _emit(observe, "hosts", {"live": hosts})
 
     scan_tags = (tags or "").strip() or _PROFILES.get(profile, profile)  # explicit tags win
-    findings: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = list(shodan_leads)  # passive CVE leads seed the report
     for h in hosts:
         _emit(observe, "scan", {"host": h})
         res = await nuclei_scan(h, severity=severity, tags=scan_tags)
@@ -335,6 +408,11 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
             _emit(observe, "active_found", {"host": h, "found": len(afinds)})
         if probe:  # opt-in: targeted confirmed-only injection probes (find_params → sqli/lfi/crlf)
             _emit(observe, "probe", {"host": h})
+            from friday.skills.waf_detect import detect_waf
+            waf = await detect_waf(h)  # passive: what's fronting this host shapes the approach
+            if waf.get("waf_detected"):
+                context.setdefault("waf", {})[h] = [d["waf"] for d in waf["wafs"]]
+                _emit(observe, "waf", {"host": h, "wafs": context["waf"][h]})
             host_urls = [u for u in crawled if urlparse(u).hostname == urlparse(h).hostname]
             if not host_urls:  # no crawl ran (probe without active) — crawl this host now
                 cr = await crawl(h)
@@ -351,6 +429,6 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         _emit(observe, "scanned", {"host": h, "found": len(host_findings)})
 
     return {"target": target, "hosts": hosts, "findings": findings, "warnings": warnings,
-            "crawled": crawled,
+            "crawled": crawled, "context": context,
             "report": draft_bounty_report(target, findings, warnings=warnings,
                                           surfaces=hosts + crawled)}

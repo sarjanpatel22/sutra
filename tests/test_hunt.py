@@ -7,10 +7,19 @@ from friday.core import hunt as H
 
 @pytest.fixture(autouse=True)
 def _quiet_network_skills(monkeypatch):
-    """No-op the auto-wired network skills (dns_brute in enum, dom_xss_scan + check_cache_poisoning
-    in probe) so every hunt test stays hermetic. Dedicated wiring tests override with populated
-    fakes."""
-    from friday.skills import cache_poison, dns_brute, dom_xss, http_methods
+    """No-op the auto-wired network skills (dns_brute + shodan_host in enum; dom_xss_scan,
+    check_cache_poisoning, check_http_methods, analyze_csp, detect_waf, check_prompt_injection in
+    probe) so hunt tests stay hermetic. Dedicated wiring tests override with populated fakes."""
+    from friday.skills import (
+        cache_poison,
+        csp_analyze,
+        dns_brute,
+        dom_xss,
+        http_methods,
+        prompt_injection,
+        shodan_recon,
+        waf_detect,
+    )
 
     async def no_brute(domain, words="", known="", permute=True):
         return {"subdomains": []}
@@ -21,10 +30,26 @@ def _quiet_network_skills(monkeypatch):
     async def no_findings(url):
         return {"findings": []}
 
+    async def no_csp(url):
+        return {"issues": []}
+
+    async def no_waf(url):
+        return {"waf_detected": False, "wafs": []}
+
+    async def no_pi(url, param="", method="auto"):
+        return {"vulnerable": False}
+
+    async def no_shodan(target):
+        return {"error": "no Shodan API key"}
+
     monkeypatch.setattr(dns_brute, "dns_brute", no_brute)
     monkeypatch.setattr(dom_xss, "dom_xss_scan", no_dom)
     monkeypatch.setattr(cache_poison, "check_cache_poisoning", no_findings)
     monkeypatch.setattr(http_methods, "check_http_methods", no_findings)
+    monkeypatch.setattr(csp_analyze, "analyze_csp", no_csp)
+    monkeypatch.setattr(waf_detect, "detect_waf", no_waf)
+    monkeypatch.setattr(prompt_injection, "check_prompt_injection", no_pi)
+    monkeypatch.setattr(shodan_recon, "shodan_host", no_shodan)
 
 
 async def test_is_live_web_detects_open_port(monkeypatch):
@@ -504,3 +529,152 @@ async def test_hunt_honors_explicit_port_in_liveness(monkeypatch):
     monkeypatch.setattr(H.asyncio, "open_connection", fake_open)
     await H._url_reachable("http://localhost:3000")
     assert seen["port"] == 3000                          # honored the explicit port, not 80/443
+
+
+def _hermetic_probe(monkeypatch, *, discovered=None):
+    """Set every probe-path skill to a benign default so a probe test is hermetic; individual tests
+    override the one skill they exercise afterwards. Returns nothing — patches in place."""
+    from friday.skills import (
+        api_discovery,
+        crlf,
+        csrf,
+        graphql_batch,
+        param_discovery,
+        path_traversal,
+        sqli,
+        ssrf,
+        web_recon,
+        xxe,
+    )
+
+    async def fake_nuclei(target, severity="", tags="", active=False):
+        return {"findings": []}
+
+    async def fake_crawl(url, depth=2):
+        return {"count": 0, "urls": []}
+
+    async def fake_params(url, extra=""):
+        return {"discovered": discovered or [], "findings": []}
+
+    async def empty(url, param=""):
+        return {"findings": []}
+
+    async def empty_one(url):
+        return {"findings": []}
+
+    async def empty_api(url):
+        return {"findings": [], "graphql": []}
+
+    monkeypatch.setattr(H, "_url_reachable", _reachable)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(web_recon, "crawl", fake_crawl)
+    monkeypatch.setattr(param_discovery, "find_params", fake_params)
+    monkeypatch.setattr(sqli, "check_sqli", empty)
+    monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
+    monkeypatch.setattr(crlf, "check_crlf", empty)
+    monkeypatch.setattr(ssrf, "check_ssrf", empty)
+    monkeypatch.setattr(xxe, "check_xxe", empty_one)
+    monkeypatch.setattr(csrf, "check_csrf", empty_one)
+    monkeypatch.setattr(graphql_batch, "graphql_batch", empty_one)
+    monkeypatch.setattr(api_discovery, "discover_api", empty_api)
+
+
+async def test_hunt_probe_adds_weak_csp_lead(monkeypatch):
+    from friday.skills import csp_analyze
+
+    async def weak_csp(url):
+        return {"issues": [{"issue": "script-src allows 'unsafe-inline'", "severity": "high"},
+                           {"issue": "no base-uri directive", "severity": "medium"}]}
+
+    _hermetic_probe(monkeypatch)
+    monkeypatch.setattr(csp_analyze, "analyze_csp", weak_csp)  # override autouse no-op
+
+    res = await H.hunt("http://x.com", probe=True)
+    csp = next(f for f in res["findings"] if f["id"] == "csp-weak")
+    assert csp["severity"] == "low" and csp["host"] == "http://x.com"
+    assert "unsafe-inline" in csp["name"]           # the HIGH gap surfaced
+    assert "base-uri" not in csp["name"]            # the medium gap did NOT flood the lead
+
+
+async def test_hunt_probe_prompt_injection_only_on_chat_param(monkeypatch):
+    from friday.skills import prompt_injection
+
+    calls = {"params": []}
+
+    async def fake_pi(url, param="", method="auto"):
+        calls["params"].append(param)
+        return {"vulnerable": True, "note": "confirmed"} if param == "message" else \
+               {"vulnerable": False}
+
+    # 'id' is not a chat param, 'message' is → only 'message' should be probed
+    _hermetic_probe(monkeypatch, discovered=["id", "message"])
+    monkeypatch.setattr(prompt_injection, "check_prompt_injection", fake_pi)
+
+    res = await H.hunt("http://x.com", probe=True)
+    assert calls["params"] == ["message"]           # non-chat param 'id' never probed
+    pi = next(f for f in res["findings"] if f["id"] == "prompt-injection-message")
+    assert pi["severity"] == "high"
+
+
+async def test_hunt_probe_records_waf_context(monkeypatch):
+    from friday.skills import waf_detect
+
+    async def fake_waf(url):
+        return {"waf_detected": True, "wafs": [{"waf": "Cloudflare", "evidence": "cf-ray"}]}
+
+    _hermetic_probe(monkeypatch)
+    monkeypatch.setattr(waf_detect, "detect_waf", fake_waf)
+
+    res = await H.hunt("http://x.com", probe=True)
+    assert res["context"]["waf"]["http://x.com"] == ["Cloudflare"]   # intel, not a finding
+    assert not any(f.get("name", "").startswith("Cloudflare") for f in res["findings"])
+
+
+async def test_hunt_enum_shodan_leads_and_context(monkeypatch):
+    from friday.skills import recon, shodan_recon, web_recon
+
+    async def fake_find(domain):
+        return {"subdomains": []}
+
+    async def fake_live(hosts, max_hosts):
+        return ["https://example.com"]
+
+    async def fake_nuclei(target, severity="", tags=""):
+        return {"findings": []}
+
+    async def fake_shodan(target):
+        return {"ip": "93.184.216.34", "ports": [80, 443], "vulns": ["CVE-2021-1234"],
+                "org": "Example Org"}
+
+    monkeypatch.setattr(recon, "find_subdomains", fake_find)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(H, "_live_web_hosts", fake_live)
+    monkeypatch.setattr(shodan_recon, "shodan_host", fake_shodan)   # override autouse no-op
+
+    res = await H.hunt("example.com")
+    lead = next(f for f in res["findings"] if f["id"] == "shodan-CVE-2021-1234")
+    assert lead["severity"] == "low" and lead["host"] == "example.com"   # a lead, not confirmed
+    assert res["context"]["shodan"]["ports"] == [80, 443]
+
+
+async def test_hunt_shodan_no_key_is_silent(monkeypatch):
+    # Without an API key shodan_host errors → no leads, no context, no crash (CI-safe default).
+    from friday.skills import recon, web_recon
+
+    async def fake_find(domain):
+        return {"subdomains": []}
+
+    async def fake_live(hosts, max_hosts):
+        return ["https://example.com"]
+
+    async def fake_nuclei(target, severity="", tags=""):
+        return {"findings": []}
+
+    monkeypatch.setattr(recon, "find_subdomains", fake_find)
+    monkeypatch.setattr(web_recon, "nuclei_scan", fake_nuclei)
+    monkeypatch.setattr(H, "_live_web_hosts", fake_live)
+    # autouse fixture already makes shodan_host return an error (no key)
+
+    res = await H.hunt("example.com")
+    assert not any(f["id"].startswith("shodan-") for f in res["findings"])
+    assert "shodan" not in res["context"]
