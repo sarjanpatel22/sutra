@@ -626,6 +626,20 @@ async def test_worker_allows_in_scope_target(monkeypatch):
     assert acted is True and "http_headers" in digest  # in-scope ran and was relayed
 
 
+def test_worker_tools_are_relevant_not_all(monkeypatch):
+    # The weather bug: the worker was handed all ~100 skills and a weak model mis-picked `weather`
+    # for a recon objective. _worker_tools must surface pentest essentials + relevant extras only.
+    from friday.skills import registry
+    registry.autodiscover()
+    monkeypatch.setenv("SUTRA_MAX_TOOLS", "25")
+    schemas = agent._worker_tools(
+        "Fingerprint the service and run a port scan and directory brute-force", "compromise box")
+    names = {s["function"]["name"] for s in schemas}
+    assert {"run_command", "nuclei_scan", "web_enum", "port_scan"} <= names  # essentials guaranteed
+    assert "weather" not in names  # irrelevant noise pruned
+    assert len(names) < len(registry.list_skills())  # a focused subset, not the whole registry
+
+
 async def test_worker_digest_is_capped(monkeypatch):
     # A runaway worker that dumps a wall of output can't inflate the PAID orchestrator's input.
     from friday.core.router import Tier

@@ -885,6 +885,31 @@ async def _run_worker(
     return digest, produced, acted
 
 
+# The recon/exploit skills a pentest worker should ALWAYS have on hand regardless of how the
+# orchestrator phrased the objective — plus run_command as the universal escape hatch. Without this,
+# the worker was shown all ~100 skills at once and a weak local model mis-picked nonsense (it called
+# `weather` for a recon objective); on-demand select_tools alone could also miss the right tool if
+# the objective wording didn't lexically match. This guarantees the essentials, then adds the
+# objective-relevant extras on top.
+_WORKER_ESSENTIAL = (
+    "run_command", "nuclei_scan", "web_enum", "http_headers", "crawl", "port_scan", "find_params",
+    "dns_lookup", "whois", "searchsploit", "check_sqli", "check_nosqli", "scan_secrets",
+)
+
+
+def _worker_tools(objective: str, goal: str) -> list[dict[str, Any]]:
+    """Objective-relevant tool schemas for the worker: the on-demand selection for THIS objective
+    plus the always-on pentest essentials — so a weak local worker sees a focused, sensible set
+    (nmap/nuclei/web_enum/…), not all ~100 skills where it mis-selects (e.g. `weather`)."""
+    schemas = registry.select_tools(f"{objective}\n{goal}", limit=_max_tools())
+    have = {s["function"]["name"] for s in schemas}
+    known = set(registry.list_skills())
+    for name in _WORKER_ESSENTIAL:
+        if name not in have and name in known:
+            schemas.append(registry.get(name).schema)
+    return schemas
+
+
 async def run_engagement_tiered(
     goal: str,
     *,
@@ -914,8 +939,7 @@ async def run_engagement_tiered(
     from friday.core.scope import parse_scope
     scope_rules = parse_scope(scope)
     loop_confirm = _make_loop_confirm(scope_rules, confirm)
-    registry.autodiscover()
-    tools = registry.all_tools()
+    registry.autodiscover()  # worker tools are selected per objective (see _worker_tools)
 
     def _emit(kind: str, data: dict[str, Any]) -> None:
         if observe:
@@ -945,8 +969,8 @@ async def run_engagement_tiered(
                 report = _strip_done_marker(directive)
                 break
             digest, produced, acted = await _run_worker(
-                directive, goal, tools, worker_tier, worker_rounds, loop_confirm, observe,
-                scope_rules=scope_rules,
+                directive, goal, _worker_tools(directive, goal), worker_tier, worker_rounds,
+                loop_confirm, observe, scope_rules=scope_rules,
             )
             transcript.extend(produced)
             _emit("worker_report", {"text": digest})
