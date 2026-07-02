@@ -433,9 +433,11 @@ def _looks_risky(cmd: str) -> bool:
 
 def _extract_findings(messages: list[dict[str, Any]]) -> list[str]:
     """Pull scannable facts out of the loop's tool results — the structured JSON the recon/loot
-    skills return (open ports, web paths, cracked hashes, exploits, DNS/WHOIS, headers) — so the
-    engagement file leads with WHAT WAS FOUND, not just the raw transcript. Best effort: an
-    unparseable, errored, or unfamiliar result is skipped, never raised on. Deduped, no model call.
+    skills return (open ports, web paths, cracked hashes, exploits, DNS/WHOIS, headers) AND the
+    vuln-finding family (nuclei + confirmed-injection/exposure skills, via their shared `findings`
+    list / `vulnerable` flag) — so the engagement file leads with WHAT WAS FOUND, including the
+    payable vulns, not just the raw transcript. Best effort: an unparseable, errored, skipped, or
+    unfamiliar result is skipped, never raised on. Deduped, no model call.
     """
     findings: list[str] = []
     seen: set[str] = set()
@@ -452,8 +454,9 @@ def _extract_findings(messages: list[dict[str, Any]]) -> list[str]:
             data = json.loads(m.get("content") or "")
         except (ValueError, TypeError):
             continue  # truncated / non-JSON tool output → leave it in the transcript only
-        if not isinstance(data, dict) or data.get("error") or data.get("declined"):
-            continue
+        if not isinstance(data, dict) or data.get("error") or data.get("declined") \
+                or data.get("blocked") or data.get("skipped"):
+            continue  # errors + the loop's own scope/dedup short-circuits are not findings
         name = m.get("name")
         if name == "port_scan" and data.get("open"):
             ports = ", ".join(
@@ -483,6 +486,26 @@ def _extract_findings(messages: list[dict[str, Any]]) -> list[str]:
             _add(f"**Exploits** for {data.get('term', '?')}: {titles}")
         elif name == "crack_hash" and data.get("cracked"):
             _add(f"**Cracked hash** {str(data.get('hash', '?'))[:32]} → {data.get('password')}")
+        elif isinstance(data.get("findings"), list) and data["findings"]:
+            # The vuln-finding family — nuclei_scan plus the confirmed-injection/exposure skills
+            # (check_sqli/nosqli/ssrf/xxe/cors/takeover, scan_secrets, discover_api…) — all return
+            # a `findings` list of {name/id, severity, matched_at}. These are the PAYABLE findings
+            # the engagement exists to surface; without this branch they were buried in the raw
+            # transcript (the recon whitelist above never saw them).
+            for f in data["findings"][:10]:
+                if not isinstance(f, dict):
+                    continue
+                sev = str(f.get("severity", "?")).upper()
+                label = f.get("name") or f.get("id") or "finding"
+                where = f.get("matched_at") or f.get("url") or data.get("url") or ""
+                _add(f"**[{sev}]** {label}" + (f" — {where}" if where else "") + f"  ({name})")
+        elif data.get("vulnerable") is True:
+            # A skill that confirms ONE vuln without a findings list (e.g. check_prompt_injection).
+            sev = str(data.get("severity", "?")).upper()
+            where = data.get("url") or data.get("matched_at") or ""
+            extra = f" (param {data['param']})" if data.get("param") else ""
+            label = str(name or "vuln").replace("check_", "").replace("_", " ")
+            _add(f"**[{sev}]** {label} confirmed{extra}" + (f" — {where}" if where else ""))
     return findings
 
 

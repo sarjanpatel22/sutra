@@ -321,6 +321,37 @@ def test_extract_findings_pulls_structured_facts():
     assert "boom" not in joined and "noise" not in joined  # errored / declined / raw skipped
 
 
+def test_extract_findings_surfaces_vuln_family():
+    # THE gap: the engagement surfaced recon facts but was BLIND to the vuln-finding skills, so a
+    # confirmed SQLi / exposed secret from an autonomous run never reached the Findings panel.
+    msgs = [
+        _tool_msg("nuclei_scan", {"findings": [
+            {"id": "prometheus-metrics", "name": "Prometheus Metrics", "severity": "medium",
+             "matched_at": "http://t/metrics"}]}),
+        _tool_msg("check_sqli", {"vulnerable": True, "findings": [
+            {"id": "sqli-error", "name": "SQLi via 'id'", "severity": "high",
+             "matched_at": "http://t/?id=1"}]}),
+        _tool_msg("check_nosqli", {"vulnerable": True, "findings": [
+            {"id": "nosqli-operator", "name": "NoSQLi via 'user'", "severity": "high",
+             "matched_at": "http://t/?user=1"}]}),
+        _tool_msg("scan_secrets", {"findings": [
+            {"id": "s1", "name": "Exposed secret: AWS key", "severity": "critical",
+             "matched_at": "http://t/main.js"}]}),
+        _tool_msg("check_prompt_injection",
+                  {"vulnerable": True, "severity": "high", "param": "message",
+                   "url": "http://t/chat"}),  # scalar-vulnerable, no findings list
+        _tool_msg("nuclei_scan", {"skipped": True, "note": "blocked: OUTSIDE scope"}),  # loop shim
+        _tool_msg("web_enum", {"skipped": True, "note": "duplicate"}),                  # loop shim
+    ]
+    joined = "\n".join(agent._extract_findings(msgs))
+    assert "[MEDIUM]** Prometheus Metrics — http://t/metrics" in joined      # nuclei surfaced
+    assert "[HIGH]** SQLi via 'id'" in joined                                # confirmed SQLi
+    assert "[HIGH]** NoSQLi via 'user'" in joined                            # confirmed NoSQLi
+    assert "[CRITICAL]** Exposed secret: AWS key" in joined                  # exposed secret
+    assert "[HIGH]** prompt injection confirmed (param message)" in joined   # scalar-vuln skill
+    assert "OUTSIDE scope" not in joined and "duplicate" not in joined       # loop shims excluded
+
+
 def test_extract_findings_dedupes_and_handles_garbage():
     msgs = [
         _tool_msg("port_scan", {"host": "h", "open": [{"port": 22, "banner": ""}]}),
