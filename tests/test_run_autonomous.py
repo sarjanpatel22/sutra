@@ -698,6 +698,9 @@ def test_worker_tools_are_relevant_not_all(monkeypatch):
         "Fingerprint the service and run a port scan and directory brute-force", "compromise box")
     names = {s["function"]["name"] for s in schemas}
     assert {"run_command", "nuclei_scan", "web_enum", "port_scan"} <= names  # essentials guaranteed
+    # a body-returning fetch tool is always present — the gap that made the orchestrator reach for
+    # fill_form (status only) to try to read page/API content
+    assert {"browse_url", "http_request"} <= names
     assert "weather" not in names  # irrelevant noise pruned
     assert len(names) < len(registry.list_skills())  # a focused subset, not the whole registry
 

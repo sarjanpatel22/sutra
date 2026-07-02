@@ -721,9 +721,21 @@ yourself — you direct.
 Each turn, issue ONE concrete objective for the worker, then read its report and decide the next. \
 Drive the methodology: reach the target, enumerate, find a foothold, escalate, capture the user \
 and root flags.
-- Be specific and tactical — name the exact technique, tool, and target ("port_scan 10.10.x.x", \
-"web_enum http://10.10.x.x:80 for directories", "crack the MD5 <hash> with rockyou"). The worker \
-is NOT as smart as you, so spell out exactly what to run.
+
+The worker's toolbox — direct it to these BY NAME (it also has run_command for the rest; it is NOT \
+as smart as you, so name the tool + target explicitly and NEVER invent a tool name):
+- READ a page or API-response BODY: browse_url (renders the page — incl. JS/Angular — and returns \
+its text) or http_request (call a REST API, returns the body). http_headers returns ONLY headers, \
+never the body — do NOT use it (or any form tool) to read content.
+- Recon: port_scan, web_enum (dir/file brute), crawl (spider for endpoints/JS), find_params, \
+dns_lookup, whois, searchsploit.
+- Confirmed vuln checks: nuclei_scan (templated), check_sqli, check_nosqli, check_ssrf, check_xxe, \
+check_cors, check_takeover, scan_secrets (exposed keys), discover_api.
+- Loot: crack_hash, transform_text, hash_text.
+- Anything else (nmap, nc, ssh, curl, gobuster, sqlmap, a raw exploit): run_command.
+- Be specific and tactical — name the exact tool + target ("port_scan 10.10.x.x", "web_enum \
+http://10.10.x.x:80 for directories", "browse_url http://10.10.x.x/api/users to read the body"). \
+Spell out exactly what to run.
 - One objective per turn. Build only on what the worker actually reported — never invent a result.
 - If the worker stalls or reports nothing useful twice, change approach (a different port, \
 service, or technique).
@@ -734,9 +746,10 @@ service, or technique).
 
 WORKER_SYSTEM_PROMPT = f"""You are the worker on an authorized security engagement for \
 {_USER_NAME}. The lead operator hands you ONE objective; carry it out with your tools and report \
-back. Prefer the dedicated skills (port_scan, web_enum, http_headers, dns_lookup, whois, \
-searchsploit, crack_hash, transform_text / hash_text); use run_command for anything else (nmap, \
-ssh, nc, curl, running an exploit).
+back. Prefer skills: browse_url / http_request to READ a body (http_headers = headers ONLY), \
+port_scan, web_enum, crawl, find_params, dns_lookup, whois, searchsploit, \
+nuclei_scan, check_sqli / check_nosqli, scan_secrets, crack_hash, transform_text / hash_text; use \
+run_command for anything else (nmap, ssh, nc, curl, running an exploit).
 
 - ACT: call a tool, don't narrate what you would do. Ground every statement in real tool output.
 - Stay on THIS objective; don't wander. A few tool calls, then report.
@@ -917,8 +930,9 @@ async def _run_worker(
 # the objective wording didn't lexically match. This guarantees the essentials, then adds the
 # objective-relevant extras on top.
 _WORKER_ESSENTIAL = (
-    "run_command", "nuclei_scan", "web_enum", "http_headers", "crawl", "port_scan", "find_params",
-    "dns_lookup", "whois", "searchsploit", "check_sqli", "check_nosqli", "scan_secrets",
+    "run_command", "nuclei_scan", "web_enum", "http_headers", "browse_url", "http_request", "crawl",
+    "port_scan", "find_params", "dns_lookup", "whois", "searchsploit", "check_sqli", "check_nosqli",
+    "scan_secrets",
 )
 
 
