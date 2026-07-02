@@ -196,6 +196,7 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     from friday.skills.dom_xss import dom_xss_scan
     from friday.skills.graphql_batch import graphql_batch
     from friday.skills.http_methods import check_http_methods
+    from friday.skills.nosqli import check_nosqli
     from friday.skills.param_discovery import find_params
     from friday.skills.path_traversal import check_path_traversal
     from friday.skills.prompt_injection import check_prompt_injection
@@ -216,7 +217,7 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     cand = list(dict.fromkeys(candidates))[:max_urls]  # dedupe, preserve order, bound
 
     for u in cand:
-        for fn in (check_sqli, check_path_traversal, check_crlf, check_ssrf):
+        for fn in (check_sqli, check_nosqli, check_path_traversal, check_crlf, check_ssrf):
             res = await fn(u)
             findings.extend(res.get("findings", []))
     # 3) XXE against crawled endpoints (no params needed; confirmed-only, so safe to try), capped
@@ -305,7 +306,7 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         injection with out-of-band proof (the payable classes, not brute-force). More intrusive;
         confirm the program ALLOWS active testing first.
     probe: opt-in targeted-injection pass — discovers reflected params (find_params) and runs the
-        confirmed-only skills (check_sqli/path_traversal/crlf/ssrf, check_xxe on crawled endpoints,
+        confirmed-only skills (check_sqli/nosqli/path_traversal/crlf/ssrf, check_xxe on crawled,
         check_csrf, API/GraphQL-batching, web cache poisoning, HTTP-method audit) against each
         parameterised URL, plus a static DOM-XSS source→sink scan of the host's JS (high-confidence
         flows only), a CSP-weakness check (bypassable policy → low lead), a WAF/CDN fingerprint

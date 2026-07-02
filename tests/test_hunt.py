@@ -318,6 +318,7 @@ async def test_hunt_probe_runs_injection_skills(monkeypatch):
         crlf,
         csrf,
         graphql_batch,
+        nosqli,
         param_discovery,
         path_traversal,
         sqli,
@@ -353,6 +354,7 @@ async def test_hunt_probe_runs_injection_skills(monkeypatch):
     monkeypatch.setattr(web_recon, "crawl", fake_crawl)
     monkeypatch.setattr(param_discovery, "find_params", fake_find_params)
     monkeypatch.setattr(sqli, "check_sqli", fake_sqli)
+    monkeypatch.setattr(nosqli, "check_nosqli", empty)
     monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
     monkeypatch.setattr(crlf, "check_crlf", empty)
     monkeypatch.setattr(ssrf, "check_ssrf", empty)  # keep hermetic (no real network)
@@ -407,6 +409,7 @@ async def test_hunt_probe_adds_dom_xss_high_confidence(monkeypatch):
         csrf,
         dom_xss,
         graphql_batch,
+        nosqli,
         param_discovery,
         path_traversal,
         sqli,
@@ -446,6 +449,7 @@ async def test_hunt_probe_adds_dom_xss_high_confidence(monkeypatch):
     monkeypatch.setattr(web_recon, "crawl", fake_crawl)
     monkeypatch.setattr(param_discovery, "find_params", fake_find_params)
     monkeypatch.setattr(sqli, "check_sqli", empty)
+    monkeypatch.setattr(nosqli, "check_nosqli", empty)
     monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
     monkeypatch.setattr(crlf, "check_crlf", empty)
     monkeypatch.setattr(ssrf, "check_ssrf", empty)
@@ -469,6 +473,7 @@ async def test_hunt_probe_adds_confirmed_cache_poisoning(monkeypatch):
         crlf,
         csrf,
         graphql_batch,
+        nosqli,
         param_discovery,
         path_traversal,
         sqli,
@@ -504,6 +509,7 @@ async def test_hunt_probe_adds_confirmed_cache_poisoning(monkeypatch):
     monkeypatch.setattr(web_recon, "crawl", fake_crawl)
     monkeypatch.setattr(param_discovery, "find_params", fake_params)
     monkeypatch.setattr(sqli, "check_sqli", empty)
+    monkeypatch.setattr(nosqli, "check_nosqli", empty)
     monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
     monkeypatch.setattr(crlf, "check_crlf", empty)
     monkeypatch.setattr(ssrf, "check_ssrf", empty)
@@ -539,6 +545,7 @@ def _hermetic_probe(monkeypatch, *, discovered=None):
         crlf,
         csrf,
         graphql_batch,
+        nosqli,
         param_discovery,
         path_traversal,
         sqli,
@@ -570,6 +577,7 @@ def _hermetic_probe(monkeypatch, *, discovered=None):
     monkeypatch.setattr(web_recon, "crawl", fake_crawl)
     monkeypatch.setattr(param_discovery, "find_params", fake_params)
     monkeypatch.setattr(sqli, "check_sqli", empty)
+    monkeypatch.setattr(nosqli, "check_nosqli", empty)
     monkeypatch.setattr(path_traversal, "check_path_traversal", empty)
     monkeypatch.setattr(crlf, "check_crlf", empty)
     monkeypatch.setattr(ssrf, "check_ssrf", empty)
@@ -577,6 +585,28 @@ def _hermetic_probe(monkeypatch, *, discovered=None):
     monkeypatch.setattr(csrf, "check_csrf", empty_one)
     monkeypatch.setattr(graphql_batch, "graphql_batch", empty_one)
     monkeypatch.setattr(api_discovery, "discover_api", empty_api)
+
+
+async def test_hunt_probe_runs_nosqli(monkeypatch):
+    from friday.skills import nosqli
+
+    async def fake_nosqli(url, param=""):
+        return {"findings": [{"id": "nosqli-operator", "name": "NoSQLi", "severity": "high",
+                              "matched_at": url}]}
+
+    # a crawled param URL exists so the injection loop has a candidate to test
+    _hermetic_probe(monkeypatch)
+    from friday.skills import web_recon
+
+    async def fake_crawl(url, depth=2):
+        return {"count": 1, "urls": ["http://x.com/item?id=1"]}
+
+    monkeypatch.setattr(web_recon, "crawl", fake_crawl)
+    monkeypatch.setattr(nosqli, "check_nosqli", fake_nosqli)  # override the hermetic no-op
+
+    res = await H.hunt("http://x.com", probe=True)
+    nf = next(f for f in res["findings"] if f["id"] == "nosqli-operator")
+    assert nf["severity"] == "high" and nf["probe"] is True
 
 
 async def test_hunt_probe_adds_weak_csp_lead(monkeypatch):
