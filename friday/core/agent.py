@@ -854,9 +854,11 @@ async def _run_worker(
     """Carry out ONE orchestrator objective with tools at the cheap, local-first tier. Returns
     (digest, produced_messages, acted) — `acted` is True only if a tool actually SUCCEEDED, so the
     orchestrator can tell real progress from a worker that merely narrated. free_only=True
-    guarantees the worker never spends the paid budget — the $5 is reserved for the orchestrator.
-    `scope_rules` hard-blocks off-scope targets (a hallucinated wrong host) even under --yes, and
-    exact-duplicate calls are dropped so a looping worker can't re-run one tool forever."""
+    guarantees the worker never spends the paid budget — the $5 is reserved for the orchestrator;
+    tool turns go CLOUD-FIRST to the strong free function-callers (qwen3-32b / Nemotron / GLM) with
+    local qwen as the quota-proof fallback (see _worker_local_first). `scope_rules` hard-blocks
+    off-scope targets (a hallucinated wrong host) even under --yes, and exact-duplicate calls are
+    dropped so a looping worker can't re-run one tool forever."""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": WORKER_SYSTEM_PROMPT},
         {"role": "user",
@@ -869,7 +871,7 @@ async def _run_worker(
     acted = False
     for _ in range(max_rounds):
         resp = await complete(messages, tier=worker_tier, tools=tools or None,
-                              local_tools_first=True, free_only=True)
+                              local_tools_first=_worker_local_first(), free_only=True)
         msg = resp.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None)
         entry = {"role": "assistant", "content": msg.content, "tool_calls": tool_calls}
@@ -918,6 +920,17 @@ _WORKER_ESSENTIAL = (
     "run_command", "nuclei_scan", "web_enum", "http_headers", "crawl", "port_scan", "find_params",
     "dns_lookup", "whois", "searchsploit", "check_sqli", "check_nosqli", "scan_secrets",
 )
+
+
+def _worker_local_first() -> bool:
+    """Whether the engagement worker prefers the LOCAL tool model (qwen2.5:7b) over free-cloud
+    function-callers for its tool turns. Default FALSE (cloud-first): the local 7B mis-selects and
+    often won't call a tool at all, which stalls the loop, whereas the free-cloud tier leads with
+    strong ~1s function-callers (qwen3-32b / Nemotron / GLM). Cloud-first here is still $0
+    (free_only) and still quota-proof — local qwen remains the last-resort fallback when every free
+    cloud bucket is rate-limited. Set SUTRA_WORKER_LOCAL_FIRST=1 to force the old local-first path
+    (e.g. offline, or if the free cloud quotas are exhausted for the day)."""
+    return os.getenv("SUTRA_WORKER_LOCAL_FIRST", "0").strip().lower() in ("1", "true", "yes")
 
 
 def _worker_tools(objective: str, goal: str) -> list[dict[str, Any]]:

@@ -468,12 +468,12 @@ async def test_tiered_orchestrator_directs_worker_and_completes(monkeypatch, tmp
     assert "Rooted it" in report and "THM{tier_win}" in report
     assert "ENGAGEMENT COMPLETE" not in report  # sentinel stripped from the report
     # the cost contract: orchestrator calls carry NO tools + tier HEAVY; worker calls carry tools,
-    # are free_only (never the $5), and local-first.
+    # are free_only (never the $5), and cloud-first (strong free function-callers, local fallback).
     orch_calls = [c for c in calls if not c["has_tools"]]
     work_calls = [c for c in calls if c["has_tools"]]
     assert orch_calls and all(c["tier"] is Tier.HEAVY for c in orch_calls)
     assert work_calls and all(c["kw"].get("free_only") is True for c in work_calls)
-    assert all(c["kw"].get("local_tools_first") is True for c in work_calls)
+    assert all(c["kw"].get("local_tools_first") is False for c in work_calls)
     # findings + flags still extract from the worker's tool output in the shared transcript
     flags, findings = agent.engagement_highlights(transcript, report)
     assert flags == ["THM{tier_win}"]
@@ -655,6 +655,37 @@ async def test_worker_allows_in_scope_target(monkeypatch):
     digest, _, acted = await agent._run_worker(
         "enum", "goal", [], Tier.MEDIUM, 3, _ok, None, scope_rules=scope)
     assert acted is True and "http_headers" in digest  # in-scope ran and was relayed
+
+
+async def test_worker_is_cloud_first_but_free(monkeypatch):
+    # The stronger-worker fix: tool turns go to strong free-cloud function-callers (not the weak
+    # local qwen), yet still free_only ($0). Assert _run_worker forwards local_tools_first=False
+    # and free_only=True by default.
+    from friday.core.router import Tier
+
+    seen = {}
+
+    async def fake_complete(messages, **kw):
+        seen.update(kw)
+        return _Resp(_Msg(content="done"))  # no tool call → single round, then stop
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    monkeypatch.delenv("SUTRA_WORKER_LOCAL_FIRST", raising=False)
+
+    async def _ok(*a):
+        return True
+
+    await agent._run_worker("scan", "goal", [], Tier.MEDIUM, 1, _ok, None)
+    assert seen.get("local_tools_first") is False  # cloud-first: strong free function-callers
+    assert seen.get("free_only") is True           # …but never spends the paid budget
+
+
+def test_worker_local_first_env_override(monkeypatch):
+    # An operator can force the old local-first path (offline / free quota exhausted).
+    monkeypatch.delenv("SUTRA_WORKER_LOCAL_FIRST", raising=False)
+    assert agent._worker_local_first() is False
+    monkeypatch.setenv("SUTRA_WORKER_LOCAL_FIRST", "1")
+    assert agent._worker_local_first() is True
 
 
 def test_worker_tools_are_relevant_not_all(monkeypatch):
