@@ -740,8 +740,82 @@ def _tool_succeeded(content: object) -> bool:
     except (ValueError, TypeError):
         return False
     return isinstance(data, dict) and not (
-        data.get("error") or data.get("declined") or data.get("blocked")
+        data.get("error") or data.get("declined") or data.get("blocked") or data.get("skipped")
     )
+
+
+# The result fields worth relaying to the orchestrator — the concrete recon/exploit signal a terse
+# local worker routinely leaves out of its prose (counts, discovered paths/hosts, findings, flags).
+_WORKER_RESULT_KEYS = (
+    "count", "found", "urls", "endpoints", "findings", "vulnerable", "status", "subdomains",
+    "hosts", "paths", "open_ports", "ports", "services", "flags", "flag", "secrets", "hashes",
+    "matched_at", "severity", "evidence", "vulns", "note",
+)
+
+
+def _synthetic_tool_msg(tc: Any, name: str, note: str) -> dict[str, Any]:
+    """A tool-result message the worker gets WITHOUT the call actually running — used to answer a
+    call we short-circuit (a duplicate or an off-scope target) so the transcript stays well-formed
+    (every tool_call_id is answered) while telling the model plainly why nothing happened."""
+    return {"role": "tool", "tool_call_id": getattr(tc, "id", "0"), "name": name,
+            "content": json.dumps({"skipped": True, "note": note})}
+
+
+def _filter_worker_calls(
+    tool_calls: list[Any], seen_sigs: set[str], scope_rules: Any,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Split a worker turn's tool calls into (to_run, synthetic_results), short-circuiting two
+    real failure modes seen live: (a) EXACT repeats of a call already run this objective — a weak
+    local worker loops on one tool (web_enum ×6) instead of advancing; (b) calls whose target is
+    OUTSIDE scope — a worker that hallucinated a wrong host (e.g. nuclei_scan against example.com).
+    Both are blocked HARD here, before execution, so neither `--yes` nor a passive/un-gated skill
+    can let them through."""
+    from friday.core.scope import args_in_scope
+    to_run: list[Any] = []
+    synthetic: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        name = getattr(getattr(tc, "function", None), "name", "") or "tool"
+        try:
+            args = json.loads(getattr(tc.function, "arguments", "") or "{}")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            args = {}
+        if scope_rules is not None and not args_in_scope(args, scope_rules):
+            synthetic.append(_synthetic_tool_msg(tc, name,
+                "blocked: target is OUTSIDE the engagement scope. Stay on the assigned target — "
+                "do not scan other hosts."))
+            continue
+        sig = f"{name}:{json.dumps(args, sort_keys=True, default=str)}"
+        if sig in seen_sigs:
+            synthetic.append(_synthetic_tool_msg(tc, name,
+                "duplicate — this exact tool+args already ran this objective; use the earlier "
+                "result and take a DIFFERENT action."))
+            continue
+        seen_sigs.add(sig)
+        to_run.append(tc)
+    return to_run, synthetic
+
+
+def _summarize_tool_result(name: str, content: object) -> str:
+    """Compact one successful tool result into a single factual line for the orchestrator. This is
+    the ground truth a local worker often omits from its final message — the missing channel that
+    made a successful enumeration look like 'no usable output'."""
+    try:
+        data = json.loads(content if isinstance(content, str) else "")
+    except (ValueError, TypeError):
+        text = str(content or "").strip().replace("\n", " ")
+        return f"{name}: {text[:200]}" if text else f"{name}: (ran, no structured output)"
+    if not isinstance(data, dict):
+        return f"{name}: {str(data)[:200]}"
+    parts: list[str] = []
+    for k in _WORKER_RESULT_KEYS:
+        v = data.get(k)
+        if v in (None, "", [], {}):
+            continue
+        if isinstance(v, list):
+            v = f"[{len(v)}] " + ", ".join(str(x)[:60] for x in v[:8])
+        parts.append(f"{k}={str(v)[:220]}")
+    body = "; ".join(parts) if parts else json.dumps(data)[:220]
+    return f"{name}: {body}"
 
 
 async def _run_worker(
@@ -752,17 +826,22 @@ async def _run_worker(
     max_rounds: int,
     loop_confirm: ConfirmFn,
     observe: ObserveFn | None,
+    scope_rules: Any = None,
 ) -> tuple[str, list[dict[str, Any]], bool]:
     """Carry out ONE orchestrator objective with tools at the cheap, local-first tier. Returns
     (digest, produced_messages, acted) — `acted` is True only if a tool actually SUCCEEDED, so the
     orchestrator can tell real progress from a worker that merely narrated. free_only=True
-    guarantees the worker never spends the paid budget — the $5 is reserved for the orchestrator."""
+    guarantees the worker never spends the paid budget — the $5 is reserved for the orchestrator.
+    `scope_rules` hard-blocks off-scope targets (a hallucinated wrong host) even under --yes, and
+    exact-duplicate calls are dropped so a looping worker can't re-run one tool forever."""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": WORKER_SYSTEM_PROMPT},
         {"role": "user",
          "content": f"Overall goal: {goal}\n\nYour objective right now:\n{objective}"},
     ]
     produced: list[dict[str, Any]] = []
+    tool_lines: list[str] = []  # factual summaries of successful tool results, in order, deduped
+    seen_sigs: set[str] = set()  # (tool, args) already run this objective — drop exact repeats
     digest = ""
     acted = False
     for _ in range(max_rounds):
@@ -773,18 +852,34 @@ async def _run_worker(
         entry = {"role": "assistant", "content": msg.content, "tool_calls": tool_calls}
         messages.append(entry)
         if tool_calls:
-            results = await _run_tool_calls(tool_calls, confirm=loop_confirm, observe=observe)
+            to_run, synthetic = _filter_worker_calls(tool_calls, seen_sigs, scope_rules)
+            ran = (await _run_tool_calls(to_run, confirm=loop_confirm, observe=observe)
+                   if to_run else [])
+            results = ran + synthetic  # every tool_call_id is answered (real or short-circuited)
             messages.extend(results)
             produced.append(entry)
             produced.extend(results)
-            if any(r.get("role") == "tool" and _tool_succeeded(r.get("content")) for r in results):
-                acted = True
+            for r in results:
+                if r.get("role") == "tool" and _tool_succeeded(r.get("content")):
+                    acted = True
+                    line = _summarize_tool_result(r.get("name", "tool"), r.get("content"))
+                    if line not in tool_lines:  # a looping worker re-running one tool → list once
+                        tool_lines.append(line)
             if msg.content:
                 digest = msg.content.strip()
             continue
         digest = (msg.content or "").strip() or digest
         break
-    digest = (digest or "(worker produced no usable output)")[:_DIGEST_CAP]  # bound paid tokens
+    # Feed the orchestrator the worker's prose AND the concrete tool results. The tool-result
+    # channel is the fix for the bug where a terse local worker ran successful recon but reported
+    # empty text, so the orchestrator wrongly concluded 'no usable output' and reported failure.
+    worker_text = (digest or "").strip()
+    if tool_lines:
+        summary = "Tool results:\n" + "\n".join("- " + ln for ln in tool_lines[-12:])
+        digest = f"{worker_text}\n\n{summary}" if worker_text else summary
+    else:
+        digest = worker_text or "(worker produced no usable output)"
+    digest = digest[:_DIGEST_CAP]  # bound paid orchestrator input tokens
     if not acted:  # the worker narrated but ran nothing — tell the orchestrator plainly
         digest = "[NO TOOL RAN — nothing was actually done this objective] " + digest
     return digest, produced, acted
@@ -850,7 +945,8 @@ async def run_engagement_tiered(
                 report = _strip_done_marker(directive)
                 break
             digest, produced, acted = await _run_worker(
-                directive, goal, tools, worker_tier, worker_rounds, loop_confirm, observe
+                directive, goal, tools, worker_tier, worker_rounds, loop_confirm, observe,
+                scope_rules=scope_rules,
             )
             transcript.extend(produced)
             _emit("worker_report", {"text": digest})

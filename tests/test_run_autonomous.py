@@ -509,6 +509,123 @@ async def test_worker_flags_when_no_tool_ran(monkeypatch):
     assert "NO TOOL RAN" in digest  # the orchestrator is told plainly that nothing happened
 
 
+async def test_worker_relays_tool_results_when_no_prose(monkeypatch):
+    # THE BUG: a terse local worker calls tools (empty msg.content) then stops. Previously the
+    # orchestrator got "(worker produced no usable output)" and wrongly reported failure. Now the
+    # digest must carry the concrete tool results (real recon) even with zero worker prose.
+    from friday.core.router import Tier
+
+    n = {"i": 0}
+
+    async def fake_complete(messages, **kw):
+        n["i"] += 1
+        # tool call with EMPTY content (exactly what qwen2.5:7b emits), then a tool-less stop
+        if n["i"] == 1:
+            return _Resp(_Msg(content=None, tool_calls=[_tc("web_enum", {"url": "http://t"})]))
+        return _Resp(_Msg(content=None))
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        return [_tool_msg("web_enum", {"count": 2, "found": [
+            {"path": "/ftp", "status": 200}, {"path": "/admin", "status": 200}]})]
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+
+    async def _ok(*a):
+        return True
+
+    digest, _, acted = await agent._run_worker("enum", "goal", [], Tier.MEDIUM, 3, _ok, None)
+    assert acted is True
+    assert "no usable output" not in digest          # the false-failure string is gone
+    assert "web_enum" in digest and "/ftp" in digest  # real recon reached the orchestrator
+    assert "NO TOOL RAN" not in digest
+
+
+async def test_worker_dedupes_repeated_tool_results(monkeypatch):
+    # A looping local worker re-ran one identical tool 6× (real behavior) — the digest must list it
+    # once, not flood the paid orchestrator with duplicates.
+    from friday.core.router import Tier
+
+    n = {"i": 0}
+
+    async def fake_complete(messages, **kw):
+        n["i"] += 1
+        if n["i"] <= 4:
+            return _Resp(_Msg(content=None, tool_calls=[_tc("web_enum", {"url": "http://t"})]))
+        return _Resp(_Msg(content=None))
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        return [_tool_msg("web_enum", {"count": 1, "found": [{"path": "/ftp", "status": 200}]})]
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+
+    async def _ok(*a):
+        return True
+
+    digest, _, _ = await agent._run_worker("enum", "goal", [], Tier.MEDIUM, 6, _ok, None)
+    assert digest.count("web_enum") == 1  # deduped despite 4 identical successful runs
+
+
+async def test_worker_blocks_off_scope_target(monkeypatch):
+    # THE example.com bug: a worker hallucinated a wrong host and looped slow external scans. An
+    # off-scope target must be blocked HARD (before execution), even though the loop runs under -y.
+    from friday.core.router import Tier
+    from friday.core.scope import parse_scope
+
+    ran = {"executed": []}
+
+    async def fake_complete(messages, **kw):
+        return _Resp(_Msg(content=None,
+                          tool_calls=[_tc("nuclei_scan", {"target": "http://example.com"})]))
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        ran["executed"].extend(tc.function.name for tc in tool_calls)
+        return [_tool_msg(tc.function.name, {"findings": []}) for tc in tool_calls]
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+
+    async def _ok(*a):
+        return True
+
+    scope = parse_scope("localhost")
+    digest, _, acted = await agent._run_worker(
+        "scan", "goal", [], Tier.MEDIUM, 2, _ok, None, scope_rules=scope)
+    assert ran["executed"] == []       # the off-scope scan was NEVER executed
+    assert acted is False
+    assert "NO TOOL RAN" in digest
+
+
+async def test_worker_allows_in_scope_target(monkeypatch):
+    # The counterpart: an IN-scope target still runs normally under the same scope rules.
+    from friday.core.router import Tier
+    from friday.core.scope import parse_scope
+
+    n = {"i": 0}
+
+    async def fake_complete(messages, **kw):
+        n["i"] += 1
+        if n["i"] == 1:
+            return _Resp(_Msg(content=None,
+                              tool_calls=[_tc("http_headers", {"url": "http://localhost:3000/"})]))
+        return _Resp(_Msg(content=None))
+
+    async def fake_rtc(tool_calls, confirm=None, observe=None, allowed=None):
+        return [_tool_msg("http_headers", {"status": 200, "count": 1})]
+
+    monkeypatch.setattr(agent, "complete", fake_complete)
+    monkeypatch.setattr(agent, "_run_tool_calls", fake_rtc)
+
+    async def _ok(*a):
+        return True
+
+    scope = parse_scope("localhost")
+    digest, _, acted = await agent._run_worker(
+        "enum", "goal", [], Tier.MEDIUM, 3, _ok, None, scope_rules=scope)
+    assert acted is True and "http_headers" in digest  # in-scope ran and was relayed
+
+
 async def test_worker_digest_is_capped(monkeypatch):
     # A runaway worker that dumps a wall of output can't inflate the PAID orchestrator's input.
     from friday.core.router import Tier
