@@ -17,6 +17,24 @@ from friday.core import agent
 runner = CliRunner()
 
 
+class _FakeStdin:
+    def __init__(self, tty: bool) -> None:
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+def test_detached_reflects_stdin_tty(monkeypatch):
+    """_detached() is True only with no interactive terminal attached — the guard that makes a
+    backgrounded auto/pwn/plan decline risky steps loudly (hinting --yes) instead of hanging on a
+    dead y/n prompt (the bug where a detached `pwn` silently stalled at recon)."""
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(tty=False))
+    assert cli._detached() is True
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin(tty=True))
+    assert cli._detached() is False
+
+
 def test_auto_surfaces_flags_and_findings_live(monkeypatch, tmp_path):
     monkeypatch.setenv("SUTRA_AUTONOMOUS", "1")
     monkeypatch.setattr(agent, "_ENGAGE_DIR", tmp_path)

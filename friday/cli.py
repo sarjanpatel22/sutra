@@ -920,6 +920,18 @@ def _default_auto_tier() -> str:
     return os.getenv("SUTRA_AUTO_TIER", "heavy")
 
 
+def _detached() -> bool:
+    """True when no interactive terminal is attached to answer a y/n prompt.
+
+    A backgrounded or piped run can't answer a confirm, so a gate would otherwise
+    default-decline silently and look like a hang. Callers use this to decline
+    loudly (and hint --yes) instead."""
+    try:
+        return not sys.stdin.isatty()
+    except Exception:
+        return True
+
+
 def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool = False,
                     scope: str | None = None, tiered: bool = False,
                     objectives: int = 8, worker_rounds: int = 6) -> None:
@@ -955,9 +967,19 @@ def _run_engagement(goal: str, rounds: int, tier_str: str, title: str, yes: bool
             f"[dim](≤{rounds} rounds · {tier_str} · {mode}{scope_note})[/dim]"
         )
 
+    if not yes and _detached():
+        console.print(
+            "[yellow]Heads up:[/yellow] [dim]no terminal attached and no --yes — risky "
+            "steps will be auto-declined, so the run may stop early. "
+            "Re-run with --yes for hands-free.[/dim]"
+        )
+
     async def _confirm(skill: str, args: dict[str, Any]) -> bool:
         if yes:
             return True
+        if _detached():  # nobody can answer a prompt in a detached run — decline loudly, don't hang
+            console.print(f"[dim]  auto-declined (no terminal, no --yes): {skill}[/dim]")
+            return False
         console.print(Panel(
             f"[bold]{skill}[/bold]\n[dim]{str(args)[:300]}[/dim]",
             title="[yellow]Confirm risky action[/yellow]", border_style="yellow",
@@ -1637,6 +1659,9 @@ def _plan_confirm(yes: bool):
         return True
 
     async def _ask(skill: str, args: dict[str, Any]) -> bool:
+        if _detached():  # detached plan run with no -y: decline loudly instead of a dead prompt
+            console.print(f"     [dim]auto-declined (no terminal, no --yes): {skill}[/dim]")
+            return False
         return await asyncio.get_running_loop().run_in_executor(
             None, lambda: Confirm.ask(f"     run [bold]{skill}[/bold]?", default=False)
         )
