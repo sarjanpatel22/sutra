@@ -184,24 +184,32 @@ async def _content_findings(host: str) -> tuple[list[dict[str, Any]], str | None
 async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
                               ) -> tuple[list[dict[str, Any]], str | None]:
     """Run the targeted injection skills against a host: discover reflected params (find_params),
-    then test each parameterised URL for SQLi / LFI / CRLF / SSRF, try XXE on crawled endpoints,
-    check the host for CSRF, and discover its API/GraphQL surface (testing any GraphQL endpoint for
-    batching abuse). Confirmed-only skills, so what they return is real (no scanner false-clean) —
-    complementing nuclei (templated) and DAST (fuzzed). Returns (findings, optional-warning)."""
+    then test each parameterised URL for SQLi / LFI / CRLF / SSRF / reflected-XSS / SSTI /
+    open-redirect, try XXE on crawled endpoints, check the host for CSRF / CORS-misconfig /
+    Host-header injection, and discover its API/GraphQL surface (testing any GraphQL endpoint for
+    batching abuse and schema introspection). Confirmed-only skills, so what they return is real
+    (no scanner false-clean) — complementing nuclei (templated) and DAST (fuzzed). Returns
+    (findings, optional-warning)."""
     from friday.skills.api_discovery import discover_api
     from friday.skills.cache_poison import check_cache_poisoning
+    from friday.skills.cors import check_cors
     from friday.skills.crlf import check_crlf
     from friday.skills.csp_analyze import analyze_csp
     from friday.skills.csrf import check_csrf
     from friday.skills.dom_xss import dom_xss_scan
+    from friday.skills.graphql import graphql_introspect
     from friday.skills.graphql_batch import graphql_batch
+    from friday.skills.host_header import check_host_header
     from friday.skills.http_methods import check_http_methods
     from friday.skills.nosqli import check_nosqli
+    from friday.skills.open_redirect import check_open_redirect
     from friday.skills.param_discovery import find_params
     from friday.skills.path_traversal import check_path_traversal
     from friday.skills.prompt_injection import check_prompt_injection
+    from friday.skills.reflected_xss import test_reflected_xss
     from friday.skills.sqli import check_sqli
     from friday.skills.ssrf import check_ssrf
+    from friday.skills.ssti import probe_ssti
     from friday.skills.xxe import check_xxe
 
     findings: list[dict[str, Any]] = []
@@ -217,7 +225,8 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
     cand = list(dict.fromkeys(candidates))[:max_urls]  # dedupe, preserve order, bound
 
     for u in cand:
-        for fn in (check_sqli, check_nosqli, check_path_traversal, check_crlf, check_ssrf):
+        for fn in (check_sqli, check_nosqli, check_path_traversal, check_crlf, check_ssrf,
+                   test_reflected_xss, probe_ssti, check_open_redirect):
             res = await fn(u)
             findings.extend(res.get("findings", []))
     # 3) XXE against crawled endpoints (no params needed; confirmed-only, so safe to try), capped
@@ -226,11 +235,16 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
         findings.extend(res.get("findings", []))
     # 4) CSRF on the host (state-changing forms without tokens / weak SameSite cookies)
     findings.extend((await check_csrf(host)).get("findings", []))
-    # 5) API surface → GraphQL batching abuse on any live GraphQL endpoint found
+    # 4b) CORS misconfig (reflected/permissive Access-Control-Allow-Origin) + Host-header injection
+    # (poisoned Host echoed into links/cache) — confirmed-only header probes on the host.
+    findings.extend((await check_cors(host)).get("findings", []))
+    findings.extend((await check_host_header(host)).get("findings", []))
+    # 5) API surface → GraphQL batching abuse + schema introspection on any live GraphQL endpoint
     api = await discover_api(host)
     findings.extend(api.get("findings", []))
     for gql in api.get("graphql", [])[:max_urls]:
         findings.extend((await graphql_batch(gql)).get("findings", []))
+        findings.extend((await graphql_introspect(gql)).get("findings", []))
     # 6) DOM-XSS: scan the host + a few crawled pages for high-confidence source→sink flows. These
     # are STATIC candidates (not confirmed execution), so only the strong ones go in, tagged.
     seen_dom: set[str] = set()  # the same JS file reached from two pages → one finding, not two
@@ -306,8 +320,9 @@ async def hunt(target: str, *, enum: bool | None = None, max_hosts: int = 8,
         injection with out-of-band proof (the payable classes, not brute-force). More intrusive;
         confirm the program ALLOWS active testing first.
     probe: opt-in targeted-injection pass — discovers reflected params (find_params) and runs the
-        confirmed-only skills (check_sqli/nosqli/path_traversal/crlf/ssrf, check_xxe on crawled,
-        check_csrf, API/GraphQL-batching, web cache poisoning, HTTP-method audit) against each
+        confirmed-only skills (check_sqli/nosqli/path_traversal/crlf/ssrf + reflected-XSS/SSTI/
+        open-redirect per param, check_xxe on crawled, check_csrf/cors/host_header, API discovery +
+        GraphQL batching & introspection, web cache poisoning, HTTP-method audit) against each
         parameterised URL, plus a static DOM-XSS source→sink scan of the host's JS (high-confidence
         flows only), a CSP-weakness check (bypassable policy → low lead), a WAF/CDN fingerprint
         (context), and prompt-injection on any chat-like param. Deterministic, signature-confirmed
