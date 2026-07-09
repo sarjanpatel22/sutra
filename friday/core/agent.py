@@ -731,6 +731,10 @@ never the body — do NOT use it (or any form tool) to read content.
 dns_lookup, whois, searchsploit.
 - Confirmed vuln checks: nuclei_scan (templated), check_sqli, check_nosqli, check_ssrf, check_xxe, \
 check_cors, check_takeover, scan_secrets (exposed keys), discover_api.
+- AI / LLM targets (a chatbot, an /ai or /chat feature, an LLM/completion API): redteam_llm \
+(runs the OWASP-LLM battery — system-prompt leak, prompt injection, safety-rule bypass, indirect \
+injection — give it the chat endpoint + model), or check_prompt_injection for a black-box message \
+field. Use these the moment the target exposes anything LLM-backed.
 - Loot: crack_hash, transform_text, hash_text.
 - Anything else (nmap, nc, ssh, curl, gobuster, sqlmap, a raw exploit): run_command.
 - Be specific and tactical — name the exact tool + target ("port_scan 10.10.x.x", "web_enum \
@@ -748,7 +752,8 @@ WORKER_SYSTEM_PROMPT = f"""You are the worker on an authorized security engageme
 {_USER_NAME}. The lead operator hands you ONE objective; carry it out with your tools and report \
 back. Prefer skills: browse_url / http_request to READ a body (http_headers = headers ONLY), \
 port_scan, web_enum, crawl, find_params, dns_lookup, whois, searchsploit, \
-nuclei_scan, check_sqli / check_nosqli, scan_secrets, crack_hash, transform_text / hash_text; use \
+nuclei_scan, check_sqli / check_nosqli, scan_secrets, redteam_llm (for a chatbot/LLM endpoint), \
+crack_hash, transform_text / hash_text; use \
 run_command for anything else (nmap, ssh, nc, curl, running an exploit).
 
 - ACT: call a tool, don't narrate what you would do. Ground every statement in real tool output.
@@ -932,7 +937,7 @@ async def _run_worker(
 _WORKER_ESSENTIAL = (
     "run_command", "nuclei_scan", "web_enum", "http_headers", "browse_url", "http_request", "crawl",
     "port_scan", "find_params", "dns_lookup", "whois", "searchsploit", "check_sqli", "check_nosqli",
-    "scan_secrets",
+    "scan_secrets", "redteam_llm", "check_prompt_injection",
 )
 
 

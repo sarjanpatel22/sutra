@@ -1229,6 +1229,56 @@ def hunt(
 
 
 @app.command()
+def redteam(
+    endpoint: str = typer.Argument(..., help="Chat endpoint URL — e.g. "
+        "http://localhost:11434/api/chat (Ollama) or an OpenAI-compatible /v1/chat/completions. "
+        "AUTHORIZED targets only (your own models or an arena/program that invited you)"),
+    model: str = typer.Option("", "--model", "-m", help="model name the endpoint expects"),
+    api: str = typer.Option("auto", "--api", help="auto | openai | ollama"),
+    key: str = typer.Option("", "--key", help="bearer token for hosted endpoints (never local)"),
+    out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
+) -> None:
+    """Red-team an authorized LLM endpoint for the OWASP-LLM classes bounties pay for — system-
+    prompt leak, prompt injection, safety-rule bypass, indirect injection — and draft a submittable
+    report. Benign planted canaries confirm each finding (nothing harmful is elicited); the tool
+    finds, the report drafts, YOU verify scope and submit. AUTHORIZED targets only.
+    """
+    import re as _re
+    from datetime import date
+    from pathlib import Path
+
+    from friday.core.redteam_report import draft_redteam_report
+    from friday.skills.llm_redteam import redteam_llm
+
+    console.print(f"[cyan]Red-teaming {endpoint}…[/cyan]  (authorized targets only)")
+    res = asyncio.run(redteam_llm(endpoint, model=model, api=api, key=key))
+    if res.get("error"):
+        console.print(f"[red]{res['error']}[/red]")
+        raise typer.Exit(1)
+    findings = res["findings"]
+    candidates = res.get("candidates", [])
+    if findings:
+        console.print(f"[bold]{len(findings)} confirmed finding(s): "
+                      f"{', '.join(res['categories_hit'])}[/bold]")
+    else:
+        console.print("[green]No confirmed weakness — the target protected every canary.[/green]")
+    if candidates:
+        console.print(f"[yellow]{len(candidates)} candidate lead(s) — unconfirmed, verify: "
+                      f"{', '.join(c['category'] for c in candidates)}[/yellow]")
+    report = draft_redteam_report(endpoint, findings, model=res.get("model", ""),
+                                  candidates=candidates)
+    slug = _re.sub(r"[^a-z0-9]+", "-", (model or endpoint).lower()).strip("-")[:50] or "target"
+    bounty_dir = Path.home() / ".local" / "share" / "friday" / "bounty"
+    path = Path(out) if out else (bounty_dir / f"redteam-{slug}-{date.today()}.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report)
+    preview = report[:1800] + ("\n\n…(full report saved)" if len(report) > 1800 else "")
+    console.print(Panel(Markdown(preview), title="[bold]Red-team — draft report[/bold]",
+                        border_style="cyan", padding=(0, 1)))
+    console.print(f"[bold]Saved:[/bold] {path}  [dim](verify scope before submitting)[/dim]")
+
+
+@app.command()
 def train(
     dataset_only: bool = typer.Option(
         False, "--dataset-only",

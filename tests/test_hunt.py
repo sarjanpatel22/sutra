@@ -642,8 +642,9 @@ async def test_hunt_probe_prompt_injection_only_on_chat_param(monkeypatch):
 
     res = await H.hunt("http://x.com", probe=True)
     assert calls["params"] == ["message"]           # non-chat param 'id' never probed
-    pi = next(f for f in res["findings"] if f["id"] == "prompt-injection-message")
+    pi = next(f for f in res["findings"] if f["id"] == "prompt-injection-direct-message")
     assert pi["severity"] == "high"
+    assert "(direct)" in pi["name"]
 
 
 async def test_hunt_probe_records_waf_context(monkeypatch):

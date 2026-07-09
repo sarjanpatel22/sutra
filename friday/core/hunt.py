@@ -291,8 +291,10 @@ async def _web_probe_findings(host: str, urls: list[str], max_urls: int = 8
             continue
         pi = await check_prompt_injection(host, param=p)
         if pi.get("vulnerable"):
+            kind = pi.get("injection_type", "direct")
             findings.append({
-                "id": f"prompt-injection-{p}", "name": f"Prompt injection via '{p}'",
+                "id": f"prompt-injection-{kind}-{p}",
+                "name": f"Prompt injection ({kind}) via '{p}'",
                 "severity": "high", "matched_at": host,
                 "description": pi.get("note", "confirmed prompt injection (echo-proof reversal)"),
             })

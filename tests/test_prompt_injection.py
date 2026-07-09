@@ -5,13 +5,58 @@ from __future__ import annotations
 import pytest
 
 from friday.skills import prompt_injection as pi
-from friday.skills.prompt_injection import _payloads, check_prompt_injection
+from friday.skills.prompt_injection import (
+    _indirect_payloads,
+    _payloads,
+    check_prompt_injection,
+)
 
 
 def test_payloads_carry_reversed_token() -> None:
     pl = _payloads("xyz321")
     assert len(pl) >= 3
     assert all("xyz321" in p for p in pl)
+
+
+def test_indirect_payloads_carry_token_and_data_framing() -> None:
+    pl = _indirect_payloads("xyz321")
+    assert len(pl) >= 3
+    assert all("xyz321" in p for p in pl)
+    # the instruction is embedded in data (a document / quoted / commented context), not given raw
+    assert any(('"""' in p) or ("---" in p) or ("<!--" in p) for p in pl)
+
+
+async def test_reports_direct_injection_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_send(url: str, param: str, payload: str, method: str) -> str:
+        import re
+        out = payload
+        for run in re.findall(r"[a-z0-9]{12}", payload):
+            out += " " + run[::-1]
+        return out.lower()
+
+    monkeypatch.setattr(pi, "_send", fake_send)
+    out = await check_prompt_injection("http://target/chat", param="message", method="json")
+    assert out["vulnerable"] is True
+    # direct family is tried first, so an obey-everything model confirms as direct
+    assert out["injection_type"] == "direct"
+
+
+async def test_detects_indirect_only_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model that only follows instructions embedded in DATA (document framing) must be caught
+    as indirect — the class that hits RAG/agent pipelines."""
+    def fake_send(url: str, param: str, payload: str, method: str) -> str:
+        import re
+        if not (('"""' in payload) or ("---" in payload) or ("<!--" in payload)):
+            return "i only discuss the document."  # ignores raw/direct instructions
+        out = payload
+        for run in re.findall(r"[a-z0-9]{12}", payload):
+            out += " " + run[::-1]
+        return out.lower()
+
+    monkeypatch.setattr(pi, "_send", fake_send)
+    out = await check_prompt_injection("http://target/rag", param="message", method="json")
+    assert out["vulnerable"] is True
+    assert out["injection_type"] == "indirect"
 
 
 async def test_confirms_when_forward_token_returned(monkeypatch: pytest.MonkeyPatch) -> None:
