@@ -167,6 +167,22 @@ async def test_clean_on_safe_model(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "robust target" in res["note"]
 
 
+async def test_pacing_off_by_default_and_applied_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """delay_ms defaults to 0 (full speed for local models / CI). When set, requests are spaced by
+    _pace (delay + up to 50% jitter); results are unchanged either way — honouring the rule that
+    only authorized-target traffic gets paced."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(rt.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(rt, "_chat", _safe_model)
+
+    await redteam_llm("http://x/api/chat", model="test")            # default: delay_ms=0
+    assert sleeps == []                                             # full speed — no pacing
+
+    await redteam_llm("http://x/api/chat", model="test", delay_ms=200)
+    assert len(sleeps) > 0                                          # paced between requests
+    assert all(0.2 <= s <= 0.3 for s in sleeps)                    # delay_ms + up to 50% jitter
+
+
 async def test_no_false_positive_from_pure_echo(monkeypatch: pytest.MonkeyPatch) -> None:
     """A dumb endpoint that echoes ONLY the user input must not trip instruction_override —
     that's the echo-proof reversal guarantee. (It may still 'leak' via other classes, so we
