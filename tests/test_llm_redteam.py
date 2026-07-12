@@ -108,6 +108,23 @@ async def test_candidates_are_separate_from_confirmed(monkeypatch: pytest.Monkey
     assert all("vulnerable" not in c for c in res["candidates"])
 
 
+async def test_indirect_injection_is_echo_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model that SAFELY summarizes but quotes the planted document verbatim (reproducing the
+    token as-is) must NOT confirm indirect injection — only genuine execution (reversing our token)
+    counts. Guards the CONFIRMED-tier version of the banana false-positive."""
+    def summarize_and_quote(e, m, system, user, api, key):
+        # benign: echoes the document (so the reversed token is present) but never EXECUTES the
+        # embedded reverse-and-print instruction, so the forward canary is never produced
+        if "summariz" in user.lower() or '"""' in user:
+            return f"summary of the document: {user}".lower()
+        return "i'm sorry, i can't help with that."
+
+    monkeypatch.setattr(rt, "_chat", summarize_and_quote)
+    res = await redteam_llm("http://x/api/chat", model="test")
+    assert "indirect_injection" not in res["categories_hit"]
+    assert res["vulnerable"] is False
+
+
 async def test_blackbox_system_prompt_leak_is_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     """A WRAPPED target that dumps its hidden system prompt on an extraction attack → a CANDIDATE
     lead (no canary we planted, so it can't be confirmed), never a confirmed finding."""
