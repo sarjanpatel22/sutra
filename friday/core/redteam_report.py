@@ -24,6 +24,9 @@ _IMPACT = {
     "indirect_injection": "Instructions embedded in retrieved/tool content were executed as if "
                           "trusted — the classic path to data exfiltration and tool abuse in "
                           "agentic/RAG systems.",
+    "encoded_injection": "A base64-obfuscated instruction bypassed the model's input handling — "
+                         "encoding defeats naive keyword/safety filters, so a content guard on "
+                         "this endpoint can be evaded by hiding the payload.",
 }
 
 _REMEDIATION = (
