@@ -39,12 +39,25 @@ def _post(endpoint: str, model: str, messages: list[dict[str, str]], api: str, k
     """Send one chat request for a full MESSAGE LIST; return assistant text (lowercased), '' on
     transport error. Shared HTTP core for both single- and multi-turn."""
     headers = {"Content-Type": "application/json", "User-Agent": "sutra-redteam/1.0"}
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    if api == "ollama":
-        body = {"model": model, "messages": messages, "stream": False}
-    else:  # openai-compatible
-        body = {"model": model, "messages": messages, "temperature": 0}
+    if api == "anthropic":
+        # Anthropic Messages API: x-api-key (+ version); the system prompt is a top-level field and
+        # max_tokens is required, so hoist any system message out of the turn list.
+        if key:
+            headers["x-api-key"] = key
+        headers["anthropic-version"] = "2023-06-01"
+        system = " ".join(m["content"] for m in messages if m.get("role") == "system")
+        turns = [m for m in messages if m.get("role") in ("user", "assistant")]
+        body = {"model": model, "max_tokens": 1024, "messages": turns}
+        if system:
+            body["system"] = system
+    else:
+        if key:  # Azure OpenAI authenticates with an api-key header, not a bearer token
+            headers["api-key" if api == "azure" else "Authorization"] = (
+                key if api == "azure" else f"Bearer {key}")
+        if api == "ollama":
+            body = {"model": model, "messages": messages, "stream": False}
+        else:  # openai-compatible (openai, azure)
+            body = {"model": model, "messages": messages, "temperature": 0}
     try:
         req = urllib.request.Request(
             endpoint, data=json.dumps(body).encode(), headers=headers, method="POST")
@@ -53,11 +66,17 @@ def _post(endpoint: str, model: str, messages: list[dict[str, str]], api: str, k
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         return ""
     if isinstance(data, dict):
-        if "message" in data and isinstance(data["message"], dict):      # ollama
-            return str(data["message"].get("content", "")).lower()
-        ch = data.get("choices") or []                                    # openai
-        if ch and isinstance(ch[0], dict):
-            return str(ch[0].get("message", {}).get("content", "")).lower()
+        if api == "anthropic":
+            c = data.get("content")   # anthropic: [{"type": "text", "text": ...}]
+            if isinstance(c, list) and c and isinstance(c[0], dict):
+                return str(c[0].get("text", "")).lower()
+        elif api == "ollama":
+            if isinstance(data.get("message"), dict):
+                return str(data["message"].get("content", "")).lower()
+        else:  # openai / azure
+            ch = data.get("choices") or []
+            if ch and isinstance(ch[0], dict):
+                return str(ch[0].get("message", {}).get("content", "")).lower()
     return ""
 
 
@@ -74,9 +93,14 @@ def _chat_multi(
 
 
 def _resolve_api(endpoint: str, api: str) -> str:
-    if api in ("openai", "ollama"):
+    if api in ("openai", "ollama", "anthropic", "azure"):
         return api
-    return "ollama" if ("11434" in endpoint or "/api/chat" in endpoint) else "openai"
+    e = endpoint.lower()
+    if "anthropic" in e or "/v1/messages" in e:
+        return "anthropic"
+    if ".azure.com" in e or "api-version=" in e:
+        return "azure"
+    return "ollama" if ("11434" in e or "/api/chat" in e) else "openai"
 
 
 def _pace(delay_ms: int) -> None:
@@ -248,7 +272,7 @@ def _multiturn_scripts(t1: str, t2: str, t3: str) -> list[dict[str, Any]]:
         "indirect (tool-content) injection. Uses benign planted canaries so findings are CONFIRMED "
         "and reproducible, never "
         "fabricated, and nothing harmful is elicited. Speaks OpenAI-compatible or Ollama chat APIs "
-        "(api=auto|openai|ollama; pass model=, and key= for hosted). Active — sends adversarial "
+        "(api=auto|openai|ollama|anthropic|azure; model/key= for hosted). Active — sends "
         "prompts; delay_ms= paces requests for a rate-limited target. AUTHORIZED TARGETS ONLY "
         "(your own models or an arena/program that invited you)."
     ),

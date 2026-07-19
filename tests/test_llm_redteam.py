@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -42,6 +43,67 @@ def test_resolve_api() -> None:
     assert _resolve_api("http://localhost:11434/api/chat", "auto") == "ollama"
     assert _resolve_api("https://api.openai.com/v1/chat/completions", "auto") == "openai"
     assert _resolve_api("http://x/v1/chat/completions", "ollama") == "ollama"  # explicit wins
+    assert _resolve_api("https://api.anthropic.com/v1/messages", "auto") == "anthropic"
+    assert _resolve_api("https://x.openai.azure.com/d?api-version=2024-02", "auto") == "azure"
+    assert _resolve_api("http://x/chat", "anthropic") == "anthropic"  # explicit provider wins
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._p = payload
+
+    def read(self, *a):
+        return json.dumps(self._p).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _capture(monkeypatch, payload):
+    """Intercept urllib.urlopen: record the outgoing request, return a canned JSON body."""
+    cap: dict = {}
+
+    def fake_urlopen(req, timeout=None):
+        cap["headers"] = {k.lower(): v for k, v in req.header_items()}
+        cap["body"] = json.loads(req.data.decode())
+        return _FakeResp(payload)
+
+    monkeypatch.setattr(rt.urllib.request, "urlopen", fake_urlopen)
+    return cap
+
+
+def test_post_anthropic_wire_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _capture(monkeypatch, {"content": [{"type": "text", "text": "HELLO"}]})
+    out = rt._post("https://api.anthropic.com/v1/messages", "claude-x",
+                   [{"role": "system", "content": "be nice"}, {"role": "user", "content": "hi"}],
+                   "anthropic", "sk-ant-key")
+    assert out == "hello"                                    # content[0].text, lowercased
+    assert cap["headers"].get("x-api-key") == "sk-ant-key"   # not a bearer token
+    assert "anthropic-version" in cap["headers"]
+    assert "authorization" not in cap["headers"]
+    assert cap["body"]["system"] == "be nice"                # system hoisted to top level
+    assert cap["body"]["messages"] == [{"role": "user", "content": "hi"}]  # no system role in msgs
+    assert "max_tokens" in cap["body"]
+
+
+def test_post_azure_uses_api_key_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _capture(monkeypatch, {"choices": [{"message": {"content": "OK"}}]})
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    out = rt._post("https://x.openai.azure.com/d?api-version=2024-02", "gpt-4", msgs, "azure", "k")
+    assert out == "ok"
+    assert cap["headers"].get("api-key") == "k"              # api-key header, not Authorization
+    assert "authorization" not in cap["headers"]
+
+
+def test_post_openai_uses_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _capture(monkeypatch, {"choices": [{"message": {"content": "hey"}}]})
+    out = rt._post("https://api.openai.com/v1/chat/completions", "gpt-4",
+                   [{"role": "user", "content": "u"}], "openai", "sk-key")
+    assert out == "hey"
+    assert cap["headers"].get("authorization") == "Bearer sk-key"
 
 
 async def test_flags_all_classes_on_vulnerable_model(monkeypatch: pytest.MonkeyPatch) -> None:
