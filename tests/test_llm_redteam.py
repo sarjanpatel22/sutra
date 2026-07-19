@@ -346,6 +346,39 @@ async def test_multiturn_refusal_is_not_confirmed(monkeypatch: pytest.MonkeyPatc
     assert res["vulnerable"] is False
 
 
+async def test_partial_failure_is_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A target that answers some requests but blanks others (e.g. a 429 mid-run) must be flagged
+    as partial, not silently read as a clean/robust result."""
+    n = {"v": 0}
+
+    def flaky(e, m, s, u, a, k):
+        n["v"] += 1
+        return "ok" if n["v"] == 1 else ""    # first reaches; the rest "fail"
+
+    monkeypatch.setattr(rt, "_chat", flaky)
+    res = await redteam_llm("http://x/api/chat", model="test")
+    assert res["partial"] is True
+    assert "returned nothing" in res["note"]
+
+
+async def test_time_budget_stops_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once the wall-clock budget is spent the battery stops sending and returns partial results,
+    instead of running every probe and blowing the skill timeout."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rt.time, "monotonic", lambda: clock["t"])
+    calls = {"v": 0}
+
+    def slow(e, m, s, u, a, k):
+        calls["v"] += 1
+        clock["t"] += 500.0                    # jump past the 240s budget after the first call
+        return "ok"
+
+    monkeypatch.setattr(rt, "_chat", slow)
+    res = await redteam_llm("http://x/api/chat", model="test")
+    assert res["partial"] is True
+    assert calls["v"] <= 2                      # stopped almost immediately
+
+
 async def test_unreachable_endpoint_reports_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rt, "_chat", _dead_model)
     res = await redteam_llm("http://localhost:9/api/chat", model="test")

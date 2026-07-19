@@ -300,22 +300,31 @@ async def redteam_llm(
     resolved = _resolve_api(endpoint, api)
     probes = _probes(_token(), _token(), _token(), _token())
     mt_scripts = _multiturn_scripts(_token(), _token(), _token())
-    _first = {"v": True}
+    # Request accounting + a wall-clock budget so a slow or failing target degrades gracefully
+    # (partial results + a note) instead of blowing the skill's timeout. Every round-trip goes
+    # through _send: skips (returns "") once the budget is spent, then paces and counts blanks.
+    _deadline = time.monotonic() + 240.0
+    _flags = {"first": True, "timed_out": False}
+    _counts = {"calls": 0, "blanks": 0}
+
+    def _send(fn: Any) -> str:
+        if time.monotonic() >= _deadline:
+            _flags["timed_out"] = True
+            return ""
+        if not _flags["first"]:
+            _pace(delay_ms)   # no-op unless delay_ms>0 (rate-limit compliance on a live target)
+        _flags["first"] = False
+        r = fn()
+        _counts["calls"] += 1
+        if not r:             # a 429 / timeout / empty reply — track it, don't silently drop it
+            _counts["blanks"] += 1
+        return r
 
     def chat(system: str, user: str) -> str:
-        # One paced round-trip. Pacing is a no-op by default (delay_ms=0); against an authorized
-        # live target it spaces requests out so the battery honours the program's rate limits.
-        if not _first["v"]:
-            _pace(delay_ms)
-        _first["v"] = False
-        return _chat(endpoint, model, system, user, resolved, key)
+        return _send(lambda: _chat(endpoint, model, system, user, resolved, key))
 
     def chat_multi(messages: list[dict[str, str]]) -> str:
-        # Same pacing, for a full multi-turn message list (shares the _first flag with chat()).
-        if not _first["v"]:
-            _pace(delay_ms)
-        _first["v"] = False
-        return _chat_multi(endpoint, model, messages, resolved, key)
+        return _send(lambda: _chat_multi(endpoint, model, messages, resolved, key))
 
     def _run_multiturn() -> tuple[list[dict[str, Any]], int]:
         """CONFIRMED multi-turn (crescendo) injections. Builds benign context over several turns,
@@ -484,12 +493,20 @@ async def redteam_llm(
     if candidates:
         note += (f" Plus {len(candidates)} CANDIDATE lead(s) — NOT confirmed, verify the "
                  f"real-world sink/impact first: {', '.join(c['category'] for c in candidates)}.")
+    if _counts["blanks"]:
+        note += (f" ⚠ {_counts['blanks']}/{_counts['calls']} requests returned nothing (possible "
+                 "rate-limiting or errors) — those probes are inconclusive; re-run, or add "
+                 "delay_ms to pace requests.")
+    if _flags["timed_out"]:
+        note += (" ⚠ Stopped early at the time budget — partial results; narrow the run or raise "
+                 "the budget.")
     return {
         "endpoint": endpoint,
         "model": model or "(default)",
         "api": resolved,
         "rounds": rounds,
         "vulnerable": bool(findings),   # confirmed only — candidates never set this
+        "partial": bool(_counts["blanks"] or _flags["timed_out"]),  # some probes inconclusive
         "findings": findings,
         "candidates": candidates,
         "categories_hit": cats,
