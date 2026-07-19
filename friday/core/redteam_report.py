@@ -27,6 +27,10 @@ _IMPACT = {
     "encoded_injection": "A base64-obfuscated instruction bypassed the model's input handling — "
                          "encoding defeats naive keyword/safety filters, so a content guard on "
                          "this endpoint can be evaded by hiding the payload.",
+    "multiturn_injection": "A multi-turn (crescendo) conversation walked the model past guardrails "
+                           "that held on a single turn — it was led over several messages into "
+                           "executing an injected instruction, the pattern real jailbreaks and "
+                           "agent hijacks rely on.",
 }
 
 _REMEDIATION = (

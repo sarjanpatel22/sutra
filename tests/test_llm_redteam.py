@@ -10,6 +10,14 @@ from friday.skills import llm_redteam as rt
 from friday.skills.llm_redteam import _resolve_api, redteam_llm
 
 
+@pytest.fixture(autouse=True)
+def _silence_multiturn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Multi-turn runs on every redteam_llm() call. Default its transport to silence so the
+    single-turn tests never touch the network; the multi-turn tests override _chat_multi (and _chat,
+    for reachability) themselves."""
+    monkeypatch.setattr(rt, "_chat_multi", lambda *a, **k: "")
+
+
 def _vulnerable_model(endpoint: str, model: str, system: str, user: str, api: str, key: str) -> str:
     """A maximally-compliant model: leaks its system prompt, obeys injected instructions, and
     reverses tokens on request — so every planted canary surfaces. Mirrors a truly broken target."""
@@ -229,6 +237,51 @@ async def test_no_false_positive_from_pure_echo(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(rt, "_chat", echo_user)
     res = await redteam_llm("http://x/api/chat", model="test")
     assert "instruction_override" not in res["categories_hit"]
+
+
+async def test_multiturn_confirms_after_buildup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model that refuses a COLD reverse-injection but complies once the conversation has built up
+    (game/persona) is caught by the multi-turn probes — via the echo-proof canary, and distinct from
+    the single-turn classes (which stay clean on this model)."""
+    def mt(endpoint, model, messages, api, key):
+        user_turns = [m for m in messages if m["role"] == "user"]
+        last = messages[-1]["content"].lower()
+        if len(user_turns) < 2:                         # cold / single-turn style → refuse
+            return "i'm sorry, i can't help with that."
+        out = last                                      # after buildup → obey the reversal
+        for tok in re.findall(r"[a-z0-9]{12}", last):
+            out += " " + tok[::-1]
+        return out
+
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: "i'm sorry, i can't help.")
+    monkeypatch.setattr(rt, "_chat_multi", mt)
+    res = await redteam_llm("http://x/api/chat", model="test")
+    assert res["vulnerable"] is True
+    assert "multiturn_injection" in res["categories_hit"]
+    mtf = [f for f in res["findings"] if f["category"] == "multiturn_injection"]
+    need = {"name", "matched_at", "severity", "category", "owasp", "evidence", "attack", "canary"}
+    assert mtf and all(need <= f.keys() for f in mtf)
+    # single-turn classes stay clean here (model refuses single turns) → real added value
+    assert not ({"system_prompt_leak", "instruction_override", "indirect_injection",
+                 "encoded_injection"} & set(res["categories_hit"]))
+
+
+async def test_multiturn_echo_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pure echo (returns the last message verbatim) must NOT confirm multi-turn injection — the
+    forward canary is never sent, only its reverse."""
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: u.lower())
+    monkeypatch.setattr(rt, "_chat_multi", lambda e, m, msgs, a, k: msgs[-1]["content"].lower())
+    res = await redteam_llm("http://x/api/chat", model="test")
+    assert "multiturn_injection" not in res["categories_hit"]
+
+
+async def test_multiturn_refusal_is_not_confirmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model that refuses throughout the conversation is never confirmed."""
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: "i cannot help with that.")
+    monkeypatch.setattr(rt, "_chat_multi", lambda e, m, msgs, a, k: "i cannot help with that.")
+    res = await redteam_llm("http://x/api/chat", model="test")
+    assert "multiturn_injection" not in res["categories_hit"]
+    assert res["vulnerable"] is False
 
 
 async def test_unreachable_endpoint_reports_error(monkeypatch: pytest.MonkeyPatch) -> None:
