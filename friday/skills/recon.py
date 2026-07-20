@@ -743,3 +743,93 @@ async def sql_injection_test(
     else:
         result["note"] = "No SQL injection confirmed at this level/risk (try raising level / risk)."
     return result
+
+
+# nikto findings that hint at a real exposure (not just an informational header note) → medium.
+_NIKTO_RISK = re.compile(
+    r"outdated|vulnerab|default (account|file|page)|backup|phpinfo|/admin|traversal|"
+    r"remote file|injection|disclosure|CVE-|OSVDB|shell|password", re.I)
+
+
+def _parse_nikto(out: str) -> tuple[str, list[dict[str, Any]]]:
+    """Parse nikto's stdout text report into (server_banner, findings). nikto prints each finding as
+    '+ [id] /url: message' (or '+ /url: message'); meta lines like '+ Target IP:' / '+ Start Time:'
+    don't reference a /url so they're skipped. Robust because it reads the report nikto actually
+    prints — this build's file output (-o) is broken, so stdout is the source of truth."""
+    server = ""
+    findings: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        s = line.rstrip()
+        sm = re.match(r"\+\s*Server:\s*(.+)", s)
+        if sm:
+            server = sm.group(1).strip()
+            continue
+        # "+ [013587] /: msg"  or  "+ /admin/: msg" — the url part must start with '/'
+        fm = re.match(r"\+\s*(?:\[(\d+)\]\s*)?(/\S*?):\s*(.+)", s)
+        if fm:
+            findings.append({"id": fm.group(1) or "", "url": fm.group(2),
+                             "message": fm.group(3).strip()})
+    return server, findings
+
+
+@skill(
+    name="nikto_scan",
+    description=(
+        "Scan a web server with nikto for misconfigurations + known-vuln exposures — missing/weak "
+        "security headers, dangerous HTTP methods, outdated server software, default/backup files, "
+        "and known-bad paths (the broad web-server triage after http_probe). target = a host or "
+        "URL; optional port, ssl=true for HTTPS, max_seconds bounds the scan (default 300). Each "
+        "item becomes a finding (risky ones — outdated/backup/admin/known-CVE — flagged medium). "
+        "ACTIVE — sends many HTTP requests. Authorized targets only."
+    ),
+    auto_confirm=False,  # active web-server scan (noisy) — gated
+    timeout_s=900,
+)
+async def nikto_scan(
+    target: str, port: str = "", ssl: bool = False, max_seconds: int = 300
+) -> dict[str, Any]:
+    """Scan a web server with nikto (misconfig + known-vuln triage).
+
+    target:      host or URL (authorized targets only).
+    port:        optional port (e.g. '8080'); default is nikto's (80, or 443 with ssl).
+    ssl:         true to scan over HTTPS.
+    max_seconds: bound the scan wall-time (30-900, default 300) — nikto can run long.
+    """
+    target = (target or "").strip()
+    if not target:
+        return {"error": "no target to scan"}
+    if target.startswith("-"):
+        return {"error": f"invalid target {target!r}"}  # never read a target as a nikto flag
+    port = str(port or "").strip()
+    if port and not port.isdigit():
+        return {"error": f"invalid port {port!r} — digits only"}
+    nikto = shutil.which("nikto")
+    if not nikto:
+        return {"error": "'nikto' is not installed"}
+    ms_raw = int(max_seconds) if str(max_seconds).strip().lstrip("-").isdigit() else 300
+    ms = max(30, min(900, ms_raw))
+    # -ask no: never prompt to submit findings to CIRT.net (otherwise nikto hangs on stdin).
+    cmd = [nikto, "-h", target, "-ask", "no", "-nointeractive", "-maxtime", f"{ms}s"]
+    if port:
+        cmd += ["-p", port]
+    if str(ssl).strip().lower() in ("1", "true", "yes", "on"):
+        cmd.append("-ssl")
+    rc, out, err = await _run(cmd, timeout=ms + 45)
+    text = out + "\n" + err  # findings print to stdout; combine so nothing is missed
+    server, raw = _parse_nikto(text)
+    if not raw and rc == -1 and not out.strip():
+        return {"error": f"nikto timed out after {ms}s with no output", "target": target}
+    findings = [{
+        "id": f"nikto-{f['id'] or i}-{target}",
+        "name": f"nikto: {f['message'][:80]}",
+        "severity": "medium" if _NIKTO_RISK.search(f["message"]) else "low",
+        "matched_at": f"{target}{f['url']}",
+        "description": f["message"][:500],
+    } for i, f in enumerate(raw)]
+    result: dict[str, Any] = {
+        "target": target, "server": server, "items": len(findings), "findings": findings,
+        "note": (f"{len(findings)} item(s) reported by nikto"
+                 + (f" (server: {server})" if server else "")
+                 + " — broad triage; verify each before reporting."),
+    }
+    return result

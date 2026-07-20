@@ -290,6 +290,62 @@ async def test_sql_injection_test_guards_and_missing_binary(monkeypatch):
     await recon.sql_injection_test("http://x/y?id=1", level=99, risk=99)
 
 
+# --- nikto_scan (mocked nikto stdout report) ----------------------------------------
+
+# A faithful slice of REAL nikto stdout (captured live). Meta lines + finding lines mixed; the
+# parser must keep only the '/url: msg' findings and skip 'Target IP:' etc.
+_NIKTO_OUT = """\
++ Target IP:          127.0.0.1
++ Target Port:        8099
++ Server: TestVuln/1.0 Python/3.13.12
++ [013587] /: Suggested security header missing: content-security-policy. See: https://x
++ [007352] /admin/: This might be interesting: outdated admin panel found. See: https://y
++ /backup.zip: Potentially interesting backup file found.
++ 8188 requests: 0 errors and 3 items reported on the remote host
++ End Time:           2026-07-20 17:01:02 (GMT-4) (2 seconds)
+"""
+
+
+async def test_nikto_scan_parses_findings_and_flags_risk(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        assert "-ask" in cmd and "no" in cmd  # never hang on the CIRT.net submit prompt
+        assert "-maxtime" in cmd
+        return (0, _NIKTO_OUT, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/nikto")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.nikto_scan("127.0.0.1", port="8099")
+    assert out["server"] == "TestVuln/1.0 Python/3.13.12"
+    assert out["items"] == 3  # 3 findings, meta lines (Target IP / requests / End Time) skipped
+    by_url = {f["matched_at"]: f for f in out["findings"]}
+    # 'outdated' + '/admin' + 'backup' hit the risk heuristic → medium; plain header note → low
+    assert by_url["127.0.0.1/"]["severity"] == "low"
+    assert by_url["127.0.0.1/admin/"]["severity"] == "medium"
+    assert by_url["127.0.0.1/backup.zip"]["severity"] == "medium"
+
+
+async def test_nikto_scan_guards_and_bounds(monkeypatch):
+    assert "error" in await recon.nikto_scan("")               # empty
+    assert "invalid target" in (await recon.nikto_scan("-h"))["error"]      # flag-injection
+    assert "invalid port" in (await recon.nikto_scan("x", port="80a"))["error"]  # bad port
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (await recon.nikto_scan("x"))["error"]
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/nikto")
+
+    async def cap_run(cmd, timeout=20):
+        assert "900s" in cmd  # max_seconds clamped from the out-of-range value below
+        return (0, "+ 0 items reported\n", "")
+
+    monkeypatch.setattr(recon, "_run", cap_run)
+    out = await recon.nikto_scan("x", max_seconds=99999)
+    assert out["items"] == 0
+
+
+def test_parse_nikto_skips_meta_lines():
+    server, findings = recon._parse_nikto("+ Target IP: 1.2.3.4\n+ Start Time: now\n+ /x: hit\n")
+    assert server == "" and len(findings) == 1 and findings[0]["url"] == "/x"
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
@@ -304,6 +360,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("nmap_scan").auto_confirm is False  # active nmap scan → gated
     assert registry.get("http_probe").auto_confirm is False  # active http probe → gated
     assert registry.get("sql_injection_test").auto_confirm is False  # active SQLi exploit → gated
+    assert registry.get("nikto_scan").auto_confirm is False  # active web-server scan → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------
