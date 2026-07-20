@@ -193,6 +193,38 @@ async def test_find_subdomains_missing_binary(monkeypatch):
     assert "error" in r and "subfinder" in r["error"]
 
 
+# --- http_probe (mocked httpx subprocess) -------------------------------------------
+
+async def test_http_probe_parses_live_hosts(monkeypatch):
+    j1 = json.dumps({"url": "http://a.com", "status_code": 200, "title": "A", "webserver": "nginx",
+                     "tech": ["Nginx"], "content_length": 10, "host_ip": "1.1.1.1"})
+    j2 = json.dumps({"url": "https://b.com", "status_code": 403, "title": "", "webserver": "Apache",
+                     "tech": ["Apache HTTP Server"], "content_length": 5, "host_ip": "2.2.2.2",
+                     "location": "https://b.com/login"})
+
+    async def fake_run(cmd, timeout=20):
+        assert "-json" in cmd and "-l" in cmd     # list-file + json mode
+        return (0, j1 + "\n" + j2 + "\n", "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/httpx-toolkit")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.http_probe("a.com, b.com, a.com")   # duplicate deduped by _http_targets
+    assert out["probed"] == 2 and out["live"] == 2
+    by_url = {x["url"]: x for x in out["results"]}
+    a = by_url["http://a.com"]
+    assert a["status"] == 200 and a["webserver"] == "nginx"
+    assert by_url["https://b.com"]["location"] == "https://b.com/login"
+    assert "Apache HTTP Server" in by_url["https://b.com"]["tech"]
+
+
+async def test_http_probe_guards_and_missing_binary(monkeypatch):
+    assert "error" in await recon.http_probe("")
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (await recon.http_probe("x.com"))["error"]
+    assert recon._http_targets("a, b\nc  d") == ["a", "b", "c", "d"]
+    assert len(recon._http_targets(",".join(str(i) for i in range(2000)))) == 1000  # capped
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
@@ -205,6 +237,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("crack_hash").auto_confirm is False  # intensive crack → gated
     assert registry.get("discover_hosts").auto_confirm is False  # active sweep → gated
     assert registry.get("nmap_scan").auto_confirm is False  # active nmap scan → gated
+    assert registry.get("http_probe").auto_confirm is False  # active http probe → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------

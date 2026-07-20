@@ -155,6 +155,80 @@ async def find_subdomains(domain: str) -> dict[str, Any]:
     return result
 
 
+def _http_targets(raw: str) -> list[str]:
+    """Split a targets string (comma/space/newline-separated hosts or URLs) → cleaned, deduped,
+    capped so a probe can't run away."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in re.split(r"[\s,]+", (raw or "").strip()):
+        p = p.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out[:1000]
+
+
+@skill(
+    name="http_probe",
+    description=(
+        "Probe hosts/URLs for LIVE web servers with httpx (ProjectDiscovery) — the recon "
+        "triage step after find_subdomains: which hosts serve HTTP, plus status code, page "
+        "title, web server, detected tech, and any redirect. targets = a host/URL or a list "
+        "(comma/space/newline-separated). Chains find_subdomains → http_probe → nmap_scan / "
+        "nuclei_scan on the live ones. ACTIVE — sends HTTP requests. Authorized targets only."
+    ),
+    auto_confirm=False,  # active HTTP probing of (possibly many) targets — gated
+    timeout_s=180,
+)
+async def http_probe(targets: str) -> dict[str, Any]:
+    """Probe hosts/URLs for live web servers + their fingerprint (via httpx).
+
+    targets: one host/URL, or a list separated by commas / spaces / newlines.
+    """
+    hosts = _http_targets(targets)
+    if not hosts:
+        return {"error": "no targets to probe"}
+    # ProjectDiscovery's httpx is 'httpx-toolkit' on Kali (plain 'httpx' = the python client).
+    binary = shutil.which("httpx-toolkit") or shutil.which("httpx")
+    if not binary:
+        return {"error": "'httpx-toolkit' (ProjectDiscovery httpx) is not installed"}
+    fd, listfile = tempfile.mkstemp(suffix=".txt")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(hosts) + "\n")
+        cmd = [binary, "-l", listfile, "-silent", "-json", "-status-code", "-content-length",
+               "-title", "-tech-detect", "-web-server", "-location", "-timeout", "10", "-t", "50"]
+        rc, out, err = await _run(cmd, timeout=170)
+    finally:
+        try:
+            os.unlink(listfile)
+        except OSError:
+            pass
+    if not out.strip():
+        why = err.strip()[:200] or ("timed out" if rc == -1 else "no live hosts")
+        return {"probed": len(hosts), "live": 0, "results": [], "note": why}
+    results: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        results.append({
+            "url": d.get("url", ""), "status": d.get("status_code"),
+            "title": d.get("title", ""), "webserver": d.get("webserver", ""),
+            "tech": d.get("tech", []), "content_length": d.get("content_length"),
+            "ip": d.get("host_ip", ""), "location": d.get("location", ""),
+        })
+    return {
+        "probed": len(hosts), "live": len(results), "results": results,
+        "note": (f"{len(results)}/{len(hosts)} host(s) serve HTTP — point nmap_scan / nuclei_scan "
+                 "at the live ones."),
+    }
+
+
 @skill(
     name="searchsploit",
     description=(
