@@ -339,6 +339,113 @@ async def discover_hosts(subnet: str = "",
     return {"subnet": subnet, "scanned": len(hosts), "live": live}
 
 
+def _nmap_ports_ok(ports: str) -> bool:
+    """A safe nmap port spec: 'top', or digits/commas/hyphens only (blocks flag/shell injection)."""
+    return ports.lower() == "top" or bool(re.fullmatch(r"[0-9][0-9,\-]*", ports))
+
+
+def _parse_nmap_xml(xml_text: str) -> list[dict[str, Any]]:
+    """Parse nmap -oX output into hosts → open ports with service/version + NSE script output."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text)  # nmap's own well-formed output; no external entities
+    except ET.ParseError:
+        return []
+    hosts: list[dict[str, Any]] = []
+    for host in root.findall("host"):
+        status = host.find("status")
+        if status is not None and status.get("state") == "down":
+            continue
+        addr = next((a.get("addr", "") for a in host.findall("address")
+                     if a.get("addrtype") in ("ipv4", "ipv6")), "")
+        hn = host.find("hostnames/hostname")
+        hostname = hn.get("name", "") if hn is not None else ""
+        open_ports: list[dict[str, Any]] = []
+        for port in host.findall("ports/port"):
+            state = port.find("state")
+            if state is None or state.get("state") != "open":
+                continue
+            svc = port.find("service")
+            open_ports.append({
+                "port": int(port.get("portid", "0") or 0),
+                "protocol": port.get("protocol", "tcp"),
+                "service": svc.get("name", "") if svc is not None else "",
+                "product": svc.get("product", "") if svc is not None else "",
+                "version": svc.get("version", "") if svc is not None else "",
+                "scripts": [{"id": s.get("id", ""), "output": (s.get("output", "") or "").strip()}
+                            for s in port.findall("script")],
+            })
+        if addr or open_ports:
+            hosts.append({"ip": addr, "hostname": hostname, "open_ports": open_ports})
+    return hosts
+
+
+@skill(
+    name="nmap_scan",
+    description=(
+        "Scan a host with nmap for open ports + SERVICE/VERSION detection (-sV) — the real recon "
+        "workhorse that upgrades port_scan's open/closed triage with what's actually running (e.g. "
+        "'nginx 1.18', 'OpenSSH 8.9'), so you can chain searchsploit / nuclei_scan for known-vuln "
+        "matches. ports = 'top' (nmap's top 1000) or a spec like '22,80,443' / '1-1000'. Set "
+        "scripts=true to also run nmap's default NSE scripts (-sC: titles, banners, vuln checks) "
+        "— any VULNERABLE hit is surfaced as a finding. Runs without root (TCP connect scan). "
+        "ACTIVE — sends packets. Authorized targets only."
+    ),
+    auto_confirm=False,  # active network scan — gated like port_scan / run_command
+    timeout_s=300,
+)
+async def nmap_scan(target: str, ports: str = "top", scripts: str = "") -> dict[str, Any]:
+    """Nmap service/version scan of a host.
+
+    target:  Host, IP, or CIDR (authorized targets only).
+    ports:   'top' (nmap's top-1000) or a spec like '22,80,443' or '1-1000'.
+    scripts: 'true' also runs nmap's default NSE scripts (-sC) — more detail + some vuln checks.
+    """
+    target = (target or "").strip()
+    if not target:
+        return {"error": "no target to scan"}
+    if target.startswith("-"):
+        return {"error": f"invalid target {target!r}"}  # never let a target be read as an nmap flag
+    ports = (ports or "top").strip()
+    if not _nmap_ports_ok(ports):
+        return {"error": f"invalid port spec {ports!r} — use 'top', '22,80,443', or '1-1000'"}
+    nmap = shutil.which("nmap")
+    if not nmap:
+        return {"error": "'nmap' is not installed"}
+    cmd = [nmap, "-sV", "-Pn", "-T4", "-oX", "-"]
+    if str(scripts).strip().lower() in ("1", "true", "yes", "on"):
+        cmd.append("-sC")
+    if ports.lower() != "top":
+        cmd += ["-p", ports]
+    cmd.append(target)
+    rc, out, err = await _run(cmd, timeout=290)
+    if not out.strip():
+        why = err.strip()[:200] or ("timed out" if rc == -1 else "nmap returned nothing")
+        return {"error": f"nmap failed: {why}", "target": target}
+    hosts = _parse_nmap_xml(out)
+    open_count = sum(len(h["open_ports"]) for h in hosts)
+    findings = []  # surface any NSE script that reports a vulnerability (common finding schema)
+    for h in hosts:
+        for p in h["open_ports"]:
+            for sc in p["scripts"]:
+                if "VULNERABLE" in sc["output"] or "vuln" in sc["id"].lower():
+                    findings.append({
+                        "id": f"nmap-{sc['id']}-{h['ip']}-{p['port']}",
+                        "name": f"nmap NSE {sc['id']} on {p['service'] or p['port']}",
+                        "severity": "medium",
+                        "matched_at": f"{h['ip']}:{p['port']}",
+                        "description": sc["output"][:500],
+                    })
+    result: dict[str, Any] = {
+        "target": target, "hosts": hosts, "open_ports": open_count,
+        "note": (f"{open_count} open port(s) across {len(hosts)} host(s) — feed each "
+                 "service+version into searchsploit / nuclei_scan for known-vuln matches."),
+    }
+    if findings:
+        result["findings"] = findings
+    return result
+
+
 # The full rockyou (14M) is the CTF standard — prefer it uncompressed if it exists.
 _CRACK_WORDLISTS = (
     "/usr/share/wordlists/rockyou.txt",

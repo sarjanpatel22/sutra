@@ -45,6 +45,50 @@ def test_parse_ports_forms():
     assert len(recon._parse_ports("1-5000")) <= 1024  # bounded
 
 
+# --- nmap_scan (mocked subprocess — no real nmap or network) ------------------------
+
+async def test_nmap_scan_parses_services_and_surfaces_nse_vulns(monkeypatch):
+    xml = (
+        '<?xml version="1.0"?><nmaprun><host><status state="up"/>'
+        '<address addr="10.0.0.5" addrtype="ipv4"/>'
+        '<hostnames><hostname name="tgt.local"/></hostnames><ports>'
+        '<port protocol="tcp" portid="22"><state state="open"/>'
+        '<service name="ssh" product="OpenSSH" version="8.9"/></port>'
+        '<port protocol="tcp" portid="80"><state state="open"/>'
+        '<service name="http" product="nginx" version="1.18"/>'
+        '<script id="http-vuln-cve2021-1234" output="VULNERABLE: path traversal"/></port>'
+        '<port protocol="tcp" portid="443"><state state="closed"/></port>'
+        '</ports></host></nmaprun>'
+    )
+
+    async def fake_run(cmd, timeout=20):
+        assert cmd[0].endswith("nmap") and "-sV" in cmd and "-oX" in cmd and "-sC" in cmd
+        assert cmd[-1] == "tgt.local"
+        return (0, xml, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/nmap")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.nmap_scan("tgt.local", scripts="true")
+    assert out["open_ports"] == 2                              # 22 + 80 open; 443 closed excluded
+    host = out["hosts"][0]
+    assert host["ip"] == "10.0.0.5" and host["hostname"] == "tgt.local"
+    by_port = {p["port"]: p for p in host["open_ports"]}
+    assert by_port[22]["product"] == "OpenSSH" and by_port[22]["version"] == "8.9"
+    assert by_port[80]["service"] == "http"
+    assert out["findings"][0]["matched_at"] == "10.0.0.5:80"   # NSE VULNERABLE → finding
+
+
+async def test_nmap_scan_guards_and_missing_binary(monkeypatch):
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (await recon.nmap_scan("host"))["error"]
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/nmap")
+    assert "invalid target" in (await recon.nmap_scan("-oN"))["error"]        # flag-injection guard
+    assert "invalid port" in (await recon.nmap_scan("h", ports="80; rm"))["error"]  # bad port spec
+    assert "no target" in (await recon.nmap_scan(""))["error"]
+    assert recon._nmap_ports_ok("top") and recon._nmap_ports_ok("22,80,443")
+    assert recon._nmap_ports_ok("1-1000") and not recon._nmap_ports_ok("80 rm")
+
+
 # --- dns_lookup ---------------------------------------------------------------------
 
 async def test_dns_lookup_parses_dig_output(monkeypatch):
@@ -160,6 +204,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("port_scan").auto_confirm is False  # active probe → gated
     assert registry.get("crack_hash").auto_confirm is False  # intensive crack → gated
     assert registry.get("discover_hosts").auto_confirm is False  # active sweep → gated
+    assert registry.get("nmap_scan").auto_confirm is False  # active nmap scan → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------
