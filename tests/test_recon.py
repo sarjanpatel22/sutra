@@ -225,6 +225,71 @@ async def test_http_probe_guards_and_missing_binary(monkeypatch):
     assert len(recon._http_targets(",".join(str(i) for i in range(2000)))) == 1000  # capped
 
 
+# --- sql_injection_test (mocked sqlmap subprocess) ----------------------------------
+
+# A faithful slice of REAL sqlmap --batch output (captured live vs a local vulnerable endpoint).
+_SQLMAP_VULN = """\
+sqlmap identified the following injection point(s) with a total of 51 HTTP(s) requests:
+---
+Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE or HAVING clause
+    Payload: id=1 AND 1234=1234
+    Type: UNION query
+    Title: Generic UNION query (NULL) - 2 columns
+    Payload: id=1 UNION ALL SELECT NULL,NULL
+---
+back-end DBMS: SQLite
+"""
+_SQLMAP_SAFE = "all tested parameters do not appear to be injectable.\n"
+
+
+async def test_sql_injection_test_confirms_and_builds_finding(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        # detection-only: never asks sqlmap to dump / enumerate / shell
+        assert "--batch" in cmd and "--flush-session" in cmd
+        assert not any(f in cmd for f in ("--dump", "--dbs", "--tables", "--os-shell"))
+        return (0, _SQLMAP_VULN, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/sqlmap")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.sql_injection_test("http://site/item.php?id=1")
+    assert out["injectable"] is True and out["dbms"] == "SQLite"
+    p = out["parameters"][0]
+    assert p["parameter"] == "id" and p["place"] == "GET"
+    assert "boolean-based blind" in p["types"] and "UNION query" in p["types"]
+    f = out["findings"][0]
+    assert f["severity"] == "high" and "SQLite" in f["description"]
+    assert "no data was dumped" in out["note"]
+
+
+async def test_sql_injection_test_reports_clean_target(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        return (0, _SQLMAP_SAFE, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/sqlmap")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.sql_injection_test("http://site/item.php?id=1")
+    assert out["injectable"] is False and "findings" not in out
+
+
+async def test_sql_injection_test_guards_and_missing_binary(monkeypatch):
+    assert "error" in await recon.sql_injection_test("")            # empty
+    assert "invalid target" in (await recon.sql_injection_test("-hh"))["error"]  # flag-injection
+    assert "invalid target" in (await recon.sql_injection_test("site.com/x?id=1"))["error"]
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (await recon.sql_injection_test("http://x/y?id=1"))["error"]
+    # level/risk are bounded so a caller can't drive an abusive scan
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/sqlmap")
+
+    async def cap_run(cmd, timeout=20):
+        assert "--level=5" in cmd and "--risk=3" in cmd  # clamped from the out-of-range input below
+        return (0, _SQLMAP_SAFE, "")
+
+    monkeypatch.setattr(recon, "_run", cap_run)
+    await recon.sql_injection_test("http://x/y?id=1", level=99, risk=99)
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
@@ -238,6 +303,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("discover_hosts").auto_confirm is False  # active sweep → gated
     assert registry.get("nmap_scan").auto_confirm is False  # active nmap scan → gated
     assert registry.get("http_probe").auto_confirm is False  # active http probe → gated
+    assert registry.get("sql_injection_test").auto_confirm is False  # active SQLi exploit → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------

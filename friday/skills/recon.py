@@ -643,3 +643,103 @@ async def crack_hash(hash_value: str, hash_format: str = "", wordlist: str = "",
             os.unlink(hashfile)
         except OSError:
             pass
+
+
+def _looks_like_url(u: str) -> bool:
+    """A target must be a real http(s) URL — so it can't be read as an sqlmap flag or local path."""
+    return bool(re.match(r"https?://", u, re.I))
+
+
+def _parse_sqlmap(out: str) -> dict[str, Any]:
+    """Parse sqlmap --batch stdout into a detection-only report: which parameters are injectable,
+    the injection type(s), and the back-end DBMS. Reads ONLY the injection-point block sqlmap prints
+    when it confirms a vuln — never any dumped data (the skill never asks sqlmap to dump)."""
+    injectable = False
+    params: list[dict[str, Any]] = []
+    dbms = ""
+    m = re.search(r"back-end DBMS:\s*(.+)", out)  # e.g. "back-end DBMS: MySQL >= 5.0.12"
+    if m:
+        dbms = m.group(1).strip()
+    cur: dict[str, Any] | None = None
+    for line in out.splitlines():
+        pm = re.match(r"\s*Parameter:\s*(.+?)\s*\((\w+)\)\s*$", line)  # "Parameter: cat (GET)"
+        if pm:
+            injectable = True
+            cur = {"parameter": pm.group(1).strip(), "place": pm.group(2).strip(), "types": []}
+            params.append(cur)
+            continue
+        tm = re.match(r"\s*Type:\s*(.+)", line)  # "    Type: boolean-based blind"
+        if tm and cur is not None:
+            cur["types"].append(tm.group(1).strip())
+    return {"injectable": injectable, "parameters": params, "dbms": dbms}
+
+
+@skill(
+    name="sql_injection_test",
+    description=(
+        "Test a URL for SQL injection with sqlmap — CONFIRMS whether a parameter is injectable and "
+        "reports the injection type(s) + back-end DBMS. A top bug-bounty class. Give a full URL "
+        "with a query string (e.g. 'http://site/item.php?id=1'); optional data=<POST body> tests "
+        "params, param=<name> focuses one parameter, level (1-5) / risk (1-3) tune test depth. "
+        "SAFETY: this only CONFIRMS the injection — it NEVER dumps databases, reads tables, runs a "
+        "shell, or exfiltrates data (a human decides any of that, separately). Bounded, "
+        "non-interactive (--batch), fresh test each run. ACTIVE exploitation — authorized only."
+    ),
+    auto_confirm=False,  # active SQLi exploitation — always gated
+    timeout_s=600,
+)
+async def sql_injection_test(
+    target: str, data: str = "", param: str = "", level: int = 1, risk: int = 1
+) -> dict[str, Any]:
+    """Confirm SQL injection on a URL with sqlmap (DETECTION ONLY — never dumps data).
+
+    target: full URL with a query string, e.g. 'http://site/item.php?id=1'.
+    data:   optional POST body to test POST parameters (e.g. 'user=1&pass=2').
+    param:  optional single parameter name to focus testing on (-p).
+    level:  sqlmap test depth 1-5 (default 1). risk: 1-3 (default 1). Both bounded.
+    """
+    target = (target or "").strip()
+    if not target:
+        return {"error": "no target URL to test"}
+    if target.startswith("-") or not _looks_like_url(target):
+        return {"error": f"invalid target {target!r} — give a full http(s):// URL with a query "
+                         "string, e.g. 'http://site/item.php?id=1'"}
+    sqlmap = shutil.which("sqlmap")
+    if not sqlmap:
+        return {"error": "'sqlmap' is not installed"}
+    lvl = max(1, min(5, int(level) if str(level).strip().lstrip("-").isdigit() else 1))
+    rsk = max(1, min(3, int(risk) if str(risk).strip().lstrip("-").isdigit() else 1))
+    # --flush-session forces a genuine fresh test each run (never report a cached positive);
+    # deliberately NO --dump / --dbs / --tables / --os-shell — CONFIRMS injection, nothing more.
+    cmd = [sqlmap, "-u", target, "--batch", "--disable-coloring", "--flush-session",
+           f"--level={lvl}", f"--risk={rsk}"]
+    if data.strip():
+        cmd += ["--data", data.strip()]
+    if param.strip():
+        if param.strip().startswith("-"):
+            return {"error": f"invalid parameter {param!r}"}
+        cmd += ["-p", param.strip()]
+    rc, out, err = await _run(cmd, timeout=590)
+    if not out.strip():
+        why = err.strip()[:200] or ("timed out" if rc == -1 else "sqlmap returned nothing")
+        return {"error": f"sqlmap failed: {why}", "target": target}
+    parsed = _parse_sqlmap(out)
+    result: dict[str, Any] = {
+        "target": target, "injectable": parsed["injectable"],
+        "dbms": parsed["dbms"], "parameters": parsed["parameters"],
+    }
+    if parsed["injectable"]:
+        result["findings"] = [{
+            "id": f"sqli-{target}-{p['parameter']}",
+            "name": f"SQL injection in '{p['parameter']}' ({p['place']})",
+            "severity": "high",
+            "matched_at": target,
+            "description": (f"Parameter '{p['parameter']}' is injectable via: "
+                            f"{', '.join(p['types']) or 'SQL injection'}."
+                            + (f" Back-end DBMS: {parsed['dbms']}." if parsed["dbms"] else "")),
+        } for p in parsed["parameters"]]
+        result["note"] = (f"CONFIRMED SQLi in {len(parsed['parameters'])} parameter(s). Detection "
+                          "only — no data was dumped; the operator decides further exploitation.")
+    else:
+        result["note"] = "No SQL injection confirmed at this level/risk (try raising level / risk)."
+    return result
