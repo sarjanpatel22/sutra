@@ -1174,3 +1174,77 @@ async def web_fingerprint(targets: str, aggression: int = 1) -> dict[str, Any]:
         "note": (f"{len(results)} target(s) fingerprinted, {versioned} versioned technolog(ies) "
                  "found — feed the versioned ones into searchsploit / nuclei_scan for known CVEs."),
     }
+
+
+def _parse_wafw00f(text: str) -> list[dict[str, Any]]:
+    """Parse wafw00f -f json output into per-target WAF records. wafw00f prints a banner + progress
+    (with '[*]' / '[+]' brackets) before the JSON, so scan each '[' and take the first that decodes
+    to a list of WAF records."""
+    dec = json.JSONDecoder()
+    data: Any = None
+    for i, ch in enumerate(text):
+        if ch != "[":
+            continue
+        try:
+            cand, _ = dec.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(cand, list) and cand and all(
+                isinstance(x, dict) and "url" in x for x in cand):
+            data = cand
+            break
+    if data is None:
+        return []
+    results = []
+    for e in data:
+        detected = bool(e.get("detected"))
+        results.append({
+            "url": e.get("url", ""), "detected": detected,
+            "firewall": e.get("firewall", "") if detected else "",
+            "manufacturer": e.get("manufacturer", "") if detected else "",
+        })
+    return results
+
+
+@skill(
+    name="waf_detect",
+    description=(
+        "Detect a Web Application Firewall / CDN in front of a site with wafw00f (Cloudflare, "
+        "Akamai, AWS WAF, Imperva, F5, …). Recon intel BEFORE active scanning: a WAF-fronted "
+        "target will often block or filter sqlmap / nikto / nuclei, so knowing it up front shapes "
+        "the plan (and unprotected apps are the softer targets). targets = a URL/host or a list "
+        "(comma/space/newline-separated). ACTIVE — sends a couple of probe requests per target. "
+        "Authorized targets only."
+    ),
+    auto_confirm=False,  # sends probe requests to fingerprint the WAF — gated
+    timeout_s=120,
+)
+async def waf_detect(targets: str) -> dict[str, Any]:
+    """Detect WAF/CDN protection in front of one or more web targets (via wafw00f).
+
+    targets: one URL/host, or a list separated by commas / spaces / newlines.
+    """
+    hosts = _http_targets(targets)
+    if not hosts:
+        return {"error": "no targets to check"}
+    for h in hosts:
+        if h.startswith("-"):
+            return {"error": f"invalid target {h!r}"}  # never read a target as a wafw00f flag
+    binary = shutil.which("wafw00f")
+    if not binary:
+        return {"error": "'wafw00f' is not installed"}
+    cmd = [binary, *hosts, "-f", "json", "-o", "/dev/stdout", "--no-colors"]
+    rc, out, err = await _run(cmd, timeout=110)
+    results = _parse_wafw00f(out)
+    if not results:
+        why = err.strip()[:200] or ("timed out" if rc == -1 else "no WAF data returned")
+        return {"targets": len(hosts), "results": [], "note": why}
+    protected = [r for r in results if r["detected"]]
+    detail = ", ".join(f"{r['url']} → {r['firewall']}" for r in protected[:5])
+    return {
+        "targets": len(hosts), "checked": len(results), "waf_detected": len(protected),
+        "results": results,
+        "note": (f"{len(protected)}/{len(results)} target(s) behind a WAF"
+                 + (f": {detail}" if protected else "")
+                 + " — WAF-fronted targets may filter active scans (sqlmap/nikto/nuclei)."),
+    }

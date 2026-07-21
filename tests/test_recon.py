@@ -547,6 +547,46 @@ def test_parse_whatweb_ignores_leading_noise():
     assert got[0]["technologies"][0]["name"] == "Drupal"
 
 
+# --- waf_detect (mocked wafw00f JSON) -----------------------------------------------
+
+# Real wafw00f output shape: a banner with '[*]'/'[+]' brackets, then the JSON array.
+_WAFW00F_OUT = "~ WAFW00F : v2.4.2 ~\n[*] Checking a\n[+] behind Cloudflare\n" + json.dumps([
+    {"detected": True, "firewall": "Cloudflare", "manufacturer": "Cloudflare Inc.",
+     "url": "https://a.com"},
+    {"detected": False, "firewall": "None", "manufacturer": "None", "url": "http://b.com"},
+])
+
+
+async def test_waf_detect_parses_results(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        assert "-f" in cmd and "json" in cmd  # forced json output
+        return (0, _WAFW00F_OUT, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/wafw00f")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.waf_detect("https://a.com, http://b.com")
+    assert out["checked"] == 2 and out["waf_detected"] == 1
+    by_url = {r["url"]: r for r in out["results"]}
+    a = by_url["https://a.com"]
+    assert a["detected"] and a["firewall"] == "Cloudflare"
+    # not-detected target's firewall name is blanked (wafw00f reports "None")
+    assert by_url["http://b.com"]["detected"] is False and by_url["http://b.com"]["firewall"] == ""
+    assert "Cloudflare" in out["note"]
+
+
+async def test_waf_detect_guards(monkeypatch):
+    assert "no targets" in (await recon.waf_detect(""))["error"]
+    assert "invalid target" in (await recon.waf_detect("-x foo"))["error"]  # flag-injection
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (await recon.waf_detect("x.com"))["error"]
+
+
+def test_parse_wafw00f_skips_banner_brackets():
+    assert recon._parse_wafw00f("[*] Checking\n[+] done, no json here") == []
+    got = recon._parse_wafw00f('[+] banner\n[{"detected":true,"firewall":"Akamai","url":"u"}]')
+    assert got[0]["firewall"] == "Akamai"
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
@@ -565,6 +605,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("credential_bruteforce").auto_confirm is False  # active brute → gated
     assert registry.get("tls_scan").auto_confirm is False  # active TLS negotiation → gated
     assert registry.get("web_fingerprint").auto_confirm is False  # active HTTP fingerprint → gated
+    assert registry.get("waf_detect").auto_confirm is False  # active WAF probe → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------
