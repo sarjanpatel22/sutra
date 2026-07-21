@@ -346,6 +346,68 @@ def test_parse_nikto_skips_meta_lines():
     assert server == "" and len(findings) == 1 and findings[0]["url"] == "/x"
 
 
+# --- credential_bruteforce (mocked hydra) -------------------------------------------
+
+# A real hydra success line (captured live vs a local basic-auth endpoint).
+_HYDRA_OUT = "[8098][http-get] host: 127.0.0.1   misc: /   login: admin   password: secret123\n"
+
+
+async def test_credential_bruteforce_recovers_creds(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        assert "-f" in cmd and "-I" in cmd  # bounded: stop at first hit, ignore restore file
+        assert cmd[-1] == "/"               # http-get path appended as the module arg
+        assert "-l" in cmd and "admin" in cmd
+        return (0, _HYDRA_OUT, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/hydra")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.credential_bruteforce(
+        "127.0.0.1", "http-get", username="admin", wordlist="/tmp/pw.txt", port="8098")
+    assert out["credentials_found"] == 1
+    c = out["credentials"][0]
+    assert c["username"] == "admin" and c["password"] == "secret123" and c["port"] == "8098"
+    f = out["findings"][0]
+    assert f["severity"] == "high" and "admin:secret123" in f["name"]
+    assert "rotate" in out["note"]
+
+
+async def test_credential_bruteforce_ssh_omits_http_arg(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        assert cmd[-1] == "ssh"  # non-http service → no trailing module arg
+        return (0, "", "")  # no hit
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/hydra")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.credential_bruteforce("h", "ssh", username="root", wordlist="/tmp/pw.txt")
+    assert out["credentials_found"] == 0 and "No valid credentials" in out["note"]
+
+
+async def test_credential_bruteforce_guards(monkeypatch):
+    bad_t = await recon.credential_bruteforce("-x", "ssh", username="a")
+    assert "invalid target" in bad_t["error"]
+    bad = await recon.credential_bruteforce("h", "telnetX", username="a")
+    assert "unsupported service" in bad["error"] and "ssh" in bad["supported"]
+    assert "username or userlist" in (await recon.credential_bruteforce("h", "ssh"))["error"]
+    flag = await recon.credential_bruteforce("h", "ssh", username="-oProxyCommand")
+    assert "invalid username" in flag["error"]
+    assert "invalid port" in (
+        await recon.credential_bruteforce("h", "ssh", username="a", port="22x"))["error"]
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (
+        await recon.credential_bruteforce("h", "ssh", username="a", wordlist="/w"))["error"]
+    # no wordlist available anywhere → clear error, not a broken hydra call
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/hydra")
+    monkeypatch.setattr(recon, "_default_crack_wordlist", lambda: None)
+    assert "no wordlist" in (await recon.credential_bruteforce("h", "ssh", username="a"))["error"]
+
+
+def test_parse_hydra_reads_hits():
+    extra = "[22][ssh] host: 10.0.0.5   login: root   password: a b\n"
+    creds = recon._parse_hydra(_HYDRA_OUT + extra)
+    assert len(creds) == 2
+    assert creds[1]["service"] == "ssh" and creds[1]["password"] == "a b"  # spaces preserved
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
@@ -361,6 +423,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("http_probe").auto_confirm is False  # active http probe → gated
     assert registry.get("sql_injection_test").auto_confirm is False  # active SQLi exploit → gated
     assert registry.get("nikto_scan").auto_confirm is False  # active web-server scan → gated
+    assert registry.get("credential_bruteforce").auto_confirm is False  # active brute → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------

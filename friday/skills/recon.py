@@ -833,3 +833,112 @@ async def nikto_scan(
                  + " — broad triage; verify each before reporting."),
     }
     return result
+
+
+# hydra services we allow — a curated common set (rejects typos / flag-injection via `service`).
+_HYDRA_SERVICES = frozenset({
+    "ssh", "ftp", "ftps", "telnet", "smtp", "pop3", "imap", "smb", "smb2", "rdp", "vnc",
+    "mysql", "postgres", "mssql", "mongodb", "redis", "ldap2", "ldap3", "snmp", "rlogin",
+    "http-get", "https-get", "http-head", "https-head", "http-post-form", "https-post-form",
+})
+# hydra prints a hit as: "[8098][http-get] host: 127.0.0.1   misc: /   login: admin   password: x"
+_HYDRA_HIT = re.compile(
+    r"\[(\d+)\]\[([\w-]+)\]\s+host:\s*(\S+).*?login:\s*(\S+)\s+password:\s*(.+?)\s*$")
+
+
+def _parse_hydra(out: str) -> list[dict[str, str]]:
+    """Pull recovered credentials out of hydra stdout — one per confirmed 'login:/password:' hit."""
+    creds: list[dict[str, str]] = []
+    for line in out.splitlines():
+        m = _HYDRA_HIT.search(line)
+        if m:
+            creds.append({"port": m.group(1), "service": m.group(2), "host": m.group(3),
+                          "username": m.group(4), "password": m.group(5)})
+    return creds
+
+
+@skill(
+    name="credential_bruteforce",
+    description=(
+        "Brute-force / password-spray a login service with hydra to recover VALID credentials — a "
+        "top bug-bounty & CTF class. service is one of ssh/ftp/smb/rdp/mysql/postgres/http-get/"
+        "http-post-form/… ; give username OR userlist (a file), and an optional wordlist (defaults "
+        "to rockyou). For http services, http_arg is the path ('/') or, for http-post-form, the "
+        "full hydra form spec ('/login:user=^USER^&pass=^PASS^:F=incorrect'). Stops at the first "
+        "valid credential per host (-f); max_seconds bounds the run. Each recovered login → a "
+        "high finding "
+        "(with the plaintext password — that's the point). ACTIVE credential attack — authorized "
+        "targets only."
+    ),
+    auto_confirm=False,  # active credential brute-force — always gated
+    timeout_s=900,
+)
+async def credential_bruteforce(
+    target: str, service: str, username: str = "", userlist: str = "", wordlist: str = "",
+    port: str = "", http_arg: str = "/", max_seconds: int = 180,
+) -> dict[str, Any]:
+    """Recover valid credentials on a login service with hydra.
+
+    target:   host / IP (authorized only).
+    service:  ssh, ftp, smb, rdp, mysql, postgres, http-get, http-post-form … (see _HYDRA_SERVICES).
+    username / userlist: a single login, or a path to a usernames file (one is required).
+    wordlist: password list path (defaults to rockyou if available).
+    port:     optional non-default port.
+    http_arg: for http-* services — the path ('/') or an http-post-form spec.
+    max_seconds: bound the run (30-900, default 180).
+    """
+    target = (target or "").strip()
+    service = (service or "").strip().lower()
+    if not target or target.startswith("-"):
+        return {"error": f"invalid target {target!r}"}
+    if service not in _HYDRA_SERVICES:
+        return {"error": f"unsupported service {service!r}", "supported": sorted(_HYDRA_SERVICES)}
+    username, userlist = username.strip(), userlist.strip()
+    if not username and not userlist:
+        return {"error": "provide username or userlist"}
+    for label, val in (("username", username), ("userlist", userlist), ("http_arg", http_arg)):
+        if val.startswith("-"):
+            return {"error": f"invalid {label} {val!r}"}
+    port = str(port or "").strip()
+    if port and not port.isdigit():
+        return {"error": f"invalid port {port!r} — digits only"}
+    hydra = shutil.which("hydra")
+    if not hydra:
+        return {"error": "'hydra' is not installed"}
+    wl = wordlist.strip() or (_default_crack_wordlist() or "")
+    if not wl:
+        return {"error": "no wordlist available — pass wordlist=<path>"}
+    if wl.startswith("-"):
+        return {"error": f"invalid wordlist {wl!r}"}
+    ms_raw = int(max_seconds) if str(max_seconds).strip().lstrip("-").isdigit() else 180
+    ms = max(30, min(900, ms_raw))
+    cmd = [hydra, "-l", username] if username else [hydra, "-L", userlist]
+    cmd += ["-P", wl, "-t", "4", "-f", "-I"]  # -f stop at first hit, -I ignore restore file
+    if port:
+        cmd += ["-s", port]
+    cmd += [target, service]
+    if service.startswith(("http-", "https-")):
+        cmd.append(http_arg or "/")
+    rc, out, err = await _run(cmd, timeout=ms + 30)
+    text = out + "\n" + err
+    creds = _parse_hydra(text)
+    if not creds and rc == -1 and not out.strip():
+        return {"error": f"hydra timed out after {ms}s with no result", "target": target}
+    findings = [{
+        "id": f"cred-{c['service']}-{c['host']}-{c['username']}",
+        "name": f"Valid {c['service']} credentials: {c['username']}:{c['password']}",
+        "severity": "high",
+        "matched_at": f"{c['host']}:{c['port']}",
+        "description": (f"hydra recovered a working login on {c['service']} "
+                        f"({c['host']}:{c['port']}) — {c['username']} / {c['password']}."),
+    } for c in creds]
+    result: dict[str, Any] = {
+        "target": target, "service": service,
+        "credentials_found": len(creds), "credentials": creds,
+    }
+    if findings:
+        result["findings"] = findings
+        result["note"] = f"Recovered {len(creds)} valid credential(s) — rotate/report immediately."
+    else:
+        result["note"] = "No valid credentials found with this user/wordlist."
+    return result
