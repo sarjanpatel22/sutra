@@ -1069,3 +1069,108 @@ async def tls_scan(target: str, port: str = "") -> dict[str, Any]:
     else:
         result["note"] = "No weak protocols, ciphers, or cert problems found — TLS config is sound."
     return result
+
+
+# whatweb plugins that are metadata (surfaced as top-level fields, not "technologies").
+_WHATWEB_META = frozenset({
+    "IP", "Country", "Title", "HTTPServer", "RedirectLocation", "Cookies", "UncommonHeaders",
+    "HTML5", "Script", "Meta-Author", "Frame", "Email", "Strict-Transport-Security",
+    "X-Frame-Options",
+})
+
+
+def _ww_first(info: dict[str, Any], key: str) -> str:
+    """First value of a whatweb plugin field (they're lists), as a string."""
+    v = info.get(key)
+    return str(v[0]) if isinstance(v, list) and v else ""
+
+
+def _looks_like_whatweb(cand: Any) -> bool:
+    """A parsed value that is (a list containing) a whatweb target record."""
+    if isinstance(cand, list):
+        return any(isinstance(x, dict) and "target" in x for x in cand)
+    return isinstance(cand, dict) and "target" in cand
+
+
+def _parse_whatweb(text: str) -> list[dict[str, Any]]:
+    """Parse whatweb --log-json output into per-target tech inventories (name + version(s)). Robust
+    to any human summary whatweb also prints to stdout (e.g. a '[200 OK]' line): scans each '['/'{'
+    start position and takes the first that decodes to a real whatweb record."""
+    dec = json.JSONDecoder()
+    data: Any = None
+    for i, ch in enumerate(text):
+        if ch not in "[{":
+            continue
+        try:
+            cand, _ = dec.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+        if _looks_like_whatweb(cand):
+            data = cand
+            break
+    if data is None:
+        return []
+    entries = data if isinstance(data, list) else [data]
+    results: list[dict[str, Any]] = []
+    for e in entries:
+        if not isinstance(e, dict) or "target" not in e:
+            continue
+        plugins = e.get("plugins", {}) or {}
+        techs = []
+        for name, info in sorted(plugins.items()):
+            if name in _WHATWEB_META or not isinstance(info, dict):
+                continue
+            versions = [str(v) for v in (info.get("version") or [])]
+            techs.append({"name": name, "versions": versions, "detail": _ww_first(info, "string")})
+        results.append({
+            "target": e.get("target"), "status": e.get("http_status"),
+            "ip": _ww_first(plugins.get("IP", {}), "string"),
+            "server": _ww_first(plugins.get("HTTPServer", {}), "string"),
+            "title": _ww_first(plugins.get("Title", {}), "string"),
+            "technologies": techs,
+        })
+    return results
+
+
+@skill(
+    name="web_fingerprint",
+    description=(
+        "Fingerprint web technologies with whatweb — CMS, frameworks, servers, JS libraries and "
+        "their VERSIONS (e.g. 'WordPress 6.4', 'jQuery 1.12', 'Apache 2.4.7'). The intel step that "
+        "feeds searchsploit / nuclei_scan for known-CVE matches. targets = a URL/host or a list "
+        "(comma/space/newline-separated); aggression 1-4 (1 = one stealthy request, default; 3-4 = "
+        "more probing). Returns a per-target tech inventory (versioned techs are the actionable "
+        "ones). ACTIVE — sends HTTP requests. Authorized targets only."
+    ),
+    auto_confirm=False,  # active HTTP fingerprinting (aggression can probe hard) — gated
+    timeout_s=180,
+)
+async def web_fingerprint(targets: str, aggression: int = 1) -> dict[str, Any]:
+    """Fingerprint web tech + versions with whatweb.
+
+    targets:    one URL/host, or a list separated by commas / spaces / newlines.
+    aggression: whatweb -a level 1-4 (1 = single stealthy request, default; higher = more probing).
+    """
+    hosts = _http_targets(targets)
+    if not hosts:
+        return {"error": "no targets to fingerprint"}
+    for h in hosts:
+        if h.startswith("-"):
+            return {"error": f"invalid target {h!r}"}  # never read a target as a whatweb flag
+    whatweb = shutil.which("whatweb")
+    if not whatweb:
+        return {"error": "'whatweb' is not installed"}
+    agg_raw = int(aggression) if str(aggression).strip().lstrip("-").isdigit() else 1
+    agg = max(1, min(4, agg_raw))
+    cmd = [whatweb, "--log-json=-", "--no-errors", "-a", str(agg), *hosts]
+    rc, out, err = await _run(cmd, timeout=170)
+    results = _parse_whatweb(out)
+    if not results:
+        why = err.strip()[:200] or ("timed out" if rc == -1 else "no fingerprint data")
+        return {"targets": len(hosts), "results": [], "note": why}
+    versioned = sum(1 for r in results for t in r["technologies"] if t["versions"])
+    return {
+        "targets": len(hosts), "fingerprinted": len(results), "results": results,
+        "note": (f"{len(results)} target(s) fingerprinted, {versioned} versioned technolog(ies) "
+                 "found — feed the versioned ones into searchsploit / nuclei_scan for known CVEs."),
+    }

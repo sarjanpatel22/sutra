@@ -491,6 +491,62 @@ async def test_tls_scan_guards_and_endpoint(monkeypatch):
     assert out["target"] == "h:8443"
 
 
+# --- web_fingerprint (mocked whatweb JSON) ------------------------------------------
+
+# A faithful slice of real whatweb --log-json output (a human summary line may precede it).
+_WHATWEB_OUT = 'http://scanme.nmap.org [200 OK] Apache\n' + json.dumps([{
+    "target": "http://scanme.nmap.org", "http_status": 200,
+    "plugins": {
+        "Apache": {"version": ["2.4.7"]},
+        "HTTPServer": {"string": ["Apache/2.4.7 (Ubuntu)"]},
+        "IP": {"string": ["45.33.32.156"]},
+        "Title": {"string": ["Go ahead and ScanMe!"]},
+        "jQuery": {"version": ["1.12"]},
+        "HTML5": {},
+    },
+}])
+
+
+async def test_web_fingerprint_parses_tech_versions(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        assert "--log-json=-" in cmd and "-a" in cmd  # stdout json + aggression flag
+        return (0, _WHATWEB_OUT, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/whatweb")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.web_fingerprint("http://scanme.nmap.org")
+    assert out["fingerprinted"] == 1
+    r = out["results"][0]
+    assert r["server"] == "Apache/2.4.7 (Ubuntu)" and r["ip"] == "45.33.32.156"
+    assert r["title"] == "Go ahead and ScanMe!"
+    techs = {t["name"]: t["versions"] for t in r["technologies"]}
+    assert techs["Apache"] == ["2.4.7"] and techs["jQuery"] == ["1.12"]
+    assert "HTTPServer" not in techs and "IP" not in techs and "HTML5" not in techs  # meta excluded
+    assert "2 versioned" in out["note"]  # Apache + jQuery
+
+
+async def test_web_fingerprint_guards_and_aggression(monkeypatch):
+    assert "no targets" in (await recon.web_fingerprint(""))["error"]
+    assert "invalid target" in (await recon.web_fingerprint("-h x"))["error"]  # flag-injection
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (await recon.web_fingerprint("x.com"))["error"]
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/whatweb")
+
+    async def cap_run(cmd, timeout=20):
+        assert "4" in cmd  # aggression clamped from 9 → 4
+        return (0, "[]", "")
+
+    monkeypatch.setattr(recon, "_run", cap_run)
+    out = await recon.web_fingerprint("x.com", aggression=9)
+    assert out["results"] == []
+
+
+def test_parse_whatweb_ignores_leading_noise():
+    assert recon._parse_whatweb("some human text, no json") == []
+    got = recon._parse_whatweb('junk\n[{"target":"t","plugins":{"Drupal":{"version":["9"]}}}]')
+    assert got[0]["technologies"][0]["name"] == "Drupal"
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
@@ -508,6 +564,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("nikto_scan").auto_confirm is False  # active web-server scan → gated
     assert registry.get("credential_bruteforce").auto_confirm is False  # active brute → gated
     assert registry.get("tls_scan").auto_confirm is False  # active TLS negotiation → gated
+    assert registry.get("web_fingerprint").auto_confirm is False  # active HTTP fingerprint → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------
