@@ -408,6 +408,89 @@ def test_parse_hydra_reads_hits():
     assert creds[1]["service"] == "ssh" and creds[1]["password"] == "a b"  # spaces preserved
 
 
+# --- tls_scan (mocked sslscan XML) --------------------------------------------------
+
+_SSLSCAN_BAD = """<?xml version="1.0"?>
+<document>
+ <ssltest host="bad.example" port="443">
+  <protocol type="ssl" version="3" enabled="1" />
+  <protocol type="tls" version="1.0" enabled="1" />
+  <protocol type="tls" version="1.2" enabled="1" />
+  <cipher status="accepted" sslversion="TLSv1.0" bits="40" cipher="EXP-RC4-MD5" strength="weak" />
+  <cipher status="accepted" sslversion="TLSv1.2" bits="256" cipher="AES256-GCM" strength="strong" />
+  <certificate type="full">
+   <signature-algorithm>sha1WithRSAEncryption</signature-algorithm>
+   <subject>bad.example</subject>
+   <expired>true</expired>
+   <self-signed>true</self-signed>
+   <pk error="false" type="RSA" bits="1024" />
+  </certificate>
+ </ssltest>
+</document>"""
+
+_SSLSCAN_GOOD = """<?xml version="1.0"?>
+<document><ssltest host="good.example" port="443">
+  <protocol type="tls" version="1.2" enabled="1" />
+  <protocol type="tls" version="1.3" enabled="1" />
+  <protocol type="ssl" version="3" enabled="0" />
+  <cipher status="accepted" sslversion="TLSv1.3" bits="256" cipher="AES256-GCM" strength="strong" />
+  <certificate type="full"><signature-algorithm>sha256WithRSAEncryption</signature-algorithm>
+   <expired>false</expired><self-signed>false</self-signed>
+   <pk error="false" type="RSA" bits="4096" /></certificate>
+</ssltest></document>"""
+
+
+async def test_tls_scan_flags_weak_config(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        assert "--xml=-" in cmd  # parse stdout, not a file
+        return (0, _SSLSCAN_BAD, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/sslscan")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.tls_scan("bad.example")
+    assert out["protocols_enabled"] == ["SSLv3", "TLSv1.0", "TLSv1.2"]
+    names = {f["name"] for f in out["findings"]}
+    assert "Deprecated protocol enabled: SSLv3" in names       # high
+    assert "Deprecated protocol enabled: TLSv1.0" in names     # medium (TLSv1.2 NOT flagged)
+    assert not any("TLSv1.2" in n for n in names)
+    assert any("Weak cipher" in n and "EXP-RC4-MD5" in n for n in names)
+    assert "Expired TLS certificate" in names
+    assert "Self-signed TLS certificate" in names
+    assert any("Weak cert signature" in n for n in names)
+    assert any("Weak RSA key: 1024-bit" in n for n in names)
+    sev = {f["name"]: f["severity"] for f in out["findings"]}
+    assert sev["Deprecated protocol enabled: SSLv3"] == "high"
+    assert sev["Expired TLS certificate"] == "high"
+
+
+async def test_tls_scan_sound_config_no_findings(monkeypatch):
+    async def fake_run(cmd, timeout=20):
+        return (0, _SSLSCAN_GOOD, "")
+
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/sslscan")
+    monkeypatch.setattr(recon, "_run", fake_run)
+    out = await recon.tls_scan("good.example")
+    assert "findings" not in out and "sound" in out["note"]
+    assert out["protocols_enabled"] == ["TLSv1.2", "TLSv1.3"]  # disabled SSLv3 excluded
+
+
+async def test_tls_scan_guards_and_endpoint(monkeypatch):
+    assert "invalid target" in (await recon.tls_scan("-x"))["error"]
+    assert "invalid port" in (await recon.tls_scan("h", port="44a"))["error"]
+    monkeypatch.setattr(recon.shutil, "which", lambda b: None)
+    assert "not installed" in (await recon.tls_scan("h"))["error"]
+    # port folded into host:port when target has no colon
+    monkeypatch.setattr(recon.shutil, "which", lambda b: "/usr/bin/sslscan")
+
+    async def cap_run(cmd, timeout=20):
+        assert cmd[-1] == "h:8443"
+        return (0, _SSLSCAN_GOOD, "")
+
+    monkeypatch.setattr(recon, "_run", cap_run)
+    out = await recon.tls_scan("h", port="8443")
+    assert out["target"] == "h:8443"
+
+
 # --- registration + gating ----------------------------------------------------------
 
 def test_recon_skills_registered_with_correct_gating():
@@ -424,6 +507,7 @@ def test_recon_skills_registered_with_correct_gating():
     assert registry.get("sql_injection_test").auto_confirm is False  # active SQLi exploit → gated
     assert registry.get("nikto_scan").auto_confirm is False  # active web-server scan → gated
     assert registry.get("credential_bruteforce").auto_confirm is False  # active brute → gated
+    assert registry.get("tls_scan").auto_confirm is False  # active TLS negotiation → gated
 
 
 # --- discover_hosts (hermetic — mocked socket layer) --------------------------------

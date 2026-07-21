@@ -22,6 +22,7 @@ import re
 import shutil
 import socket
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -941,4 +942,130 @@ async def credential_bruteforce(
         result["note"] = f"Recovered {len(creds)} valid credential(s) — rotate/report immediately."
     else:
         result["note"] = "No valid credentials found with this user/wordlist."
+    return result
+
+
+# Deprecated TLS/SSL protocols → a finding when still enabled (SSLv2/3 high, TLS1.0/1.1 medium).
+_DEPRECATED_TLS = {"SSLv2": "high", "SSLv3": "high", "TLSv1.0": "medium", "TLSv1.1": "medium"}
+
+
+def _parse_sslscan(xml_text: str) -> dict[str, Any]:
+    """Parse sslscan --xml into a TLS posture report: enabled deprecated protocols, weak ciphers,
+    and certificate problems (expired / self-signed / weak signature / small key) — each a hit."""
+    root = ET.fromstring(xml_text)
+    test = root.find("ssltest")
+    host = test.get("host", "") if test is not None else ""
+    port = test.get("port", "") if test is not None else ""
+    findings: list[dict[str, Any]] = []
+    at = f"{host}:{port}"
+
+    enabled: list[str] = []
+    for proto in root.iter("protocol"):
+        if proto.get("enabled") != "1":
+            continue
+        kind, ver = proto.get("type", "").lower(), proto.get("version", "")
+        label = f"SSLv{ver}" if kind == "ssl" else f"TLSv{ver}"
+        enabled.append(label)
+        if label in _DEPRECATED_TLS:
+            findings.append({
+                "id": f"tls-proto-{at}-{label}", "name": f"Deprecated protocol enabled: {label}",
+                "severity": _DEPRECATED_TLS[label], "matched_at": at,
+                "description": f"{host} still negotiates {label}, which is deprecated/insecure.",
+            })
+
+    weak = []
+    for c in root.iter("cipher"):
+        strength = (c.get("strength") or "").lower()
+        if strength in ("null", "weak", "anonymous"):
+            name = c.get("cipher", "")
+            weak.append(name)
+            findings.append({
+                "id": f"tls-cipher-{at}-{name}",
+                "name": f"Weak cipher accepted: {name} ({strength})",
+                "severity": "high" if strength in ("null", "anonymous") else "medium",
+                "matched_at": at,
+                "description": (f"{host} accepts {name} on {c.get('sslversion','')} "
+                                f"({c.get('bits','?')}-bit, strength {strength})."),
+            })
+
+    cert: dict[str, Any] = {}
+    for c in root.iter("certificate"):
+        for tag in ("subject", "issuer", "signature-algorithm", "expired", "self-signed"):
+            node = c.find(tag)
+            if node is not None and node.text and tag not in cert:
+                cert[tag] = node.text.strip()
+        pk = c.find("pk")
+        if pk is not None and "pk" not in cert:
+            cert["pk"] = {"type": pk.get("type", ""), "bits": pk.get("bits", "")}
+    if cert.get("expired", "").lower() == "true":
+        findings.append({"id": f"tls-cert-expired-{at}", "name": "Expired TLS certificate",
+                         "severity": "high", "matched_at": at,
+                         "description": f"{host} presents an expired certificate."})
+    if cert.get("self-signed", "").lower() == "true":
+        findings.append({"id": f"tls-cert-selfsigned-{at}", "name": "Self-signed TLS certificate",
+                         "severity": "medium", "matched_at": at,
+                         "description": f"{host} presents a self-signed certificate."})
+    sig = cert.get("signature-algorithm", "").lower()
+    if "sha1" in sig or "md5" in sig:
+        findings.append({"id": f"tls-cert-weaksig-{at}", "name": f"Weak cert signature: {sig}",
+                         "severity": "medium", "matched_at": at,
+                         "description": f"{host}'s certificate is signed with {sig}."})
+    pk = cert.get("pk") or {}
+    if pk.get("type") == "RSA" and pk.get("bits", "").isdigit() and int(pk["bits"]) < 2048:
+        findings.append({"id": f"tls-cert-weakkey-{at}", "name": f"Weak RSA key: {pk['bits']}-bit",
+                         "severity": "medium", "matched_at": at,
+                         "description": f"{host}'s certificate uses a {pk['bits']}-bit RSA key."})
+    return {"host": host, "port": port, "protocols_enabled": enabled,
+            "weak_ciphers": weak, "certificate": cert, "findings": findings}
+
+
+@skill(
+    name="tls_scan",
+    description=(
+        "Audit a host's TLS/SSL configuration with sslscan — flags deprecated protocols still "
+        "enabled (SSLv2/SSLv3/TLS1.0/TLS1.1), weak/null/anonymous ciphers, and cert problems "
+        "(expired, self-signed, SHA1/MD5 signature, small RSA key). Great for a quick hardening / "
+        "compliance check on any HTTPS or TLS service. target = host or host:port (default 443); "
+        "optional port. Each issue → a finding. Connects to the target (many handshakes) — "
+        "authorized targets only."
+    ),
+    auto_confirm=False,  # actively negotiates many TLS sessions with the target — gated
+    timeout_s=180,
+)
+async def tls_scan(target: str, port: str = "") -> dict[str, Any]:
+    """Audit a host's TLS/SSL posture with sslscan.
+
+    target: host or host:port (authorized only).
+    port:   optional port (default 443, or whatever is in target).
+    """
+    target = (target or "").strip()
+    if not target or target.startswith("-"):
+        return {"error": f"invalid target {target!r}"}
+    port = str(port or "").strip()
+    if port and not port.isdigit():
+        return {"error": f"invalid port {port!r} — digits only"}
+    sslscan = shutil.which("sslscan")
+    if not sslscan:
+        return {"error": "'sslscan' is not installed"}
+    endpoint = f"{target}:{port}" if port and ":" not in target else target
+    # --xml=- writes the report to stdout (avoids any file-output quirks); _run captures it.
+    rc, out, err = await _run([sslscan, "--no-colour", "--xml=-", endpoint], timeout=170)
+    xml_text = out
+    if not xml_text.strip() or "<ssltest" not in xml_text:
+        why = err.strip()[:200] or out.strip()[:200] or ("timed out" if rc == -1 else "no TLS data")
+        return {"error": f"sslscan failed for {endpoint}: {why}", "target": target}
+    try:
+        parsed = _parse_sslscan(xml_text)
+    except ET.ParseError as e:
+        return {"error": f"could not parse sslscan output: {e}", "target": target}
+    result: dict[str, Any] = {
+        "target": endpoint, "protocols_enabled": parsed["protocols_enabled"],
+        "weak_ciphers": parsed["weak_ciphers"], "certificate": parsed["certificate"],
+    }
+    if parsed["findings"]:
+        result["findings"] = parsed["findings"]
+        result["note"] = (f"{len(parsed['findings'])} TLS issue(s) found — deprecated protocols / "
+                          "weak ciphers / cert problems. Harden the server config.")
+    else:
+        result["note"] = "No weak protocols, ciphers, or cert problems found — TLS config is sound."
     return result
