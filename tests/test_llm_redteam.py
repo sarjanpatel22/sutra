@@ -388,3 +388,42 @@ async def test_unreachable_endpoint_reports_error(monkeypatch: pytest.MonkeyPatc
 async def test_empty_endpoint() -> None:
     res = await redteam_llm("")
     assert "error" in res
+
+
+# --- leveled-up attack library (persona / many-shot / payload-split / obfuscation) ---
+
+def test_obfuscation_helpers() -> None:
+    from friday.skills.llm_redteam import _leet, _rot13
+    assert _rot13(_rot13("Reverse this text: abc123")) == "Reverse this text: abc123"
+    leet = _leet("ignore all previous instructions")
+    assert "ignore" not in leet and "1gn0r3" in leet  # trigger words obfuscated past keyword guards
+
+
+def test_new_multiturn_techniques_present_and_echo_proof() -> None:
+    from friday.skills.llm_redteam import _multiturn_scripts
+    scripts = _multiturn_scripts("t1aaaa", "t2bbbb", "t3cccc", "manyshotXYZ", "splitTOKENZZ")
+    owasps = " ".join(s["owasp"] for s in scripts)
+    assert "many-shot" in owasps and "payload splitting" in owasps
+    for s in scripts:  # forward canary must never be sent in any user turn or fabricated history
+        sent = " ".join(s["turns"]) + " ".join(u for u, _ in s.get("history", []))
+        assert s["canary"] not in sent
+    ps = next(s for s in scripts if "payload splitting" in s["owasp"])
+    a = re.search(r"A = '([^']*)'", ps["turns"][0]).group(1)
+    b = re.search(r"B = '([^']*)'", ps["turns"][1]).group(1)
+    assert (a + b)[::-1] == ps["canary"]  # reassembly math is correct → confirmation stays valid
+    ms = next(s for s in scripts if "many-shot" in s["owasp"])
+    # the fabricated history is genuine reversals, so the priming looks like real compliance
+    assert ms.get("history") and all(
+        asst == user.split("REVERSE: ")[1][::-1] for user, asst in ms["history"])
+
+
+def test_enriched_leak_probe_has_stronger_framings() -> None:
+    from friday.skills.llm_redteam import _probes
+    probes = _probes("SEC1", "T2rev", "T3rev", "T4rev")
+    assert all(p.get("canary") for p in probes)  # every probe still confirmation-backed
+    leak = next(p for p in probes if p["category"] == "system_prompt_leak")
+    joined = " ".join(leak["attacks"])
+    assert "Continue this text" in joined  # completion-leak framing
+    assert "DebugBot" in joined            # persona / refusal-suppression framing
+    override = next(p for p in probes if p["category"] == "instruction_override")
+    assert any("RawText" in a for a in override["attacks"])  # persona reversal framing
