@@ -42,3 +42,20 @@ def test_unconfirmed_findings_are_excluded() -> None:
     unconfirmed = [{"vulnerable": False, "category": "x", "severity": "low"}]
     md = draft_redteam_report("http://x", unconfirmed)
     assert "No confirmed weaknesses" in md
+
+
+def test_candidate_section_surfaces_judge_and_corroboration() -> None:
+    cand = {
+        "category": "system_prompt_leak_blackbox", "owasp": "LLM07 System Prompt Leakage",
+        "severity": "medium", "candidate": True, "evidence": "judge ruled 3 attempts leaked it",
+        "verify": "re-run in a fresh session", "judge_model": "qwen2.5:14b", "corroborations": 3,
+    }
+    md = draft_redteam_report("http://target", [], candidates=[cand])
+    assert "Judge-scored" in md and "qwen2.5:14b" in md and "3×" in md
+
+
+def test_candidate_section_omits_judge_line_when_absent() -> None:
+    cand = {"category": "safety_rule_bypass", "severity": "medium", "candidate": True,
+            "evidence": "e", "verify": "v"}
+    md = draft_redteam_report("http://target", [], candidates=[cand])
+    assert "Judge-scored" not in md  # non-judge candidates unaffected

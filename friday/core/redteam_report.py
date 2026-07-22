@@ -63,14 +63,23 @@ def _section(f: dict[str, Any]) -> str:
 
 def _candidate_section(c: dict[str, Any]) -> str:
     sev = (c.get("severity") or "unknown").upper()
-    return "\n".join([
+    lines = [
         f"### [{sev}] {c.get('owasp') or c.get('category', 'candidate')}  — CANDIDATE",
         "",
         f"- **Class:** {c.get('category', '')}",
         f"- **What we saw:** {c.get('evidence', '')}",
+    ]
+    if c.get("judge_model"):   # black-box judge mode: show it was judge-scored + how corroborated
+        corr = c.get("corroborations")
+        judged = f"judged by {c['judge_model']}"
+        if corr:
+            judged += f", {corr}× corroborated (independent extraction attempts agreed)"
+        lines.append(f"- **Judge-scored (not a canary proof):** {judged}")
+    lines += [
         f"- **To confirm:** {c.get('verify', 'Verify the real-world impact before reporting.')}",
         "",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 def draft_redteam_report(

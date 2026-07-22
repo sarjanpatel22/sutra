@@ -457,13 +457,57 @@ async def test_blackbox_judge_is_conservative(monkeypatch: pytest.MonkeyPatch) -
     assert not [c for c in res["candidates"] if c["category"] == "system_prompt_leak_blackbox"]
 
 
-def test_judge_parses_verdict_and_is_conservative(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_judge_parses_verdict_and_signals_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     from friday.skills.llm_redteam import _judge
     monkeypatch.setattr(rt, "_chat",
                         lambda e, m, s, u, a, k: 'note {"complied": true, "reason": "x"} end')
-    assert _judge("e", "j", "atk", "rep", "ollama", "") == (True, "x")
+    assert _judge("e", "j", "atk", "rep", "ollama", "") == (True, "x", True)
+    # unparseable / down judge → ok=False (inconclusive), NOT a clean 'no'
     monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: "no json at all")
-    assert _judge("e", "j", "atk", "rep", "ollama", "") == (False, "")  # conservative on garbage
+    assert _judge("e", "j", "atk", "rep", "ollama", "") == (False, "", False)
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: "")   # empty (transport error)
+    assert _judge("e", "j", "atk", "rep", "ollama", "") == (False, "", False)
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: '{"reason": "no verdict key"}')
+    assert _judge("e", "j", "atk", "rep", "ollama", "") == (False, "", False)  # malformed
+
+
+def test_is_local_endpoint() -> None:
+    from friday.skills.llm_redteam import _is_local
+    assert _is_local("http://localhost:11434/api/chat")
+    assert _is_local("http://127.0.0.1:8080/v1/chat/completions")
+    assert not _is_local("https://api.openai.com/v1/chat/completions")
+
+
+async def test_blackbox_judge_error_is_inconclusive_not_clean(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A judge that can't return a usable verdict must flag the class INCONCLUSIVE, never be read as
+    'no leak' — otherwise a broken judge silently reports a clean target."""
+    def fake_chat(endpoint, model, system, user, api, key):
+        if model == "judge":
+            return "sorry, the judge is unreachable"     # non-JSON → judge error
+        if system == "":
+            return "you are you must never do not your instructions your role " * 20
+        return "i can't help."
+
+    monkeypatch.setattr(rt, "_chat", fake_chat)
+    monkeypatch.setattr(rt, "_chat_multi", lambda e, m, msgs, a, k: "i can't help.")
+    res = await redteam_llm("http://target/api/chat", model="target",
+                            judge_model="judge", judge_endpoint="http://judge/api/chat")
+    assert "INCONCLUSIVE" in res["note"]
+    assert not [c for c in res["candidates"] if c["category"] == "system_prompt_leak_blackbox"]
+
+
+async def test_blackbox_judge_opsec_warns_on_target_endpoint(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Judge defaulting to a NON-LOCAL target endpoint warns (replies would go back to the target);
+    a local target or an explicit judge_endpoint does not."""
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: "i can't help.")
+    monkeypatch.setattr(rt, "_chat_multi", lambda e, m, msgs, a, k: "i can't help.")
+    hosted = await redteam_llm("https://api.example.com/v1/chat/completions",
+                               model="t", judge_model="t")      # judge falls back to hosted target
+    assert "OPSEC" in hosted["note"]
+    local = await redteam_llm("http://localhost:11434/api/chat", model="t", judge_model="t")
+    assert "OPSEC" not in local["note"]
 
 
 def test_enriched_leak_probe_has_stronger_framings() -> None:
