@@ -1237,6 +1237,13 @@ def redteam(
     api: str = typer.Option("auto", "--api", help="auto | openai | ollama"),
     key: str = typer.Option("", "--key", help="bearer token for hosted endpoints (never local)"),
     out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
+    judge_model: str = typer.Option("", "--judge-model", help="enable BLACK-BOX judge mode — a "
+        "trusted model (e.g. a local qwen2.5:14b) rules whether a real target leaked its hidden "
+        "prompt (candidate-tier). Use for 0din/arena targets where no canary can be planted"),
+    judge_endpoint: str = typer.Option("", "--judge-endpoint",
+        help="where the judge model lives (default: the target endpoint)"),
+    judge_api: str = typer.Option("auto", "--judge-api", help="auto|openai|ollama for the judge"),
+    judge_key: str = typer.Option("", "--judge-key", help="bearer token for the judge endpoint"),
 ) -> None:
     """Red-team an authorized LLM endpoint for the OWASP-LLM classes bounties pay for — system-
     prompt leak, prompt injection, safety-rule bypass, indirect injection — and draft a submittable
@@ -1251,7 +1258,11 @@ def redteam(
     from friday.skills.llm_redteam import redteam_llm
 
     console.print(f"[cyan]Red-teaming {endpoint}…[/cyan]  (authorized targets only)")
-    res = asyncio.run(redteam_llm(endpoint, model=model, api=api, key=key))
+    if judge_model:
+        console.print(f"[cyan]Black-box judge mode: {judge_model}[/cyan]")
+    res = asyncio.run(redteam_llm(endpoint, model=model, api=api, key=key, judge_model=judge_model,
+                                  judge_endpoint=judge_endpoint, judge_api=judge_api,
+                                  judge_key=judge_key))
     if res.get("error"):
         console.print(f"[red]{res['error']}[/red]")
         raise typer.Exit(1)
