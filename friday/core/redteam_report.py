@@ -31,6 +31,16 @@ _IMPACT = {
                            "that held on a single turn — it was led over several messages into "
                            "executing an injected instruction, the pattern real jailbreaks and "
                            "agent hijacks rely on.",
+    "agentic_read_violation": "Untrusted content the agent processed hijacked its tools to read a "
+                              "secret and exfiltrate it — the agentic data-exfiltration path "
+                              "(credentials, private data leaving the system) real coding agents "
+                              "and agentic browsers are bountied for.",
+    "agentic_write_violation": "Injected content drove the agent to make an unauthorized write "
+                               "(file / config / state change) — the integrity-violation path to "
+                               "persistence and tampering.",
+    "agentic_execute_violation": "Injected content drove the agent to execute a command — the "
+                                 "code/command-execution path that escalates to RCE inside a real "
+                                 "agent's tool sandbox.",
 }
 
 _REMEDIATION = (

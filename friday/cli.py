@@ -1289,6 +1289,54 @@ def redteam(
     console.print(f"[bold]Saved:[/bold] {path}  [dim](verify scope before submitting)[/dim]")
 
 
+@app.command(name="agentic-redteam")
+def agentic_redteam_cmd(
+    endpoint: str = typer.Argument(..., help="Chat endpoint of the model to drive as the agent — "
+        "e.g. http://localhost:11434/api/chat (Ollama) or an OpenAI-compatible endpoint. "
+        "AUTHORIZED targets only (your own agent/model, or an invited one)"),
+    model: str = typer.Option("", "--model", "-m", help="model name the endpoint expects"),
+    api: str = typer.Option("auto", "--api", help="auto | openai | ollama | anthropic"),
+    key: str = typer.Option("", "--key", help="bearer token for hosted endpoints (never local)"),
+    out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
+) -> None:
+    """Agentic prompt-injection red-team — does an LLM agent let UNTRUSTED document content hijack
+    its tools (0din/OWASP-LLM01 Read/Write/Execute violations)? Runs a SANDBOXED reference agent
+    over injection-laced documents and confirms deterministically + echo-proof via observed tool
+    sinks (nothing harmful is executed). The tool finds, YOU verify against the real target's
+    tools/sinks and submit. AUTHORIZED targets only.
+    """
+    import re as _re
+    from datetime import date
+    from pathlib import Path
+
+    from friday.core.redteam_report import draft_redteam_report
+    from friday.skills.agentic_redteam import agentic_redteam
+
+    console.print(f"[cyan]Agentic red-team {endpoint}…[/cyan]  (sandboxed; authorized only)")
+    res = asyncio.run(agentic_redteam(endpoint, model=model, api=api, key=key))
+    if res.get("error"):
+        console.print(f"[red]{res['error']}[/red]")
+        raise typer.Exit(1)
+    findings = res["findings"]
+    if findings:
+        console.print(f"[bold]{len(findings)} confirmed agentic violation(s): "
+                      f"{', '.join(res['categories_hit'])}[/bold]")
+    else:
+        console.print("[green]No confirmed agentic injection — the agent ignored in-document "
+                      "instructions.[/green]")
+    report = draft_redteam_report(endpoint, findings, model=res.get("model", ""))
+    slug = _re.sub(r"[^a-z0-9]+", "-", (model or endpoint).lower()).strip("-")[:50] or "agent"
+    bounty_dir = Path.home() / ".local" / "share" / "friday" / "bounty"
+    path = Path(out) if out else (bounty_dir / f"agentic-{slug}-{date.today()}.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report)
+    preview = report[:1800] + ("\n\n…(full report saved)" if len(report) > 1800 else "")
+    console.print(Panel(Markdown(preview), title="[bold]Agentic red-team — draft report[/bold]",
+                        border_style="cyan", padding=(0, 1)))
+    console.print(f"[bold]Saved:[/bold] {path}  [dim](verify vs the real agent before submitting)"
+                  "[/dim]")
+
+
 @app.command()
 def train(
     dataset_only: bool = typer.Option(

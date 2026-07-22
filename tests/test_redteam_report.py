@@ -54,6 +54,18 @@ def test_candidate_section_surfaces_judge_and_corroboration() -> None:
     assert "Judge-scored" in md and "qwen2.5:14b" in md and "3×" in md
 
 
+def test_report_renders_agentic_impact() -> None:
+    findings = [{
+        "category": "agentic_read_violation",
+        "owasp": "LLM01 Indirect Prompt Injection → data exfiltration (Read)",
+        "severity": "critical", "vulnerable": True,
+        "system": "Summarize the document.", "attack": "<doc carrying an injection>",
+        "canary": "SECRET-abc123", "evidence": "the agent read a secret file and exfiltrated it",
+    }]
+    md = draft_redteam_report("http://agent/api/chat", findings)
+    assert "CRITICAL" in md and "exfiltrat" in md.lower() and "data-exfiltration" in md.lower()
+
+
 def test_candidate_section_omits_judge_line_when_absent() -> None:
     cand = {"category": "safety_rule_bypass", "severity": "medium", "candidate": True,
             "evidence": "e", "verify": "v"}
