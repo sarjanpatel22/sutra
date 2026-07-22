@@ -175,6 +175,52 @@ def engagement_rows() -> list[_Row]:
     return rows
 
 
+_NIM_CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+
+def _nim_alive(model: str, key: str) -> tuple[Status, str]:
+    """Ping one NIM model id with a 1-token request. OK if it answers; WARN (flagged EOL) on the
+    404/410 NIM returns for a retired id. Isolated so it's monkeypatchable in tests (no network)."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}],
+                       "max_tokens": 1}).encode()
+    req = urllib.request.Request(
+        _NIM_CHAT_URL, data=body, method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 — fixed NIM host
+            r.read(1)
+        return Status.OK, f"{model} live"
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410):
+            return Status.WARN, f"{model} → HTTP {e.code} EOL — update GLM_MODEL/NEMOTRON_MODEL"
+        return Status.WARN, f"{model} → HTTP {e.code}"
+    except Exception as e:  # noqa: BLE001 — any transport error is 'unknown', never fatal
+        return Status.WARN, f"{model} unreachable: {type(e).__name__}"
+
+
+def nim_model_rows() -> list[_Row]:
+    """Liveness of the configured free NVIDIA NIM brains (GLM/Nemotron). NIM EOLs model ids (glm-5.1
+    went 410 Gone on 2026-07-02, silently wasting a round-trip on every reasoning call until caught)
+    — this pings each wired id so a dead pick surfaces here instead of rotting. Advisory (never
+    FAIL); only meaningful when the key is set."""
+    key = os.getenv("NVIDIA_NIM_API_KEY", "").strip()
+    if not key:
+        return [_Row("NIM brains", Status.WARN,
+                     "NVIDIA_NIM_API_KEY unset — free GLM/Nemotron reasoning tier off")]
+    from friday.core.router import _GLM, _NEMOTRON
+
+    rows: list[_Row] = []
+    for label, wired in (("NIM GLM", _GLM), ("NIM Nemotron", _NEMOTRON)):
+        model = wired.split("nvidia_nim/", 1)[-1]  # strip the litellm prefix → raw NIM id
+        status, detail = _nim_alive(model, key)
+        rows.append(_Row(label, status, detail))
+    return rows
+
+
 def _render(title: str, rows: list[_Row]) -> None:
     t = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
     t.add_column("Check", style="bold", width=20)
@@ -197,6 +243,7 @@ async def run_doctor(*, services: bool = True) -> bool:
     _render("Engagement readiness", engagement_rows())
 
     if services:
+        _render("NIM brains (free tier)", nim_model_rows())
         from friday.core.monitor import print_report
 
         print_report(await run_health_checks())

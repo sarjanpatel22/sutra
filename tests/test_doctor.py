@@ -85,6 +85,25 @@ def test_engagement_rows_flags_paid_without_key(monkeypatch: pytest.MonkeyPatch)
     assert row.status is Status.WARN and "ANTHROPIC_API_KEY" in row.detail
 
 
+def test_nim_model_rows_flags_eol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retired NIM id (404/410) is surfaced as an EOL warning; a live one reads OK — so a dead
+    model can't silently rot in the reasoning tier again."""
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        doctor, "_nim_alive",
+        lambda model, key: (Status.WARN, f"{model} → HTTP 410 EOL — update the id")
+        if "glm" in model.lower() else (Status.OK, f"{model} live"))
+    by_name = {r.name: r for r in doctor.nim_model_rows()}
+    assert by_name["NIM GLM"].status is Status.WARN and "EOL" in by_name["NIM GLM"].detail
+    assert by_name["NIM Nemotron"].status is Status.OK
+
+
+def test_nim_model_rows_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    rows = doctor.nim_model_rows()
+    assert len(rows) == 1 and rows[0].status is Status.WARN and "unset" in rows[0].detail
+
+
 def test_engagement_rows_recon_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("friday.core.router.allow_paid", lambda: False)
     monkeypatch.setattr("friday.core.secrets.get_secret", lambda *a, **k: None)

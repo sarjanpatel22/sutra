@@ -100,12 +100,14 @@ TIER_MODELS: dict[Tier, list[str]] = {
 
 # Two usable top free brains (NVIDIA NIM, OpenAI-compatible via LiteLLM), inserted ABOVE the free
 # fallbacks ONLY when the key is present — never thrashes when no key is set. LIVE-TESTED picks:
-# GLM-5.1 is the stronger REASONER (leaderboard 83, reliable), Nemotron the faster FUNCTION-CALLER
+# GLM is the stronger REASONER (leaderboard 83, reliable), Nemotron the faster FUNCTION-CALLER
 # (1s tool calls). DeepSeek-V4-Pro and Kimi-K2.6 were rejected — they time out / return garbage on
 # the free tier (rank ≠ usable). So GLM leads the reasoning tiers, Nemotron leads the tool/agent
 # tier, and each backs the other. Override ids with NEMOTRON_MODEL / GLM_MODEL.
+# NOTE: NIM EOLs model ids (glm-5.1 went 410 Gone on 2026-07-02, silently wasting a round-trip on
+# every reasoning call until caught) — `sutra doctor` now pings these ids so a dead pick surfaces.
 _NEMOTRON = os.getenv("NEMOTRON_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
-_GLM = os.getenv("GLM_MODEL", "nvidia_nim/z-ai/glm-5.1")
+_GLM = os.getenv("GLM_MODEL", "nvidia_nim/z-ai/glm-5.2")
 
 
 def _wire_nvidia_nim(tier_models: dict[Tier, list[str]], glm: str, nemotron: str) -> None:
