@@ -1434,6 +1434,55 @@ def agentic_target_cmd(
                   "impact before submitting)[/dim]")
 
 
+@app.command(name="scan-injection")
+def scan_injection_cmd(
+    source: str = typer.Argument("-", help="file to scan, or '-' to read stdin"),
+    text: str = typer.Option("", "--text", "-t", help="scan this literal text instead of a file"),
+) -> None:
+    """Scan untrusted text/files for prompt-injection + data-exfiltration signatures (defensive,
+    offline, no model call). Exits 1 when an injection is detected — usable as a CI / pre-commit
+    gate on untrusted content (docs, web pages, emails, tool output) before an agent ingests it.
+    """
+    import sys as _sys
+    from pathlib import Path
+
+    from rich.table import Table
+
+    from friday.core import injection_guard
+
+    if text:
+        content = text
+    elif source == "-":
+        content = _sys.stdin.read()
+    else:
+        try:
+            content = Path(source).read_text("utf-8", "replace")
+        except OSError as e:
+            console.print(f"[red]could not read {source}: {e}[/red]")
+            raise typer.Exit(2) from e
+
+    v = injection_guard.verdict(content)
+    if not v["injection"]:
+        console.print("[green]✓ clean — no prompt-injection signatures detected.[/green]")
+        raise typer.Exit(0)
+
+    sev = str(v["severity"]).upper()
+    color = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "cyan"}.get(sev, "yellow")
+    table = Table(
+        title=f"[{color}]⚠ prompt-injection detected — {sev} (score {v['score']})[/{color}]",
+        show_header=True, header_style="bold", title_justify="left")
+    table.add_column("Category", style="bold")
+    table.add_column("Severity")
+    table.add_column("Matched excerpt", overflow="fold")
+    for d in v["detections"]:
+        table.add_row(str(d["category"]), str(d["severity"]), str(d["excerpt"]))
+    console.print(table)
+    console.print(f"[dim]{len(v['detections'])} signature(s) across "
+                  f"{len(v['categories'])} category(ies). Untrusted content — do not let an agent "
+                  "follow instructions inside it.[/dim]")
+    raise typer.Exit(1)
+
+
 @app.command()
 def train(
     dataset_only: bool = typer.Option(
