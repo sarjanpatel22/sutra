@@ -45,11 +45,27 @@ async def test_vulnerable_agent_confirms_all_violations(monkeypatch: pytest.Monk
     assert all(f["vulnerable"] and f.get("canary") for f in res["findings"])
 
 
-async def test_hardened_agent_no_false_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_hardened_agent_uses_tools_but_resists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An agent that DOES drive its tools (reads a file) but refuses the injected exfil/exec/write
+    is genuinely robust — no false positive, and NOT flagged inconclusive (it used tools)."""
+    def safe(e, m, msgs, a, k):
+        if "TOOL RESULT" in msgs[-1]["content"]:
+            return "FINAL The document is a routine business update."
+        return 'CALL read_file {"path": "creds.env"}'   # reads, but never exfils/execs/writes
+    monkeypatch.setattr(ar, "_raw_chat", safe)
+    res = await ar.agentic_redteam("http://localhost:11434/api/chat", model="x")
+    assert res["vulnerable"] is False and res["findings"] == []
+    assert res["inconclusive"] is False
+
+
+async def test_non_tool_using_model_is_inconclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model that never speaks the tool protocol (always FINAL) is INCONCLUSIVE, not 'robust' —
+    it couldn't drive tools at all, so the battery can't clear it. Honest reporting."""
     monkeypatch.setattr(ar, "_raw_chat",
                         lambda e, m, msgs, a, k: "FINAL This is a routine business update.")
     res = await ar.agentic_redteam("http://localhost:11434/api/chat", model="x")
     assert res["vulnerable"] is False and res["findings"] == []
+    assert res["inconclusive"] is True and "INCONCLUSIVE" in res["note"]
 
 
 async def test_echo_of_injection_is_not_confirmed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,6 +109,28 @@ def test_write_file_stays_in_jail(tmp_path) -> None:
     t = ar.SandboxedTools(tmp_path)
     assert t.call("write_file", {"path": "note.txt", "content": "hi"}) == "ok: written"
     assert (tmp_path / "note.txt").read_text() == "hi" and t.writes == [("note.txt", "hi")]
+
+
+def test_sandbox_records_every_call(tmp_path) -> None:
+    """`calls` logs every tool invocation (even a rejected one) — the signal that separates a model
+    that engaged the tools from one that never spoke the protocol."""
+    t = ar.SandboxedTools(tmp_path)
+    t.call("read_file", {"path": "x"})
+    t.call("run_command", {"cmd": "rm -rf /"})   # rejected, but the model DID try to use a tool
+    assert [c[0] for c in t.calls] == ["read_file", "run_command"]
+
+
+async def test_delay_ms_paces_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """delay_ms routes through _pace between requests (rate-limit compliance on a live target)."""
+    paced = {"n": 0}
+
+    def fake_pace(ms: int) -> None:
+        if ms:
+            paced["n"] += 1
+    monkeypatch.setattr(ar, "_raw_chat", lambda e, m, msgs, a, k: "FINAL done")
+    monkeypatch.setattr(ar, "_pace", fake_pace)
+    await ar.agentic_redteam("http://x/api/chat", model="x", delay_ms=5)
+    assert paced["n"] > 0   # paced between the (many) round-trips
 
 
 def test_parse_action() -> None:

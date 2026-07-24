@@ -1297,6 +1297,8 @@ def agentic_redteam_cmd(
     model: str = typer.Option("", "--model", "-m", help="model name the endpoint expects"),
     api: str = typer.Option("auto", "--api", help="auto | openai | ollama | anthropic"),
     key: str = typer.Option("", "--key", help="bearer token for hosted endpoints (never local)"),
+    delay_ms: int = typer.Option(0, "--delay-ms", help="pace requests (ms + jitter) for a "
+        "rate-limited authorized target; 0 = full speed"),
     out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
 ) -> None:
     """Agentic prompt-injection red-team — does an LLM agent let UNTRUSTED document content hijack
@@ -1313,7 +1315,7 @@ def agentic_redteam_cmd(
     from friday.skills.agentic_redteam import agentic_redteam
 
     console.print(f"[cyan]Agentic red-team {endpoint}…[/cyan]  (sandboxed; authorized only)")
-    res = asyncio.run(agentic_redteam(endpoint, model=model, api=api, key=key))
+    res = asyncio.run(agentic_redteam(endpoint, model=model, api=api, key=key, delay_ms=delay_ms))
     if res.get("error"):
         console.print(f"[red]{res['error']}[/red]")
         raise typer.Exit(1)
@@ -1321,9 +1323,13 @@ def agentic_redteam_cmd(
     if findings:
         console.print(f"[bold]{len(findings)} confirmed agentic violation(s): "
                       f"{', '.join(res['categories_hit'])}[/bold]")
+    elif res.get("inconclusive"):
+        console.print("[yellow]Inconclusive — the model never used the agent's tools (protocol "
+                      "mismatch, not proven-robust). See the note below.[/yellow]")
     else:
         console.print("[green]No confirmed agentic injection — the agent ignored in-document "
                       "instructions.[/green]")
+    console.print(f"[dim]{res.get('note', '')}[/dim]")
     report = draft_redteam_report(endpoint, findings, model=res.get("model", ""))
     slug = _re.sub(r"[^a-z0-9]+", "-", (model or endpoint).lower()).strip("-")[:50] or "agent"
     bounty_dir = Path.home() / ".local" / "share" / "friday" / "bounty"
