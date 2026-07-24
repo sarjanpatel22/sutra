@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from friday.core import persona
+from friday.core import injection_guard, persona
 from friday.core.router import Tier, complete
 from friday.core.turnlog import log_text_turn, log_turn
 from friday.memory.store import get_store, looks_like_noise
@@ -262,7 +262,7 @@ async def run(
     )
 
     # Pull relevant long-term memory into context (no-op if memory unavailable).
-    system_content = SYSTEM_PROMPT
+    system_content = SYSTEM_PROMPT + injection_guard.SPOTLIGHT_RULE
     memories = await get_store().recall(user_input, limit=5)
     if memories:
         system_content += "\n\nRelevant long-term memory (may be incomplete):\n" + "\n".join(
@@ -655,7 +655,8 @@ async def run_autonomous(
     registry.autodiscover()
     tools = registry.all_tools()
     sys_prompt = (
-        AUTONOMOUS_SYSTEM_PROMPT + playbook.playbook_block() + dreaming.lessons_block(goal)
+        AUTONOMOUS_SYSTEM_PROMPT + injection_guard.SPOTLIGHT_RULE
+        + playbook.playbook_block() + dreaming.lessons_block(goal)
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": sys_prompt},
@@ -878,7 +879,7 @@ async def _run_worker(
     off-scope targets (a hallucinated wrong host) even under --yes, and exact-duplicate calls are
     dropped so a looping worker can't re-run one tool forever."""
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+        {"role": "system", "content": WORKER_SYSTEM_PROMPT + injection_guard.SPOTLIGHT_RULE},
         {"role": "user",
          "content": f"Overall goal: {goal}\n\nYour objective right now:\n{objective}"},
     ]
@@ -1638,11 +1639,14 @@ async def _run_tool_calls(
             else "ok"
         )
         _emit("tool_end", {"skill": fn_name, "status": status})
+        # Injection guard: tool output is untrusted data — flag any embedded prompt-injection
+        # right where the model consumes it (OWASP-LLM01 defense). Never drops content.
+        guarded = injection_guard.guard_tool_result(fn_name, json.dumps(result))
         return {
             "role": "tool",
             "tool_call_id": tc.id,
             "name": fn_name,
-            "content": _cap_tool_content(json.dumps(result)),
+            "content": _cap_tool_content(guarded),
         }
 
     return await asyncio.gather(*[_call_one(tc) for tc in tool_calls])
