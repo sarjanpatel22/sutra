@@ -1343,6 +1343,97 @@ def agentic_redteam_cmd(
                   "[/dim]")
 
 
+@app.command(name="agentic-target")
+def agentic_target_cmd(
+    target: str = typer.Argument(..., help="the REAL in-scope agent product you'll feed (e.g. a "
+        "0din designated agent). AUTHORIZED targets only"),
+    klass: str = typer.Option("read", "--class", "-c", help="prove: read|execute|write"),
+    collector_url: str = typer.Option("", "--collector-url", help="public URL the target can reach "
+        "(a tunnel, e.g. cloudflared/ngrok) baked into the payload; default = the local bind URL"),
+    host: str = typer.Option("127.0.0.1", "--host", help="collector bind host"),
+    port: int = typer.Option(0, "--port", help="collector bind port (0 = free port)"),
+    secret: str = typer.Option("", "--secret", help="Read: what to exfiltrate (default: system "
+        "prompt + reachable config/creds)"),
+    command: str = typer.Option("", "--command", help="Execute: benign command (default: id)"),
+    wait: int = typer.Option(180, "--wait", help="seconds to wait for the exfil callback"),
+    out: str = typer.Option("", "--out", help="write the report here (default: bounty/ dir)"),
+) -> None:
+    """Real-target agentic-injection harness: stand up an exfil collector, print poisoned documents
+    to feed a REAL in-scope agent product, and CONFIRM the Read/Execute violation echo-proof when
+    the agent calls back to the unique collector URL. The harness finds + confirms; YOU feed the
+    target and submit. AUTHORIZED targets only (a 0din in-scope product or your own/invited agent).
+    """
+    import re as _re
+    import time as _time
+    from datetime import date
+    from pathlib import Path
+
+    from friday.core.redteam_report import draft_redteam_report
+    from friday.skills.agentic_target import (
+        ExfilCollector,
+        as_finding,
+        build_payloads,
+        confirm,
+    )
+    from friday.skills.agentic_target import _token as _mk_token
+
+    if klass not in ("read", "execute", "write"):
+        console.print("[red]--class must be read | execute | write[/red]")
+        raise typer.Exit(1)
+    token = _mk_token()
+    with ExfilCollector(host=host, port=port) as collector:
+        public = collector_url.strip() or collector.url
+        payloads = build_payloads(public, token, klass, secret=secret, command=command)
+        console.print(Panel(
+            f"[bold]Collector:[/bold] {collector.url}  →  agent must call "
+            f"[bold]{public}/{token}[/bold]\n[dim]token {token}[/dim]",
+            title="[bold]Agentic-target harness[/bold]  (authorized targets only)",
+            border_style="cyan"))
+        if not collector_url.strip() and host in ("127.0.0.1", "localhost"):
+            console.print("[yellow]⚠ Collector is LOCAL — a cloud target can't reach it. Expose it "
+                          "with a tunnel and pass --collector-url <public-url>.[/yellow]")
+        body = "\n\n".join(f"**{label}**\n```\n{content}\n```" for label, content in payloads)
+        console.print(Panel(Markdown(
+            f"Feed ONE of these to **{target}** through its real interface "
+            f"(document / web page / email / repo file), then wait:\n\n{body}"),
+            title=f"[bold]Poisoned payloads — {klass} violation[/bold]",
+            border_style="magenta", padding=(0, 1)))
+        if klass == "write":
+            console.print("[yellow]Write has no callback signal — feed the payload, then confirm "
+                          f"the unauthorized file 0din_poc_{token}.txt appeared on the target "
+                          "yourself.[/yellow]")
+            raise typer.Exit(0)
+        console.print(f"[cyan]Waiting up to {wait}s for the exfil callback…[/cyan] (Ctrl+C stops)")
+        hit = None
+        deadline = _time.monotonic() + wait
+        try:
+            while _time.monotonic() < deadline:
+                hit = confirm(collector, token)
+                if hit:
+                    break
+                _time.sleep(1.0)
+        except KeyboardInterrupt:
+            console.print("[dim]stopped.[/dim]")
+    if not hit:
+        console.print("[yellow]No callback — the agent didn't follow the injection (robust), or "
+                      "the collector wasn't reachable from the target. Try a tunnel, another "
+                      "framing, or another class.[/yellow]")
+        raise typer.Exit(0)
+    console.print(Panel(
+        f"[bold green]CONFIRMED[/bold green] {klass} violation — {hit['method']} to the collector\n"
+        f"[dim]body: {hit['body'][:300]}[/dim]",
+        title="[bold]Echo-proof hit[/bold]", border_style="green"))
+    finding = as_finding(target, klass, hit, payloads[0][1], token)
+    report = draft_redteam_report(target, [finding], program="0din")
+    slug = _re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")[:50] or "target"
+    bounty_dir = Path.home() / ".local" / "share" / "friday" / "bounty"
+    path = Path(out) if out else (bounty_dir / f"agentic-target-{slug}-{date.today()}.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report)
+    console.print(f"[bold]Saved 0din draft:[/bold] {path}  [dim](verify scope + private-data "
+                  "impact before submitting)[/dim]")
+
+
 @app.command()
 def train(
     dataset_only: bool = typer.Option(
