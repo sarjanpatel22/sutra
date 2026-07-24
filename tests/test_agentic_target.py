@@ -37,12 +37,15 @@ def test_collector_records_get_too() -> None:
         assert c.token_hits("0dinTOK") and c.token_hits("0dinTOK")[0]["method"] == "GET"
 
 
-def test_build_payloads_read_contains_sink_and_action() -> None:
+def test_build_payloads_read_commands_a_tool_and_covers_primitives() -> None:
     payloads = at.build_payloads("http://collector:9/", "0dinTOK", "read")
     assert len(payloads) == 3
     for _label, content in payloads:
-        assert "http://collector:9/0dinTOK" in content
-        assert "POST" in content.upper()
+        assert "http://collector:9/0dinTOK" in content      # unique sink in every framing
+        assert "tool" in content and "do not skip" in content  # commands a tool + hard imperative
+    # POST framings (API/coding agents) + a browser-visit framing (agentic browsers)
+    assert sum("POST" in c for _l, c in payloads) >= 2
+    assert any("open http://collector:9/0dinTOK" in c for _l, c in payloads)
 
 
 def test_build_payloads_execute_uses_benign_command_by_default() -> None:
