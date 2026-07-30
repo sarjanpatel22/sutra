@@ -1483,6 +1483,102 @@ def scan_injection_cmd(
     raise typer.Exit(1)
 
 
+@app.command(name="mcp-audit")
+def mcp_audit_cmd(
+    path: str = typer.Argument(".", help="local source directory to scan (a cloned repo)"),
+    clone: str = typer.Option("", "--clone", help="git URL to shallow-clone to a temp dir + scan"),
+    severity: str = typer.Option("all", "--severity", help="minimum severity: all|medium|high"),
+    reachable: bool = typer.Option(
+        False, "--reachable", "-r",
+        help="only sinks fed by a tool-handler parameter (attacker-reachable — likely-real ones)"),
+    out: str = typer.Option("", "--out", help="write a markdown report to this path"),
+) -> None:
+    """Statically scan an MCP server / agent-tool checkout for the vuln classes that dominate the
+    MCP CVE wave — command injection, path traversal, SSRF, unsafe deserialization, code eval.
+    Prints a ranked table of CANDIDATE sinks; verify each against the real wiring before responsible
+    disclosure. Exits 1 if any HIGH finding (usable as a CI gate). AUDIT SOURCE ONLY — never attack
+    a live third-party service; disclose through the project's security policy.
+    """
+    import shutil as _sh
+    import subprocess as _sp
+    import tempfile as _tf
+    from pathlib import Path
+
+    from rich.table import Table
+
+    from friday.core import mcp_audit
+
+    _rank = {"high": 3, "medium": 2, "low": 1}
+    floor = _rank.get(severity.lower(), 1) if severity.lower() in _rank else 1
+
+    tmp = ""
+    root = path
+    if clone:
+        tmp = _tf.mkdtemp(prefix="mcp-audit-")
+        console.print(f"[cyan]cloning {clone} …[/cyan]")
+        r = _sp.run(["git", "clone", "--depth", "1", clone, tmp],  # noqa: S603,S607
+                    capture_output=True, text=True)
+        if r.returncode != 0:
+            console.print(f"[red]clone failed:[/red] {r.stderr.strip()[:200]}")
+            _sh.rmtree(tmp, ignore_errors=True)
+            raise typer.Exit(2)
+        root = tmp
+    if not Path(root).exists():
+        console.print(f"[red]no such path:[/red] {root}")
+        raise typer.Exit(2)
+    try:
+        report = mcp_audit.audit_report(root)
+    finally:
+        if tmp:
+            _sh.rmtree(tmp, ignore_errors=True)
+
+    findings = [f for f in report["findings"] if _rank[f["severity"]] >= floor]
+    if reachable:
+        findings = [f for f in findings if f.get("reachable")]
+    label = clone or root
+    filt = f"'{severity}' severity" + (" + tool-reachable" if reachable else "")
+    if not findings:
+        console.print(f"[green]✓ {label}: no candidate sinks at {filt} "
+                      f"(scanned, {report['total']} total finding(s)).[/green]")
+        raise typer.Exit(0)
+
+    colour = {"high": "red", "medium": "yellow", "low": "cyan"}
+    t = Table(title=f"[bold]MCP audit — {label}[/bold]", title_justify="left",
+              show_header=True, header_style="bold")
+    for col in ("Sev", "R", "Category", "CWE", "Location"):
+        t.add_column(col)
+    t.add_column("Code", overflow="fold", max_width=52)
+    for f in findings:
+        c = colour.get(f["severity"], "white")
+        rmark = "[bold red]►[/bold red]" if f.get("reachable") else ""
+        t.add_row(f"[{c}]{f['severity'].upper()}[/{c}]", rmark, f["category"], f["cwe"],
+                  f"{f['file']}:{f['line']}", f["excerpt"])
+    console.print(t)
+    cats = ", ".join(f"{k}×{v}" for k, v in report["by_category"].items())
+    console.print(f"[dim]{len(findings)} shown · {report['high']} high · "
+                  f"{report.get('reachable', 0)} tool-reachable (►) · {cats}. "
+                  "Candidates — verify against the real wiring before disclosing.[/dim]")
+
+    if out:
+        lines = [f"# MCP audit — {label}", "",
+                 f"- Total findings: {report['total']} ({report['high']} high, "
+                 f"{report.get('reachable', 0)} tool-reachable)",
+                 f"- Classes: {cats}", "",
+                 "> Candidate sinks from static analysis — verify each against the real tool "
+                 "wiring and disclose responsibly through the project's security policy. "
+                 "**Tool-reachable** findings are fed by an MCP tool parameter, so attacker-"
+                 "influenced input can reach the sink — triage these first.", ""]
+        for f in findings:
+            tag = " · TOOL-REACHABLE" if f.get("reachable") else ""
+            lines += [f"## [{f['severity'].upper()}{tag}] {f['category']} ({f['cwe']}) — "
+                      f"{f['file']}:{f['line']}", "", f"```\n{f['excerpt']}\n```", "",
+                      f"{f['note']}", ""]
+        Path(out).expanduser().write_text("\n".join(lines))
+        console.print(f"[bold]Report saved:[/bold] {out}")
+    if report["high"]:
+        raise typer.Exit(1)
+
+
 @app.command()
 def train(
     dataset_only: bool = typer.Option(
