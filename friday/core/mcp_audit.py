@@ -37,7 +37,11 @@ from pathlib import Path
 
 _SRC_EXT = {".py", ".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx"}
 _SKIP_DIRS = {"node_modules", ".git", "dist", "build", "__pycache__", ".venv", "venv", "vendor",
-              "site-packages", ".mypy_cache", ".pytest_cache", "test", "tests", "__tests__"}
+              "site-packages", ".mypy_cache", ".pytest_cache", "test", "tests", "__tests__",
+              "example", "examples", "benchmark", "benchmarks", "attacks"}
+# Test/spec files and pre-built bundles are not runtime sinks — skip them to keep signal high.
+_TEST_SUFFIXES = ("_test.py", "_test.ts", "_test.js", ".test.js", ".test.ts", ".test.jsx",
+                  ".test.tsx", ".spec.js", ".spec.ts", ".min.js", ".min.cjs", ".bundle.js")
 _SEV = {"high": 3, "medium": 2, "low": 1}
 
 
@@ -77,10 +81,15 @@ _JS_DB_EXEC = re.compile(
 # A TS-typed parameter right after exec( means this is an interface/method DEFINITION or `.d.ts`
 # declaration (`exec(query: string): ...`), not a call — never a real sink.
 _JS_TYPED_PARAM = re.compile(r"exec(?:Sync)?\s*\(\s*\w+\s*:")
-# Code evaluation.
+# Code evaluation. The `(?<![.\w])` keeps a METHOD call like `model.eval()` (PyTorch eval-mode) or
+# `array.exec()` from being mistaken for the Python/JS builtins `eval()`/`exec()`.
 _EVAL_JS = re.compile(
-    r"\beval\s*\(|\bnew\s+Function\s*\(|\bvm\.(?:runIn\w+|compileFunction)\s*\(", re.I)
-_EVAL_PY = re.compile(r"\beval\s*\(|\bexec\s*\(", re.I)
+    r"(?<![.\w])eval\s*\(|\bnew\s+Function\s*\(|\bvm\.(?:runIn\w+|compileFunction)\s*\(", re.I)
+_EVAL_PY = re.compile(r"(?<![.\w])(?:eval|exec)\s*\(", re.I)
+# A `def eval(` / `function exec(` DEFINES a same-named function; it is not a call to the builtin.
+_EVAL_DEF = re.compile(r"\b(?:def|function)\s+(?:eval|exec)\b", re.I)
+# torch.load(..., weights_only=True) restricts unpickling to tensors — the safe path, not a sink.
+_TORCH_SAFE = re.compile(r"weights_only\s*=\s*True", re.I)
 # File read/write by path (both languages).
 _FILE = re.compile(
     r"\bfs\.(?:readFile|writeFile|readFileSync|writeFileSync|appendFile\w*|createReadStream"
@@ -384,17 +393,22 @@ def scan_source(rel_path: str, source: str) -> list[Finding]:
             add("command_injection", "CWE-78", sev, cmd.group(0), note, rch)
 
         ev = (_EVAL_PY if py else _EVAL_JS).search(line)
-        if ev:
+        if ev and not _EVAL_DEF.search(line):
             add("code_eval", "CWE-95", "high" if dyn else "medium", ev.group(0),
                 "code evaluated from a dynamic value — arbitrary code execution if it derives from "
                 "input; a restricted-builtins sandbox here is usually escapable" if dyn else
                 "code-evaluation sink — verify the evaluated string is a trusted constant", rch)
 
         de = _DESERIAL.search(line)
-        if de and not (de.group(0).lower().startswith("yaml") and _YAML_SAFE.search(win)):
-            add("unsafe_deserialization", "CWE-502", "high", de.group(0),
-                "untrusted deserialization — loading attacker-controlled serialized data is "
-                "remote code execution; confirm the source is trusted or use a safe loader", rch)
+        if de:
+            tok = de.group(0).lower()
+            safe = ((tok.startswith("yaml") and _YAML_SAFE.search(win))
+                    or ("torch.load" in tok and _TORCH_SAFE.search(win)))
+            if not safe:
+                add("unsafe_deserialization", "CWE-502", "high", de.group(0),
+                    "untrusted deserialization — loading attacker-controlled serialized data is "
+                    "remote code execution; confirm the source is trusted or use a safe loader",
+                    rch)
 
         fm = _FILE.search(line)
         if fm and dyn:
@@ -442,14 +456,16 @@ def scan_repo(root: str | Path) -> list[Finding]:
     for p in root.rglob("*"):
         if p.is_dir() or p.suffix.lower() not in _SRC_EXT:
             continue
-        if p.name.endswith(".d.ts"):
-            continue  # TypeScript type declarations — signatures, never runtime sinks
+        if p.name.endswith(".d.ts") or p.name.endswith(_TEST_SUFFIXES):
+            continue  # type declarations / tests / pre-built bundles — never runtime sinks
         if any(part in _SKIP_DIRS for part in p.parts):
             continue
         try:
             src = p.read_text("utf-8", "replace")
         except OSError:
             continue
+        if max((len(ln) for ln in src.splitlines()), default=0) > 3000:
+            continue  # minified / vendored bundle (huge lines) — not human-authored source
         findings.extend(scan_source(str(p.relative_to(root)), src))
     # most-severe first; within a severity, tool-reachable (attacker-influenced) findings float up.
     findings.sort(key=lambda f: (-_SEV.get(f.severity, 0), not f.reachable, f.file, f.line))

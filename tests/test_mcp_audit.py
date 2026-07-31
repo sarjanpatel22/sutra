@@ -63,6 +63,16 @@ def test_d_ts_declaration_files_skipped(tmp_path) -> None:
     assert "global.d.ts" not in files
 
 
+def test_test_files_and_minified_bundles_skipped(tmp_path) -> None:
+    (tmp_path / "server.py").write_text("os.system(user_cmd)\n")       # real
+    (tmp_path / "layer_test.py").write_text("pickle.loads(blob)\n")    # test file — skip
+    (tmp_path / "app.spec.ts").write_text("exec(userInput)\n")         # spec — skip
+    (tmp_path / "yarn.cjs").write_text("var x=" + "a;" * 2000 + "\n")  # minified (huge line) — skip
+    files = {f.file for f in M.scan_repo(tmp_path)}
+    assert "server.py" in files
+    assert files == {"server.py"}
+
+
 # ── path traversal ─────────────────────────────────────────────────────────────
 def test_path_traversal_flagged_high_without_guard() -> None:
     assert _cats("s.py", "open(user_path).read()")["path_traversal"] == "high"
@@ -130,6 +140,25 @@ def test_code_eval_flagged() -> None:
 def test_evaluate_is_not_eval() -> None:
     # a function called `evaluate(` must not trip the `eval(` sink
     assert "code_eval" not in _cats("s.js", "const x = evaluate(data)")
+
+
+def test_method_eval_is_not_code_eval() -> None:
+    # PyTorch `model.eval()` (eval-mode) and other `.eval()`/`.exec()` methods are not the builtin
+    for code in ["model.eval()", "self.model.eval()", "net.eval()", "stmt.exec()"]:
+        assert "code_eval" not in _cats("s.py", code), code
+
+
+def test_def_eval_is_not_code_eval() -> None:
+    # `def eval(x):` defines a same-named function; it is not a call to the eval builtin
+    assert "code_eval" not in _cats("s.py", "def eval(x): return x")
+    assert "code_eval" not in _cats("s.js", "function exec(cmd) { return cmd }")
+
+
+def test_torch_load_weights_only_is_safe() -> None:
+    assert "unsafe_deserialization" not in _cats(
+        "s.py", "loaded = torch.load(path, map_location='cpu', weights_only=True)")
+    # without the guard it is still flagged
+    assert _cats("s.py", "loaded = torch.load(path)")["unsafe_deserialization"] == "high"
 
 
 # ── sql injection ──────────────────────────────────────────────────────────────
