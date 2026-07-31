@@ -19,8 +19,9 @@ from friday.skills.registry import skill
     name="mcp_audit",
     description=(
         "Statically scan an MCP server / agent-tool source directory for the vulnerability classes "
-        "that dominate the MCP CVE wave: command injection (CWE-78), path traversal (CWE-22), SSRF "
-        "(CWE-918), unsafe deserialization (CWE-502), and code eval (CWE-95). Returns a ranked, "
+        "that dominate the MCP CVE wave: command injection (CWE-78), SQL injection (CWE-89), path "
+        "traversal (CWE-22), SSRF (CWE-918), unsafe deserialization (CWE-502), code eval (CWE-95). "
+        "Returns a ranked, "
         "structured report (file, line, category, CWE, severity, reachable, why) of CANDIDATE "
         "sinks to verify before responsible disclosure. `reachable` findings are fed by an MCP "
         "tool parameter (attacker-influenced) — set reachable_only=True to see just those, the "

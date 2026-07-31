@@ -1487,6 +1487,9 @@ def scan_injection_cmd(
 def mcp_audit_cmd(
     path: str = typer.Argument(".", help="local source directory to scan (a cloned repo)"),
     clone: str = typer.Option("", "--clone", help="git URL to shallow-clone to a temp dir + scan"),
+    batch: str = typer.Option(
+        "", "--batch",
+        help="file of git URLs (one per line) — clone+scan each, rank most-promising first"),
     severity: str = typer.Option("all", "--severity", help="minimum severity: all|medium|high"),
     reachable: bool = typer.Option(
         False, "--reachable", "-r",
@@ -1494,10 +1497,11 @@ def mcp_audit_cmd(
     out: str = typer.Option("", "--out", help="write a markdown report to this path"),
 ) -> None:
     """Statically scan an MCP server / agent-tool checkout for the vuln classes that dominate the
-    MCP CVE wave — command injection, path traversal, SSRF, unsafe deserialization, code eval.
+    MCP CVE wave — command/SQL injection, path traversal, SSRF, unsafe deserialization, code eval.
     Prints a ranked table of CANDIDATE sinks; verify each against the real wiring before responsible
-    disclosure. Exits 1 if any HIGH finding (usable as a CI gate). AUDIT SOURCE ONLY — never attack
-    a live third-party service; disclose through the project's security policy.
+    disclosure. Exits 1 if any HIGH finding (usable as a CI gate). --batch <file> runs the funnel
+    over many repos at once. AUDIT SOURCE ONLY — never attack a live third-party service; disclose
+    through the project's security policy.
     """
     import shutil as _sh
     import subprocess as _sp
@@ -1510,6 +1514,10 @@ def mcp_audit_cmd(
 
     _rank = {"high": 3, "medium": 2, "low": 1}
     floor = _rank.get(severity.lower(), 1) if severity.lower() in _rank else 1
+
+    if batch:
+        _mcp_audit_batch(batch, reachable)
+        return
 
     tmp = ""
     root = path
@@ -1577,6 +1585,67 @@ def mcp_audit_cmd(
         console.print(f"[bold]Report saved:[/bold] {out}")
     if report["high"]:
         raise typer.Exit(1)
+
+
+def _mcp_audit_batch(batch_file: str, reachable_only: bool) -> None:
+    """The funnel: clone+scan every git URL in `batch_file`, rank most-promising first (fresh repos
+    with tool-reachable HIGH findings on top, known-vuln/dup repos last)."""
+    import shutil as _sh
+    import subprocess as _sp
+    import tempfile as _tf
+    from pathlib import Path
+
+    from rich.table import Table
+
+    from friday.core import mcp_audit
+
+    p = Path(batch_file).expanduser()
+    if not p.exists():
+        console.print(f"[red]no such batch file:[/red] {batch_file}")
+        raise typer.Exit(2)
+    urls = [ln.strip() for ln in p.read_text().splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")]
+    if not urls:
+        console.print("[yellow]batch file has no URLs[/yellow]")
+        raise typer.Exit(0)
+
+    results: list[tuple[str, dict]] = []
+    with console.status(f"[cyan]scanning {len(urls)} repos …[/cyan]") as status:
+        for i, url in enumerate(urls, 1):
+            name = url.rstrip("/").split("/")[-1].removesuffix(".git")
+            status.update(f"[cyan]({i}/{len(urls)}) {name} …[/cyan]")
+            tmp = _tf.mkdtemp(prefix="mcp-batch-")
+            try:
+                r = _sp.run(["git", "clone", "--depth", "1", url, tmp],  # noqa: S603,S607
+                            capture_output=True, text=True, timeout=180)
+                if r.returncode != 0:
+                    console.print(f"[dim]clone failed: {name}[/dim]")
+                    continue
+                results.append((url, mcp_audit.audit_report(tmp)))
+            except (OSError, _sp.SubprocessError):
+                console.print(f"[dim]error: {name}[/dim]")
+            finally:
+                _sh.rmtree(tmp, ignore_errors=True)
+
+    rows = mcp_audit.rank_batch(results)
+    if reachable_only:
+        rows = [r for r in rows if r["reachable"]]
+    t = Table(title="[bold]MCP funnel — ranked (most promising first)[/bold]", title_justify="left",
+              show_header=True, header_style="bold")
+    for col in ("Repo", "R-High", "Reach", "High", "Top classes", "Dup?"):
+        t.add_column(col)
+    for r in rows:
+        name = r["repo"].rstrip("/").split("/")[-1].removesuffix(".git")
+        dup = "[yellow]known-vuln[/yellow]" if r["known_vuln"] else ""
+        rh = f"[bold red]{r['reachable_high']}[/bold red]" if r["reachable_high"] else "0"
+        t.add_row(name, rh, str(r["reachable"]), str(r["high"]), r["top"] or "[dim]—[/dim]", dup)
+    console.print(t)
+    hot = [r for r in rows if r["reachable_high"] and not r["known_vuln"]]
+    console.print(f"[dim]{len(results)}/{len(urls)} scanned · "
+                  f"[bold]{len(hot)} fresh repo(s) with tool-reachable HIGH findings[/bold] — "
+                  "start there. Verify + dedup against CVEs before disclosing.[/dim]")
+    if hot:
+        console.print(f"[green]→ next:[/green] sutra mcp-audit --clone {hot[0]['repo']} -r")
 
 
 @app.command()

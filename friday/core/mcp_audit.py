@@ -16,6 +16,8 @@ Detectors (language-aware where it matters, so a JS `exec` isn't confused with P
   - ssrf (CWE-918): a server-side fetch of a DYNAMIC url with no scheme/host allowlist nearby.
   - unsafe_deserialization (CWE-502): pickle / yaml.load / torch.load / marshal / node-serialize.
   - code_eval (CWE-95): eval / exec / new Function / vm.run — arbitrary code from input.
+  - sql_injection (CWE-89): a query built by f-string / concat / format reaching a DB execute —
+    the dominant bug class for the many database MCP servers.
 
 Two ranking signals lift the paying bugs above the noise:
   - REACHABILITY: a finding is `reachable` when the sink sits inside an MCP tool handler and its
@@ -66,6 +68,15 @@ _CMD_PY = re.compile(
 # format these across multiple lines, and same-line-only matching misses the injection sink).
 _CMD_PY_OPEN = re.compile(r"\bsubprocess\.(?:run|call|check_output|check_call|Popen)\s*\(")
 _SHELL_TRUE = re.compile(r"shell\s*=\s*True", re.I)
+# `.exec(` on a DB/connection/ORM receiver is a SQL execution, NOT child_process — suppress it as a
+# command sink (the SQLi detector picks it up instead). Kills the mcp-database-server FP class.
+_JS_DB_EXEC = re.compile(
+    r"\b(?:db|database|conn|connection|client|pool|stmt|statement|sqlite\w*|sequelize|knex|prisma"
+    r"|session|cursor|tx|trx|adapter|dbadapter|orm|repo|repository|store|handle)\b\s*!?\s*\.\s*exec",
+    re.I)
+# A TS-typed parameter right after exec( means this is an interface/method DEFINITION or `.d.ts`
+# declaration (`exec(query: string): ...`), not a call — never a real sink.
+_JS_TYPED_PARAM = re.compile(r"exec(?:Sync)?\s*\(\s*\w+\s*:")
 # Code evaluation.
 _EVAL_JS = re.compile(
     r"\beval\s*\(|\bnew\s+Function\s*\(|\bvm\.(?:runIn\w+|compileFunction)\s*\(", re.I)
@@ -88,6 +99,16 @@ _DESERIAL = re.compile(
     r"\bc?[Pp]ickle\.loads?\s*\(|\b_pickle\.loads?\s*\(|\bmarshal\.loads?\s*\("
     r"|\bdill\.loads?\s*\(|\btorch\.load\s*\(|\bjoblib\.load\s*\(|\bjsonpickle\.decode\s*\("
     r"|\byaml\.load\s*\(|\bunserialize\s*\(|\bnode-serialize\b", re.I)
+# SQL execution sink (DBAPI/ORM, both languages) + the "query built by string interpolation" signal
+# that separates an injectable query from a safely-parameterized one.
+_SQL_SINK = re.compile(r"\.(?:execute|executemany|executescript|query|raw|prepare)\s*\(", re.I)
+_SQL_BUILD = re.compile(
+    r"f['\"]"                          # f-string query
+    r"|`[^`]*\$\{"                     # JS template literal with interpolation
+    r"|\.format\s*\("                  # str.format
+    r"|['\"]\s*%\s*[(a-z_]"            # %-format operator applied to a string
+    r"|['\"]\s*\+|\+\s*['\"]",         # string concatenation of a query
+    re.I)
 
 # A DYNAMIC argument anywhere on the line — variable / template literal / f-string / concat /
 # a suggestive input name. Distinguishes exec(userInput) from exec("git --version").
@@ -102,6 +123,13 @@ _PATH_GUARD = re.compile(
     r"realpath|\.resolve\s*\(|resolve_path|relative_to|commonpath|commonprefix|is_relative_to"
     r"|normalize\s*\([^)]*\)[^;\n]{0,80}(?:startswith|startsWith)"
     r"|basename|secure_filename|safe_join|allow(?:ed)?[_ ]?list|whitelist", re.I)
+# A STRONG confinement (canonicalise + confine). Distinguishes a real guard from a weak one.
+_PATH_GUARD_STRONG = re.compile(
+    r"realpath|\.resolve\s*\(|resolve_path|relative_to|is_relative_to|commonpath|safe_join"
+    r"|secure_filename", re.I)
+# A hand-rolled `..` string check — the classic BYPASSABLE path guard (absolute path, symlink,
+# URL-encoded `%2e%2e`, or `....//` all defeat it). Matches a `..` string literal or a `../`/`..\`.
+_DOTDOT_CHECK = re.compile(r"""['"]\.\.|\.\.[\\/]""", re.I)
 # Guard for SSRF (allowlist / private-range / scheme check nearby).
 _URL_GUARD = re.compile(
     r"allow(?:ed)?[_ ]?list|whitelist|is_private|ip_address|ipaddress|urlparse|urlsplit"
@@ -250,24 +278,71 @@ def _js_tool_params(source: str) -> set[str]:
     return params - {"type", "properties", "description", "required", "enum", "items"}
 
 
+# ── taint propagation (so reachability follows DERIVED variables, not just direct params) ──────
+# An assignment `LHS <op>= RHS` that is NOT a comparison; `const/let/var` prefixes stripped.
+_ASSIGN = re.compile(
+    r"^\s*(?:const|let|var)?\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*"
+    r"(?:[-+*/|&^%]|\*\*|//|>>|<<)?=(?!=)\s*(.+)$")
+
+
+def _assign(line: str) -> tuple[str, str] | None:
+    """(target_name, rhs) for an assignment line, else None. `self.x`/`this.x` → `x`."""
+    m = _ASSIGN.match(line)
+    if not m:
+        return None
+    parts = m.group(1).split(".")
+    name = parts[1] if parts[0] in ("self", "this", "cls") and len(parts) > 1 else parts[0]
+    return name, m.group(2)
+
+
+def _taint(lines: list[str], seed: set[str], lo: int, hi: int) -> set[str]:
+    """Identifiers that carry attacker-influenced data within lines [lo, hi] (1-indexed): the seed
+    (tool params) plus anything transitively assigned from a tainted value. Fixpoint, capped."""
+    tainted = set(seed)
+    if not tainted:
+        return tainted
+    hi = min(hi, len(lines))
+    for _ in range(5):
+        pat = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in tainted) + r")\b")
+        added = False
+        for idx in range(lo, hi + 1):
+            a = _assign(lines[idx - 1])
+            if a and a[0] not in tainted and pat.search(a[1]):
+                tainted.add(a[0])
+                added = True
+        if not added:
+            break
+    return tainted
+
+
+def _pat(ids: set[str]) -> re.Pattern[str] | None:
+    return re.compile(r"\b(?:" + "|".join(map(re.escape, ids)) + r")\b") if ids else None
+
+
 def scan_source(rel_path: str, source: str) -> list[Finding]:
     """Findings in one file's `source`. rel_path is only used for reporting."""
     lines = source.splitlines()
     py = _is_py(rel_path)
-    scopes = _py_tool_scopes(lines) if py else []
-    js_params = set() if py else _js_tool_params(source)
+    # Precompute, per tool scope (Python) or file-wide (JS), the pattern of tool-reachable
+    # identifiers — tool params AND everything transitively derived from them (taint), so a sink
+    # fed a variable built from a param (file_name → latexFilePath → command) still reads reachable.
+    if py:
+        scope_pats = [(s, e, _pat(_taint(lines, ps, s, e)))
+                      for s, e, ps in _py_tool_scopes(lines)]
+        js_pat = None
+    else:
+        seed = _js_tool_params(source)
+        js_pat = _pat(_taint(lines, seed, 1, len(lines))) if seed else None
     out: list[Finding] = []
 
     def reach(i: int, line: str) -> bool:
-        """True if a sink on line `i` is fed by a tool-handler parameter (attacker-reachable)."""
-        params = js_params
+        """True if a sink on line `i` is fed by a tool-reachable (param-derived) identifier."""
         if py:
-            params = set()
-            for start, end, ps in scopes:
-                if start <= i <= end:
-                    params = ps
-                    break
-        return any(re.search(rf"\b{re.escape(p)}\b", line) for p in params)
+            for s, e, p in scope_pats:
+                if s <= i <= e:
+                    return bool(p and p.search(line))
+            return False
+        return bool(js_pat and js_pat.search(line))
 
     for i, line in enumerate(lines, 1):
         s = line.lstrip()
@@ -282,6 +357,8 @@ def scan_source(rel_path: str, source: str) -> list[Finding]:
                 Finding(rel_path, i, cat, cwe, sev, sink[:44], _excerpt(line), note, rb))
 
         cmd = (_CMD_PY if py else _CMD_JS).search(line)
+        if cmd and not py and (_JS_DB_EXEC.search(line) or _JS_TYPED_PARAM.search(line)):
+            cmd = None  # a DB `.exec()` (→ SQLi detector) or a TS method signature — not a shell
         cmd_win = line
         if not cmd and py and _CMD_PY_OPEN.search(line) and "shell" not in line:
             # multi-line subprocess call: shell=True on a later line within the same call
@@ -321,12 +398,21 @@ def scan_source(rel_path: str, source: str) -> list[Finding]:
 
         fm = _FILE.search(line)
         if fm and dyn:
-            guarded = bool(_PATH_GUARD.search(win))
-            add("path_traversal", "CWE-22", "medium" if guarded else "high", fm.group(0),
-                "file path from input WITH a confinement guard — verify it can't be bypassed "
-                "(`..`, symlink, absolute path)" if guarded else
-                "file path from input with NO confinement guard — path traversal / arbitrary "
-                "file read-write candidate", rch)
+            strong = bool(_PATH_GUARD_STRONG.search(win))
+            dotdot_only = bool(_DOTDOT_CHECK.search(win)) and not strong
+            if dotdot_only:
+                add("path_traversal", "CWE-22", "high", fm.group(0),
+                    "file path from input guarded ONLY by a `..` string check — bypassable via an "
+                    "absolute path, a symlink, URL-encoded `%2e%2e`, or `....//`; confine with "
+                    "realpath()/resolve() + a relative_to(base) check instead", rch)
+            elif bool(_PATH_GUARD.search(win)):
+                add("path_traversal", "CWE-22", "medium", fm.group(0),
+                    "file path from input WITH a confinement guard — verify it can't be bypassed "
+                    "(`..`, symlink, absolute path, encoding)", rch)
+            else:
+                add("path_traversal", "CWE-22", "high", fm.group(0),
+                    "file path from input with NO confinement guard — path traversal / arbitrary "
+                    "file read-write candidate", rch)
 
         sm = _SSRF.search(line)
         if sm and dyn and not (_EVAL_JS.search(line) or cmd):
@@ -336,6 +422,15 @@ def scan_source(rel_path: str, source: str) -> list[Finding]:
                 "internal hosts / cloud metadata. " + ("An allowlist is present — check it covers "
                 "redirects + DNS rebinding." if guarded else "No host allowlist / private-range "
                 "check nearby."), rch)
+
+        sq = _SQL_SINK.search(line) or (None if py else _JS_DB_EXEC.search(line))
+        if sq and dyn:
+            sql_win = "\n".join(lines[max(0, i - 3): i + 1])  # query may be built a couple lines up
+            if _SQL_BUILD.search(sql_win):
+                add("sql_injection", "CWE-89", "high", sq.group(0),
+                    "SQL query built by string interpolation / concatenation reaches a DB execute "
+                    "— SQL injection if any interpolated value is attacker-influenced; use "
+                    "parameterized queries (placeholders + bound params), not f-strings", rch)
     return out
 
 
@@ -347,6 +442,8 @@ def scan_repo(root: str | Path) -> list[Finding]:
     for p in root.rglob("*"):
         if p.is_dir() or p.suffix.lower() not in _SRC_EXT:
             continue
+        if p.name.endswith(".d.ts"):
+            continue  # TypeScript type declarations — signatures, never runtime sinks
         if any(part in _SKIP_DIRS for part in p.parts):
             continue
         try:
@@ -357,6 +454,28 @@ def scan_repo(root: str | Path) -> list[Finding]:
     # most-severe first; within a severity, tool-reachable (attacker-influenced) findings float up.
     findings.sort(key=lambda f: (-_SEV.get(f.severity, 0), not f.reachable, f.file, f.line))
     return findings
+
+
+# Packages/repos that already have a public CVE / advisory / open security issue (as of 2026-07) —
+# a HIGH here is almost certainly a DUPLICATE, not a payday. The batch scanner flags these so the
+# operator skips them and spends time on fresh targets. Keep it short + specific (substring match).
+_KNOWN_VULN = frozenset({
+    "mcp-server-git", "git-mcp-server", "filesystem-mcp", "gemini-mcp-tool", "mcp-remote",
+    "mcp-server-kubernetes", "node-code-sandbox-mcp", "create-mcp-server-stdio", "markdownify-mcp",
+    "mcpvault", "adb-mcp", "code-mcp", "fastmcp", "mcp-pandoc", "zen-mcp-server", "mcp-fetch",
+    "framelink-figma", "markitdown", "crewai", "mcp-inspector", "mcpjam", "obsidian-mcp-server",
+    "sqlite-explorer-fastmcp-mcp-server", "mcp-terminal", "serverless",
+})
+
+
+def _repo_basename(name_or_url: str) -> str:
+    return name_or_url.rstrip("/").split("/")[-1].removesuffix(".git").lower()
+
+
+def is_known_vuln(name_or_url: str) -> bool:
+    """True if this repo/package already has a public advisory/CVE/issue (a likely-dup marker)."""
+    base = _repo_basename(name_or_url)
+    return any(k == base or (len(base) >= 5 and (k in base or base in k)) for k in _KNOWN_VULN)
 
 
 def audit_report(root: str | Path) -> dict[str, object]:
@@ -378,3 +497,24 @@ def audit_report(root: str | Path) -> dict[str, object]:
             for f in findings
         ],
     }
+
+
+def rank_batch(results: list[tuple[str, dict[str, object]]]) -> list[dict[str, object]]:
+    """Rank scanned repos for the funnel: fresh repos with tool-reachable HIGH findings first (the
+    likely paydays), known-vuln repos last (dups). `results` = [(repo, audit_report(...))]."""
+    rows: list[dict[str, object]] = []
+    for name, rep in results:
+        findings = rep.get("findings", [])
+        reach_high = sum(1 for f in findings if f["severity"] == "high" and f["reachable"])
+        by_cat: dict[str, int] = rep.get("by_category", {})  # type: ignore[assignment]
+        top = ", ".join(f"{k}×{v}" for k, v in sorted(by_cat.items(), key=lambda x: -x[1])[:3])
+        rows.append({
+            "repo": name,
+            "high": rep.get("high", 0),
+            "reachable": rep.get("reachable", 0),
+            "reachable_high": reach_high,
+            "known_vuln": is_known_vuln(name),
+            "top": top,
+        })
+    rows.sort(key=lambda r: (r["known_vuln"], -r["reachable_high"], -r["reachable"], -r["high"]))
+    return rows

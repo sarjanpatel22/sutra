@@ -39,6 +39,30 @@ def test_language_awareness_exec() -> None:
     assert "command_injection" not in _cats("s.py", "exec(code)")
 
 
+def test_db_exec_is_not_command_injection() -> None:
+    # `.exec()` on a DB/connection receiver is SQL execution, not child_process — must NOT be CWE-78
+    for code in ["db.exec(query)", "this.db!.exec(query, cb)", "return dbAdapter.exec(query);",
+                 "await pool.exec(sql)", "connection.exec(q)"]:
+        assert "command_injection" not in _cats("s.ts", code), code
+    # but a real child_process exec (bare or child_process.) is still flagged
+    assert "command_injection" in _cats("s.js", "child_process.exec(cmd)")
+    assert "command_injection" in _cats("s.js", "const out = exec(userCmd)")
+
+
+def test_ts_method_signature_not_command_injection() -> None:
+    # a typed-parameter `exec(query: string)` is an interface/method DEFINITION, not a call
+    assert "command_injection" not in _cats("s.ts", "exec(query: string): Promise<void>;")
+    assert "command_injection" not in _cats("s.ts", "  async exec(sql: string): Promise<void> {")
+
+
+def test_d_ts_declaration_files_skipped(tmp_path) -> None:
+    (tmp_path / "server.ts").write_text("exec(userCmd)\n")     # real sink
+    (tmp_path / "global.d.ts").write_text("exec(sql: string): this;\n")  # declaration — skip
+    files = {f.file for f in M.scan_repo(tmp_path)}
+    assert "server.ts" in files
+    assert "global.d.ts" not in files
+
+
 # ── path traversal ─────────────────────────────────────────────────────────────
 def test_path_traversal_flagged_high_without_guard() -> None:
     assert _cats("s.py", "open(user_path).read()")["path_traversal"] == "high"
@@ -52,6 +76,22 @@ def test_path_traversal_guard_downgrades_to_medium() -> None:
 
 def test_path_literal_not_flagged() -> None:
     assert "path_traversal" not in _cats("s.js", 'fs.readFileSync("./package.json")')
+
+
+def test_path_dotdot_string_check_is_high_bypassable() -> None:
+    # a `..` substring check is NOT real confinement — must stay HIGH and say why
+    code = "if '..' in name: raise ValueError\nopen(name).read()"
+    f = next(x for x in M.scan_source("s.py", code) if x.category == "path_traversal")
+    assert f.severity == "high" and "bypassable" in f.note.lower()
+
+
+def test_path_strong_guard_beats_dotdot_check() -> None:
+    # a `..` check alongside a real resolve()+relative_to is confinement → medium, not high
+    code = ("if '..' in name: raise\n"
+            "p = (root / name).resolve()\n"
+            "p.relative_to(root)\n"
+            "open(p).read()")
+    assert _cats("s.py", code)["path_traversal"] == "medium"
 
 
 # ── ssrf ───────────────────────────────────────────────────────────────────────
@@ -90,6 +130,31 @@ def test_code_eval_flagged() -> None:
 def test_evaluate_is_not_eval() -> None:
     # a function called `evaluate(` must not trip the `eval(` sink
     assert "code_eval" not in _cats("s.js", "const x = evaluate(data)")
+
+
+# ── sql injection ──────────────────────────────────────────────────────────────
+def test_sql_injection_fstring_and_concat_high() -> None:
+    assert _cats("s.py", 'cursor.execute(f"SELECT * FROM t WHERE id = {uid}")')["sql_injection"] \
+        == "high"
+    assert _cats("s.js", "db.query(`SELECT * FROM users WHERE n = ${name}`)")["sql_injection"] \
+        == "high"
+    assert _cats("s.py", 'cur.execute("SELECT * FROM t WHERE id = " + user_id)')["sql_injection"] \
+        == "high"
+    assert _cats("s.js", "knex.raw(`DROP TABLE ${t}`)")["sql_injection"] == "high"
+
+
+def test_sql_parameterized_not_flagged() -> None:
+    # placeholders + bound params (no interpolation into the string) = safe
+    for code in ['cursor.execute("SELECT * FROM t WHERE id = ?", (uid,))',
+                 'cur.execute("SELECT * FROM t WHERE id = %s", (uid,))',
+                 'db.query("SELECT * FROM t WHERE id = $1", [id])']:
+        assert "sql_injection" not in _cats("s.py", code), code
+
+
+def test_sql_db_exec_dynamic_is_sqli_not_command() -> None:
+    cats = _cats("s.ts", "db.exec(`INSERT INTO t VALUES (${v})`)")
+    assert cats.get("sql_injection") == "high"
+    assert "command_injection" not in cats
 
 
 # ── hygiene ────────────────────────────────────────────────────────────────────
@@ -247,9 +312,63 @@ def test_reachability_js_destructured_tool_arg() -> None:
     assert f.reachable is True and f.severity == "high"
 
 
+def test_reachability_multi_hop_python() -> None:
+    # param → derived local → sink: reachability must follow the taint, not just direct params
+    code = ("@mcp.tool()\n"
+            "def convert(name: str):\n"
+            "    tex_path = OUT_DIR + '/' + name.replace('.pdf', '.tex')\n"
+            "    command = 'latexmk ' + tex_path\n"
+            "    os.system(command)\n")
+    f = next(x for x in M.scan_source("s.py", code) if x.category == "command_injection")
+    assert f.reachable is True
+
+
+def test_reachability_multi_hop_js_latexpdf_shape() -> None:
+    # the real LateXPDF-MCP shape: file_name (tool arg) → latexFilePath → command → exec
+    code = ("server.setRequestHandler(CallToolRequestSchema, async (req) => {\n"
+            "  const { file_name } = req.params.arguments;\n"
+            "  const latexFilePath = `${OUT}/${file_name.replace(/\\.pdf$/, '.tex')}`;\n"
+            '  const command = `latexmk --outdir="${OUT}" "${latexFilePath}"`;\n'
+            "  exec(command, (e, out) => {});\n"
+            "});\n")
+    f = next(x for x in M.scan_source("index.ts", code) if x.category == "command_injection")
+    assert f.reachable is True
+
+
+def test_taint_does_not_leak_to_unrelated_local() -> None:
+    code = ("@mcp.tool()\n"
+            "def t(name: str):\n"
+            "    safe = 'constant string'\n"
+            "    open(safe)\n")
+    f = next((x for x in M.scan_source("s.py", code) if x.category == "path_traversal"), None)
+    assert f is None or f.reachable is False
+
+
 def test_audit_report_exposes_reachable_count(tmp_path) -> None:
     (tmp_path / "srv.py").write_text(
         "@mcp.tool()\ndef t(path: str):\n    return open(path).read()\n")
     rep = M.audit_report(tmp_path)
     assert rep["reachable"] >= 1
     assert all("reachable" in f for f in rep["findings"])
+
+
+# ── batch funnel: dedup + ranking ───────────────────────────────────────────────
+def test_is_known_vuln_flags_dups() -> None:
+    assert M.is_known_vuln("https://github.com/zcaceres/markdownify-mcp")
+    assert M.is_known_vuln("mcpvault")
+    assert M.is_known_vuln("https://github.com/RinardNick/mcp-terminal.git")
+    assert not M.is_known_vuln("https://github.com/some/totally-fresh-server")
+
+
+def test_rank_batch_promotes_fresh_reachable_high() -> None:
+    fresh = {"high": 1, "reachable": 1, "by_category": {"command_injection": 1},
+             "findings": [{"severity": "high", "reachable": True}]}
+    noisy = {"high": 9, "reachable": 0, "by_category": {"path_traversal": 9},
+             "findings": [{"severity": "high", "reachable": False} for _ in range(9)]}
+    dup = {"high": 5, "reachable": 5, "by_category": {"command_injection": 5},
+           "findings": [{"severity": "high", "reachable": True} for _ in range(5)]}
+    rows = M.rank_batch([("noisy-lib", noisy), ("markdownify-mcp", dup), ("fresh-srv", fresh)])
+    # fresh repo with a reachable HIGH ranks first; the known-vuln dup sinks to last despite 5 hits
+    assert rows[0]["repo"] == "fresh-srv"
+    assert rows[-1]["repo"] == "markdownify-mcp"
+    assert rows[0]["reachable_high"] == 1 and rows[-1]["known_vuln"] is True

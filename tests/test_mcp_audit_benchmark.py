@@ -36,6 +36,10 @@ POSITIVES = [
     ("s.py", "exec(snippet)"),
     ("s.js", "const fn = new Function(userBody)"),
     ("s.js", "vm.runInNewContext(code)"),
+    ("s.py", 'cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")'),
+    ("s.py", 'cur.execute("DELETE FROM t WHERE name = " + name)'),
+    ("s.js", "db.query(`SELECT * FROM t WHERE email = ${email}`)"),
+    ("s.js", "knex.raw(`UPDATE t SET x = ${v}`)"),
 ]
 
 # Benign — each must produce NO findings. Several are HARD (contain trigger words but are safe).
@@ -60,6 +64,9 @@ NEGATIVES = [
     ("s.py", "return template.format(name=name)"),
     ("s.js", "const u = new URL(base)"),
     ("s.py", 'path = os.path.join(BASE, "static", fname)'),
+    ("s.py", 'cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))'),
+    ("s.py", 'cur.execute("INSERT INTO t VALUES (%s, %s)", (a, b))'),
+    ("s.js", "db.query('SELECT * FROM t WHERE id = $1', [id])"),
 ]
 
 
@@ -82,9 +89,9 @@ def test_false_positive_rate_below_threshold() -> None:
     assert _fp_rate() <= 0.08, f"false positives regressed: {flagged}"
 
 
-def test_all_five_classes_exercised() -> None:
+def test_all_classes_exercised() -> None:
     hit: set[str] = set()
     for fn, c in POSITIVES:
         hit.update(f.category for f in scan_source(fn, c))
     assert {"command_injection", "path_traversal", "ssrf", "unsafe_deserialization",
-            "code_eval"} <= hit
+            "code_eval", "sql_injection"} <= hit
