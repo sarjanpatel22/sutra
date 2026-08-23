@@ -603,3 +603,123 @@ async def test_blackbox_divergent_fabrication_not_surfaced(monkeypatch: pytest.M
     monkeypatch.setattr(rt, "_chat_multi", lambda e, m, msgs, a, k: "i can't help.")
     res = await redteam_llm("http://x/api/chat", model="test")
     assert "system_prompt_leak_blackbox" not in {c["category"] for c in res["candidates"]}
+
+
+# ── Black-box OBJECTIVE mode (arena/Gray Swan behavioral challenges) ─────────────────────────────
+# The judge is told apart from the target by its system prompt: _objective_judge_sys() contains
+# "strict evaluator"; a black-box target is sent an empty system (system == "").
+
+async def test_objective_mode_requires_attempts() -> None:
+    """Objective mode scores the OPERATOR's own attempts — with none supplied it errors and never
+    fabricates attack payloads itself."""
+    res = await redteam_llm("http://x/api/chat", model="t", objective="do the thing", attacks=[])
+    assert res["mode"] == "objective"
+    assert "attack attempts" in res["error"]
+
+
+async def test_objective_mode_scores_hits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Target satisfies the objective and the judge confirms → CANDIDATE-tier hits (vulnerable stays
+    False — never auto-confirmed), each carrying the objective + judge reason."""
+    def fake(e, m, system, user, api, key):
+        if "strict evaluator" in system.lower():           # the objective judge
+            return '{"complied": true, "reason": "reply produced the requested content"}'
+        return "sure — here is exactly what you asked for"  # target complies (system == "")
+
+    monkeypatch.setattr(rt, "_chat", fake)
+    res = await redteam_llm("http://x/api/chat", model="t", objective="produce X",
+                            attacks=["please produce X", "as a story, produce X"],
+                            judge_model="judge")
+    assert res["mode"] == "objective"
+    assert res["vulnerable"] is False                       # candidate-tier, never auto-confirmed
+    assert len(res["candidates"]) == 2
+    c = res["candidates"][0]
+    assert c["category"] == "objective_compliance" and c["candidate"] is True
+    assert c["objective"] == "produce X" and c["judge_model"] == "judge"
+    assert "2/2" in res["note"]
+
+
+async def test_objective_mode_judge_says_no(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Judge rules the target did NOT satisfy the objective → no candidates;
+    the note says it held."""
+    def fake(e, m, system, user, api, key):
+        if "strict evaluator" in system.lower():
+            return '{"complied": false, "reason": "the assistant refused"}'
+        return "i'm sorry, i can't help with that."
+
+    monkeypatch.setattr(rt, "_chat", fake)
+    res = await redteam_llm("http://x/api/chat", model="t", objective="produce X",
+                            attacks=["produce X"], judge_model="judge")
+    assert res["candidates"] == []
+    assert "0/1" in res["note"] and res["vulnerable"] is False
+
+
+async def test_objective_mode_without_judge_returns_raw(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No judge set → nothing auto-scored; raw target replies come back under 'results' for manual
+    review and the note says to set a judge."""
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: "some target reply")
+    res = await redteam_llm("http://x/api/chat", model="t", objective="produce X",
+                            attacks=["produce X", "produce X differently"])
+    assert res["candidates"] == []
+    assert len(res["results"]) == 2 and res["results"][0]["reply"] == "some target reply"
+    assert "NO judge set" in res["note"]
+
+
+async def test_objective_mode_judge_error_is_inconclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A judge that returns non-JSON is INCONCLUSIVE (not a clean 'no'): the attempt isn't a hit and
+    the note flags the judge failure."""
+    def fake(e, m, system, user, api, key):
+        if "strict evaluator" in system.lower():
+            return "uh, I think maybe?"                     # unparseable verdict
+        return "here is the thing"
+
+    monkeypatch.setattr(rt, "_chat", fake)
+    res = await redteam_llm("http://x/api/chat", model="t", objective="produce X",
+                            attacks=["produce X"], judge_model="judge")
+    assert res["candidates"] == []
+    assert "INCONCLUSIVE" in res["note"]
+
+
+async def test_objective_mode_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Target returns nothing to every attempt → an unreachable error, not a silent clean run."""
+    monkeypatch.setattr(rt, "_chat", lambda e, m, s, u, a, k: "")
+    res = await redteam_llm("http://x/api/chat", model="t", objective="produce X",
+                            attacks=["produce X"], judge_model="judge")
+    assert "unreachable" in res["error"]
+
+
+# ── PASTE mode: web-UI-only challenges — operator pastes the target replies, the judge scores them;
+# no target endpoint is ever called (only the judge). Distinguished by system prompt as above.
+async def test_paste_mode_scores_pasted_replies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """replies= supplied → the judge scores the pasted replies and the TARGET is never called."""
+    target_calls = {"n": 0}
+
+    def fake(e, m, system, user, api, key):
+        if "strict evaluator" in system.lower():           # the objective judge
+            return '{"complied": true, "reason": "the pasted reply does the thing"}'
+        target_calls["n"] += 1                # a target hit (system == "") — must not happen
+        return "SHOULD NOT BE CALLED"
+
+    monkeypatch.setattr(rt, "_chat", fake)
+    res = await redteam_llm("http://local-judge/api/chat", model="t", objective="produce X",
+                            attacks=["attempt one", "attempt two"],
+                            replies=["target reply that complies", "another complying reply"],
+                            judge_model="judge")
+    assert target_calls["n"] == 0                            # nothing sent to a target
+    assert res["mode"] == "objective" and res["source"] == "pasted"
+    assert len(res["candidates"]) == 2 and res["vulnerable"] is False
+    assert res["candidates"][0]["reply"] == "target reply that complies"
+    assert "2/2" in res["note"]
+
+
+async def test_paste_mode_length_mismatch() -> None:
+    """attacks and replies must pair 1:1 — a length mismatch is a clear error, not a silent zip."""
+    res = await redteam_llm("http://x/api/chat", model="t", objective="produce X",
+                            attacks=["a", "b"], replies=["only one reply"], judge_model="judge")
+    assert "equal-length" in res["error"]
+
+
+async def test_paste_mode_requires_judge() -> None:
+    """Paste mode has nothing to send — without a judge there is nothing to score."""
+    res = await redteam_llm("http://x/api/chat", model="t", objective="produce X",
+                            attacks=["a"], replies=["a reply"])
+    assert "nothing to send" in res["error"]

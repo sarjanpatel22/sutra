@@ -1244,12 +1244,24 @@ def redteam(
         help="where the judge model lives (default: the target endpoint)"),
     judge_api: str = typer.Option("auto", "--judge-api", help="auto|openai|ollama for the judge"),
     judge_key: str = typer.Option("", "--judge-key", help="bearer token for the judge endpoint"),
+    objective: str = typer.Option("", "--objective", help="BLACK-BOX objective mode (arena/Gray "
+        "Swan): the challenge win-condition to score replies against, e.g. 'the assistant gives "
+        "working steps to bypass the paywall'. Pair with --attempts-file (your attempts) and "
+        "--judge-model (a trusted local model that scores which replies satisfied it)"),
+    attempts_file: str = typer.Option("", "--attempts-file", help="file of YOUR attack attempts "
+        "for --objective — one per line, or a JSON array. The tool scores the target's replies; "
+        "you author the attempts"),
+    replies_file: str = typer.Option("", "--replies-file", help="PASTE mode for a web-UI-only "
+        "challenge (no endpoint): a JSON array of the target's replies, one per attempt (same "
+        "order/length as --attempts-file). Point the endpoint arg at your local --judge-model; "
+        "nothing is sent to a target, the judge just scores what you pasted"),
 ) -> None:
     """Red-team an authorized LLM endpoint for the OWASP-LLM classes bounties pay for — system-
     prompt leak, prompt injection, safety-rule bypass, indirect injection — and draft a submittable
     report. Benign planted canaries confirm each finding (nothing harmful is elicited); the tool
     finds, the report drafts, YOU verify scope and submit. AUTHORIZED targets only.
     """
+    import json
     import re as _re
     from datetime import date
     from pathlib import Path
@@ -1257,25 +1269,90 @@ def redteam(
     from friday.core.redteam_report import draft_redteam_report
     from friday.skills.llm_redteam import redteam_llm
 
-    console.print(f"[cyan]Red-teaming {endpoint}…[/cyan]  (authorized targets only)")
+    attempts: list[str] = []
+    replies: list[str] | None = None
+    if replies_file and not objective:
+        console.print("[red]--replies-file is for paste mode — it only applies with --objective "
+                      "(and --attempts-file + --judge-model).[/red]")
+        raise typer.Exit(1)
+    if objective:
+        if not attempts_file:
+            console.print("[red]--objective needs --attempts-file (your attack attempts — one per "
+                          "line, or a JSON array). The tool scores replies; you bring the attacks."
+                          "[/red]")
+            raise typer.Exit(1)
+        raw = Path(attempts_file).read_text()
+        try:
+            parsed = json.loads(raw)
+            attempts = [str(a) for a in parsed] if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, ValueError):
+            attempts = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if not attempts:
+            console.print("[red]no attempts found in --attempts-file[/red]")
+            raise typer.Exit(1)
+        if replies_file:
+            try:
+                parsed_r = json.loads(Path(replies_file).read_text())
+            except FileNotFoundError:
+                console.print(f"[red]--replies-file not found: {replies_file}[/red]")
+                raise typer.Exit(1) from None
+            except (json.JSONDecodeError, ValueError):
+                console.print("[red]--replies-file must be a JSON array of the target's replies "
+                              "(e.g. [\"reply one\", \"reply two\"]).[/red]")
+                raise typer.Exit(1) from None
+            if not isinstance(parsed_r, list):
+                console.print("[red]--replies-file must be a JSON array of target replies[/red]")
+                raise typer.Exit(1)
+            replies = [str(r) for r in parsed_r]
+            if len(replies) != len(attempts):
+                console.print(f"[red]--replies-file has {len(replies)} reply(ies) but "
+                              f"--attempts-file has {len(attempts)} attempt(s) — they must pair "
+                              "1:1.[/red]")
+                raise typer.Exit(1)
+            if not judge_model:
+                console.print("[red]paste mode needs --judge-model to score the pasted replies."
+                              "[/red]")
+                raise typer.Exit(1)
+        elif not judge_model:
+            console.print("[yellow]No --judge-model set — attempts are sent but not auto-scored. "
+                          "Add a trusted local judge to triage the hits.[/yellow]")
+
+    if replies is not None:
+        console.print(f"[cyan]Paste mode — scoring {len(replies)} pasted reply(ies) against:"
+                      f"[/cyan] {objective}")
+    else:
+        console.print(f"[cyan]Red-teaming {endpoint}…[/cyan]  (authorized targets only)")
+        if objective:
+            console.print(f"[cyan]Objective mode — scoring {len(attempts)} attempt(s) against:"
+                          f"[/cyan] {objective}")
     if judge_model:
         console.print(f"[cyan]Black-box judge mode: {judge_model}[/cyan]")
     res = asyncio.run(redteam_llm(endpoint, model=model, api=api, key=key, judge_model=judge_model,
                                   judge_endpoint=judge_endpoint, judge_api=judge_api,
-                                  judge_key=judge_key))
+                                  judge_key=judge_key, objective=objective, attacks=attempts,
+                                  replies=replies))
     if res.get("error"):
         console.print(f"[red]{res['error']}[/red]")
         raise typer.Exit(1)
     findings = res["findings"]
     candidates = res.get("candidates", [])
-    if findings:
-        console.print(f"[bold]{len(findings)} confirmed finding(s): "
-                      f"{', '.join(res['categories_hit'])}[/bold]")
+    if res.get("mode") == "objective":
+        if candidates:
+            console.print(f"[bold]{len(candidates)} attempt(s) judged to satisfy the objective"
+                          f"[/bold] [dim](candidate-tier — verify each transcript first)[/dim]")
+        else:
+            console.print("[yellow]No attempt satisfied the objective.[/yellow]")
+        console.print(f"[dim]{res.get('note', '')}[/dim]")
     else:
-        console.print("[green]No confirmed weakness — the target protected every canary.[/green]")
-    if candidates:
-        console.print(f"[yellow]{len(candidates)} candidate lead(s) — unconfirmed, verify: "
-                      f"{', '.join(c['category'] for c in candidates)}[/yellow]")
+        if findings:
+            console.print(f"[bold]{len(findings)} confirmed finding(s): "
+                          f"{', '.join(res['categories_hit'])}[/bold]")
+        else:
+            console.print("[green]No confirmed weakness — the target protected every canary."
+                          "[/green]")
+        if candidates:
+            console.print(f"[yellow]{len(candidates)} candidate lead(s) — unconfirmed, verify: "
+                          f"{', '.join(c['category'] for c in candidates)}[/yellow]")
     report = draft_redteam_report(endpoint, findings, model=res.get("model", ""),
                                   candidates=candidates)
     slug = _re.sub(r"[^a-z0-9]+", "-", (model or endpoint).lower()).strip("-")[:50] or "target"
