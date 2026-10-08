@@ -49,9 +49,10 @@ def test_run_command_verifier_catches_nonzero_exit():
 def test_write_file_verifier(tmp_path):
     f = tmp_path / "x.txt"
     f.write_text("hello")
-    ok, _ = postcheck.verify("write_file", {}, {"path": str(f), "bytes_written": str(len(b"hello"))})
+    ok, _ = postcheck.verify("write_file", {}, {"path": str(f), "bytes_written": "5"})
     assert ok is True
-    gone = postcheck.verify("write_file", {}, {"path": str(tmp_path / "nope.txt"), "bytes_written": "5"})
+    missing = str(tmp_path / "nope.txt")
+    gone = postcheck.verify("write_file", {}, {"path": missing, "bytes_written": "5"})
     assert gone[0] is False
     wrong_size = postcheck.verify("write_file", {}, {"path": str(f), "bytes_written": "999"})
     assert wrong_size[0] is False

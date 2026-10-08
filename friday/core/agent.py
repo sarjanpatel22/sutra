@@ -1660,7 +1660,8 @@ async def _run_tool_calls(
                     "skill": fn_name,
                     "missing_required": missing,
                     "expected_params": _tool_param_names(fn_name),
-                    "note": "Call again with the missing argument(s); use only expected_params — don't invent parameters.",
+                    "note": ("Retry with the missing argument(s); use only the names "
+                             "listed in expected_params."),
                 }
             elif not meta.auto_confirm and not (confirm and await confirm(fn_name, args)):
                 result = {
