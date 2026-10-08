@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -45,6 +46,11 @@ def _tier_from_str(s: str) -> Tier:
         "max": Tier.MAX,
     }
     return mapping.get(s.lower(), Tier.MEDIUM)
+
+
+def _slug(s: str) -> str:
+    """Filesystem-safe short slug for a draft filename."""
+    return re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-")[:40] or "role"
 
 
 async def _chat_loop(tier: Tier) -> None:
@@ -249,6 +255,149 @@ def think(
         console.print(Markdown(reply))
 
     asyncio.run(_once())
+
+
+@app.command()
+def apply(
+    source: str = typer.Argument("", help="Job posting URL, or pasted text"),
+    file: str = typer.Option("", "--file", "-f", help="Read the posting text from a file"),
+    resume: str = typer.Option("", "--resume", "-r", help="Resume path (else default)"),
+    tier: str = typer.Option("medium", "--tier", "-t", help="Model tier for the letter"),
+    status: str = typer.Option("drafted", "--status", help="Tracker status to save as"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the approval prompt"),
+    no_save: bool = typer.Option(False, "--no-save", help="Draft only; don't track it"),
+) -> None:
+    """Fit-check a posting against your resume, draft a tailored cover letter grounded
+    ONLY in your real resume, and (on your approval) track it. It never sends anything."""
+    import datetime
+    import subprocess
+
+    from friday.core import postcheck
+    from friday.core.router import complete
+    from friday.skills import job_hunt
+
+    async def _flow() -> None:
+        src = source
+        if file:
+            try:
+                src = Path(file).expanduser().read_text()
+            except OSError as e:
+                console.print(f"[red]Could not read {file}: {e}[/red]")
+                raise typer.Exit(1) from e
+        if not src.strip():
+            console.print("[red]Give a posting URL or text, or --file a posting.[/red]")
+            raise typer.Exit(1)
+
+        with console.status("[dim]Reading the posting…[/dim]"):
+            posting = await job_hunt.parse_job_posting(src)
+        if "error" in posting:
+            console.print(f"[red]{posting['error']}[/red]")
+            raise typer.Exit(1)
+        res = await job_hunt.load_resume(path=resume)
+        if "error" in res:
+            console.print(f"[red]Resume: {res['error']}[/red]")
+            raise typer.Exit(1)
+        fit = await job_hunt.fit_check(posting["text"], res["text"])
+
+        company = posting["company"] or Prompt.ask("Company name")
+        role = posting["title"] or Prompt.ask("Role title")
+        console.print(Panel(
+            f"[bold]{escape(role)}[/bold]\n{escape(company)}\n\n"
+            f"Fit: [bold]{fit.get('score', '?')}%[/bold]  "
+            f"({len(fit.get('matched', []))}/{fit.get('considered', '?')} key terms)\n\n"
+            f"[green]Real strengths:[/green] "
+            f"{escape(', '.join(fit.get('matched', [])[:15]) or '—')}\n"
+            f"[yellow]Gaps (omit or address honestly):[/yellow] "
+            f"{escape(', '.join(fit.get('missing', [])[:15]) or '—')}",
+            title="Fit check", border_style="cyan"))
+
+        sys_prompt = (
+            "You help write a job-application cover letter. Use ONLY facts, employers, "
+            "dates, titles, skills and achievements that appear in the RESUME. Never "
+            "invent or inflate anything. If the posting wants something not in the resume, "
+            "do not claim it — omit it or honestly frame adjacent real experience. Write "
+            "first-person, specific to THIS posting, ~250-320 words, confident and plain. "
+            "Use the real company and role names; no [bracketed] placeholders."
+        )
+        user_prompt = (
+            f"POSTING\nRole: {role}\nCompany: {company}\n\n{posting['text'][:4000]}\n\n"
+            f"RESUME (the only source of truth about me)\n{res['text'][:6000]}\n\n"
+            f"Lean on these real matches: {', '.join(fit.get('matched', [])[:15])}.\n"
+            "Write the cover letter now."
+        )
+        with console.status("[dim]Drafting a tailored letter (grounded in your resume)…[/dim]"):
+            resp = await complete(
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": user_prompt}],
+                tier=_tier_from_str(tier), temperature=0.6, max_tokens=900)
+        letter = (resp.choices[0].message.content or "").strip()
+        if not letter:
+            console.print("[red]The model returned an empty letter — try --tier heavy.[/red]")
+            raise typer.Exit(1)
+        console.print(Panel(Markdown(letter), title="Draft cover letter", border_style="green"))
+        console.print("[dim]Grounded in your resume only. Read it before sending — "
+                      "Sutra does not send anything.[/dim]")
+
+        if no_save:
+            return
+        if not yes and not Confirm.ask(
+                "Save this to your tracker + a draft file?", default=True):
+            console.print("[yellow]Not saved.[/yellow]")
+            return
+
+        outdir = Path.home() / "job-applications"
+        outdir.mkdir(parents=True, exist_ok=True)
+        fpath = outdir / (
+            f"{_slug(company)}_{_slug(role)}_{datetime.date.today().isoformat()}.md")
+        header = (
+            f"# {role} — {company}\n\n"
+            f"- Fit: {fit.get('score', '?')}%  "
+            f"({len(fit.get('matched', []))}/{fit.get('considered', '?')} key terms)\n"
+            f"- Posting: {posting.get('url') or '(pasted text)'}\n"
+            f"- Gaps to address: {', '.join(fit.get('missing', [])[:12]) or '—'}\n\n---\n\n")
+        fpath.write_text(header + letter + "\n")
+
+        saved = await job_hunt.save_application(
+            company, role, url=posting.get("url", ""), status=status,
+            fit_score=fit.get("score"), notes=f"draft: {fpath}")
+        verdict = postcheck.verify("save_application", {}, saved)
+        if verdict and not verdict[0]:
+            console.print(f"[red]Save could not be verified: {verdict[1]}[/red]")
+            raise typer.Exit(1)
+        console.print(
+            f"[green]Tracked[/green] as application #{saved['application']['id']} "
+            f"({status}). Draft saved: [bold]{fpath}[/bold]")
+        if shutil.which("xdg-open"):
+            try:
+                subprocess.Popen(["xdg-open", str(fpath)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:  # noqa: BLE001 — opening the draft is a nicety, never fatal
+                pass
+
+    asyncio.run(_flow())
+
+
+@app.command()
+def jobs(status: str = typer.Option("", "--status", "-s", help="Filter by status")) -> None:
+    """Show your tracked job applications and where each one stands."""
+    from friday.skills import job_hunt
+
+    data = asyncio.run(job_hunt.list_applications(status=status))
+    apps = data["applications"]
+    if not apps:
+        console.print("[dim]No tracked applications yet — use `sutra apply <posting>`.[/dim]")
+        return
+    t = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+    for col in ("ID", "Company", "Role", "Status", "Fit", "Updated"):
+        t.add_column(col)
+    for a in apps:
+        fit = a.get("fit_score")
+        t.add_row(
+            str(a.get("id", "")), a.get("company", ""), a.get("role", ""),
+            a.get("status", ""), f"{fit}%" if fit is not None else "—", a.get("updated", ""))
+    console.print(t)
+    console.print(f"[dim]{data['count']} application(s). "
+                  "Move one along: `sutra chat` → 'mark #N applied'.[/dim]")
 
 
 @app.command(name="skills")
