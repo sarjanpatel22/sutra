@@ -46,6 +46,12 @@ _STOP = {
     "familiarity", "handle", "handling", "information", "organized", "detail", "oriented",
     "environment", "duties", "tasks", "various", "related", "assist", "assisting",
     "responsible", "essential", "bonus", "fast", "paced", "flexible", "friendly",
+    # web-page chrome from a fetched HTML posting (nav / cookie banner / footer) —
+    # never a skill, so keep it out of the scored terms
+    "home", "login", "logout", "signup", "register", "menu", "navbar", "footer",
+    "cookies", "cookie", "privacy", "terms", "policy", "contact", "careers", "career",
+    "follow", "accept", "subscribe", "newsletter", "copyright", "rights", "reserved",
+    "twitter", "facebook", "linkedin", "instagram", "sitemap", "faq", "jobs",
 }
 
 # multi-word skills worth matching as one unit (checked as substrings, lowercase)
@@ -104,6 +110,19 @@ def _posting_keywords(text: str, limit: int = 30, exclude: set[str] | None = Non
 def _present(term: str, resume_words: set[str], resume_low: str) -> bool:
     """Phrase terms match as substrings; single words match at word level."""
     return (term in resume_low) if " " in term else (term in resume_words)
+
+
+def _without_company(text: str, *names: str) -> str:
+    """Remove company-name mentions (and a 'Company: X' line) so the company's words
+    don't pose as skills. Crucially this strips only the MENTIONS — a word that also
+    occurs elsewhere in the body survives, so a company literally named after a skill
+    (e.g. 'Python Solutions') does not hide the real 'Python' requirement in the text."""
+    out = re.sub(r"(?im)^\s*company\s*[:\-].*$", " ", text)  # drop the whole 'Company:' line
+    for name in names:
+        name = (name or "").strip()
+        if len(name) >= 2:
+            out = re.sub(re.escape(name), " ", out, flags=re.IGNORECASE)
+    return out
 
 
 # --- store helpers ----------------------------------------------------------
@@ -179,7 +198,7 @@ async def parse_job_posting(source: str) -> dict[str, Any]:
         "company": company,
         "url": url,
         "text": text[:12000],
-        "keywords": _posting_keywords(text, exclude=_words(company)),
+        "keywords": _posting_keywords(_without_company(text, company)),
         "note": "This is the external posting; verify company/title before applying.",
     }
 
@@ -253,11 +272,9 @@ async def fit_check(posting_text: str, resume_text: str = "", exclude: str = "")
         if "error" in loaded:
             return {"error": f"no resume to compare against: {loaded['error']}"}
         resume_text = loaded["text"]
-    skip = _words(exclude)
     cm = re.search(r"(?im)^\s*company\s*[:\-]\s*(.+)$", posting_text)
-    if cm:
-        skip |= _words(cm.group(1))
-    keywords = _posting_keywords(posting_text, exclude=skip)
+    company = cm.group(1).strip() if cm else ""
+    keywords = _posting_keywords(_without_company(posting_text, company, exclude))
     if not keywords:
         return {"error": "no skill terms found in the posting text"}
     resume_low = resume_text.lower()

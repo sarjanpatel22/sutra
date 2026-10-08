@@ -125,6 +125,30 @@ async def test_fit_check_explicit_exclude_arg():
     assert not ({"acme"} & (set(r["matched"]) | set(r["missing"])))
 
 
+async def test_company_named_after_a_skill_does_not_hide_the_skill():
+    # REGRESSION (found by hard testing): excluding company *tokens* wrongly dropped a
+    # real skill when the company is named after it. Stripping only the mentions fixes it.
+    trap = ("Data Analyst\nCompany: Python Solutions Inc\n"
+            "You will write Python and SQL daily to build data pipelines.")
+    r = await job_hunt.fit_check(trap, "Experienced in Python, SQL, data pipelines.")
+    assert "python" in r["matched"]  # the real requirement survived, not silently dropped
+    assert "sql" in r["matched"]
+    assert not ({"solutions", "inc"} & (set(r["matched"]) | set(r["missing"])))  # company gone
+
+
+async def test_html_page_chrome_is_not_scored_as_skills():
+    # a real fetched posting is a whole HTML page; nav/cookie/footer must not pose as skills
+    page = (
+        "<!doctype html><title>Data Analyst - Acme</title>"
+        "<nav>Home Jobs Login Sign Up</nav><h1>Data Analyst</h1><p>Company: Acme</p>"
+        "<p>Need SQL and Python and PowerBI.</p>"
+        "<footer>Privacy Terms Contact Follow us on Twitter (c) 2026 Acme</footer>")
+    p = await job_hunt.parse_job_posting(page)
+    for junk in ("home", "login", "privacy", "terms", "contact", "follow", "twitter", "jobs"):
+        assert junk not in p["keywords"], f"chrome leaked: {junk}"
+    assert "sql" in p["keywords"] and "python" in p["keywords"]
+
+
 # --- tracker: save / list / update -----------------------------------------
 async def test_save_list_update_roundtrip():
     saved = await job_hunt.save_application("Acme", "Analyst", url="http://x", fit_score=72)
