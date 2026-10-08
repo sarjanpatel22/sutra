@@ -87,6 +87,44 @@ async def test_fit_check_needs_a_posting():
     assert "error" in await job_hunt.fit_check("", RESUME)
 
 
+# --- precision: company name and generic filler must not pose as skills -------
+NOISY_POSTING = (
+    "Administrative Assistant\n"
+    "Company: Northern Tech Solutions\n"
+    "We are seeking an organized assistant with familiarity handling confidential "
+    "information. Responsibilities include data entry and records management. Python "
+    "and SQL are a bonus."
+)
+
+
+def test_company_tokens_excluded_from_posting_keywords():
+    company = job_hunt._words("Northern Tech Solutions")
+    kws = job_hunt._posting_keywords(NOISY_POSTING, exclude=company)
+    assert "northern" not in kws and "solutions" not in kws and "tech" not in kws
+    assert "python" in kws and "sql" in kws  # real skills survive
+
+
+def test_generic_filler_is_not_scored():
+    kws = job_hunt._posting_keywords(NOISY_POSTING)
+    for junk in ("familiarity", "handle", "handling", "organized", "information", "bonus"):
+        assert junk not in kws
+
+
+async def test_fit_check_auto_strips_company_from_a_company_line():
+    r = await job_hunt.fit_check(NOISY_POSTING, RESUME)
+    pool = set(r["matched"]) | set(r["missing"])
+    # the company name must not be scored as a skill (neither matched nor missing)
+    assert not ({"northern", "solutions", "tech"} & pool)
+    assert "python" in r["matched"] and "sql" in r["matched"]
+
+
+async def test_fit_check_explicit_exclude_arg():
+    # a caller (e.g. the CLI) can pass the company name even without a Company: line
+    posting = "Analyst at Acme. Needs Python, SQL, and Acme-specific data entry."
+    r = await job_hunt.fit_check(posting, RESUME, exclude="Acme")
+    assert not ({"acme"} & (set(r["matched"]) | set(r["missing"])))
+
+
 # --- tracker: save / list / update -----------------------------------------
 async def test_save_list_update_roundtrip():
     saved = await job_hunt.save_application("Acme", "Analyst", url="http://x", fit_score=72)

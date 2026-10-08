@@ -41,6 +41,11 @@ _STOP = {
     "ensure", "provide", "high", "about", "into", "out", "not", "but", "its", "we",
     "us", "an", "to", "of", "in", "on", "at", "as", "or", "be", "is", "by", "will",
     "join", "looking", "seeking", "opportunity", "please", "email", "resume", "us",
+    # generic recruiting filler that isn't a skill — kept out of matched/missing so a
+    # fit check reports real strengths and real gaps, not noise
+    "familiarity", "handle", "handling", "information", "organized", "detail", "oriented",
+    "environment", "duties", "tasks", "various", "related", "assist", "assisting",
+    "responsible", "essential", "bonus", "fast", "paced", "flexible", "friendly",
 }
 
 # multi-word skills worth matching as one unit (checked as substrings, lowercase)
@@ -77,18 +82,21 @@ def _words(text: str) -> set[str]:
     return out
 
 
-def _posting_keywords(text: str, limit: int = 30) -> list[str]:
+def _posting_keywords(text: str, limit: int = 30, exclude: set[str] | None = None) -> list[str]:
     """The terms a posting emphasises most — top words by frequency, plus any
-    multi-word skill phrases it contains. This is what we score the resume against."""
+    multi-word skill phrases it contains. This is what we score the resume against.
+
+    exclude: tokens to drop (e.g. the company name), so they never pose as skills."""
+    skip = _STOP | (exclude or set())
     low = text.lower()
     freq: dict[str, int] = {}
     for w in re.findall(r"[a-zA-Z][a-zA-Z0-9+#.\-]{2,}", low):
         w = w.strip(".-")
-        if len(w) >= 3 and w not in _STOP:
+        if len(w) >= 3 and w not in skip:
             freq[w] = freq.get(w, 0) + 1
     ranked = sorted(freq, key=lambda k: (-freq[k], k))[:limit]
     for ph in _PHRASES:
-        if ph in low and ph not in ranked:
+        if ph in low and ph not in ranked and ph not in (exclude or set()):
             ranked.append(ph)
     return ranked
 
@@ -171,7 +179,7 @@ async def parse_job_posting(source: str) -> dict[str, Any]:
         "company": company,
         "url": url,
         "text": text[:12000],
-        "keywords": _posting_keywords(text),
+        "keywords": _posting_keywords(text, exclude=_words(company)),
         "note": "This is the external posting; verify company/title before applying.",
     }
 
@@ -232,18 +240,24 @@ async def load_resume(path: str = "") -> dict[str, Any]:
     auto_confirm=True,
     timeout_s=10,
 )
-async def fit_check(posting_text: str, resume_text: str = "") -> dict[str, Any]:
+async def fit_check(posting_text: str, resume_text: str = "", exclude: str = "") -> dict[str, Any]:
     """Deterministic fit score.
 
     posting_text: the posting description (or its key text).
     resume_text: resume plain text; blank loads the default resume.
+    exclude: extra terms to ignore (e.g. the company name) so they aren't scored
+             as skills; a "Company: X" line in the posting is stripped automatically.
     """
     if not resume_text:
         loaded = await load_resume()
         if "error" in loaded:
             return {"error": f"no resume to compare against: {loaded['error']}"}
         resume_text = loaded["text"]
-    keywords = _posting_keywords(posting_text)
+    skip = _words(exclude)
+    cm = re.search(r"(?im)^\s*company\s*[:\-]\s*(.+)$", posting_text)
+    if cm:
+        skip |= _words(cm.group(1))
+    keywords = _posting_keywords(posting_text, exclude=skip)
     if not keywords:
         return {"error": "no skill terms found in the posting text"}
     resume_low = resume_text.lower()
