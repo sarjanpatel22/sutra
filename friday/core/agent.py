@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from friday.core import injection_guard, persona
+from friday.core import injection_guard, persona, postcheck
 from friday.core.router import Tier, complete
 from friday.core.turnlog import log_text_turn, log_turn
 from friday.memory.store import get_store, looks_like_noise
@@ -1647,6 +1647,7 @@ async def _run_tool_calls(
                 ),
             }
 
+        executed = False  # True only once a skill actually ran (produced real output)
         try:
             meta = registry.get(fn_name)
             _emit("tool_start", {"skill": fn_name, "args": args, "gated": not meta.auto_confirm})
@@ -1672,6 +1673,7 @@ async def _run_tool_calls(
                     registry.call(fn_name, **args),
                     timeout=meta.timeout_s,
                 )
+                executed = True
         except KeyError:
             _emit("tool_start", {"skill": fn_name, "args": args, "gated": False})
             result = _unknown_skill_result(fn_name)
@@ -1680,20 +1682,44 @@ async def _run_tool_calls(
         except Exception as e:  # noqa: BLE001
             result = {"error": str(e), "expected_params": _tool_param_names(fn_name)}
 
+        # Verify-before-claim: for a skill that reports success, check its real
+        # postcondition. If it can't be confirmed, downgrade to an error the model
+        # MUST acknowledge — so it can never report a phantom success (and a verified
+        # success is tagged so downstream can trust it).
+        if isinstance(result, dict) and not result.get("error") and not result.get("declined"):
+            verdict = postcheck.verify(fn_name, args, result)
+            if verdict is not None:
+                ok, note = verdict
+                if ok:
+                    result = {**result, "verified": True}
+                else:
+                    result = {
+                        "error": "action not verified",
+                        "skill": fn_name,
+                        "verify_failed": note,
+                        "note": ("The skill ran but its result could not be confirmed — "
+                                 "do NOT report this as done. Investigate or retry."),
+                        "raw_result": result,
+                    }
+
         status = (
             "declined" if isinstance(result, dict) and result.get("declined")
             else "error" if isinstance(result, dict) and result.get("error")
             else "ok"
         )
         _emit("tool_end", {"skill": fn_name, "status": status})
-        # Injection guard: tool output is untrusted data — flag any embedded prompt-injection
-        # right where the model consumes it (OWASP-LLM01 defense). Never drops content.
-        guarded = injection_guard.guard_tool_result(fn_name, json.dumps(result))
+        # Injection guard: flag embedded prompt-injection in genuine external skill OUTPUT
+        # (OWASP-LLM01, never drops content). It is NOT run on the loop's own synthetic
+        # control/error messages (unknown-tool, missing-arg) — those are trusted and may
+        # legitimately name real skills, which would otherwise false-trip the guard.
+        payload = json.dumps(result)
+        if executed:
+            payload = injection_guard.guard_tool_result(fn_name, payload)
         return {
             "role": "tool",
             "tool_call_id": tc.id,
             "name": fn_name,
-            "content": _cap_tool_content(guarded),
+            "content": _cap_tool_content(payload),
         }
 
     return await asyncio.gather(*[_call_one(tc) for tc in tool_calls])
