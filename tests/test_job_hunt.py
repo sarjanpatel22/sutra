@@ -87,6 +87,68 @@ async def test_fit_check_needs_a_posting():
     assert "error" in await job_hunt.fit_check("", RESUME)
 
 
+# --- precision: company name and generic filler must not pose as skills -------
+NOISY_POSTING = (
+    "Administrative Assistant\n"
+    "Company: Northern Tech Solutions\n"
+    "We are seeking an organized assistant with familiarity handling confidential "
+    "information. Responsibilities include data entry and records management. Python "
+    "and SQL are a bonus."
+)
+
+
+def test_company_tokens_excluded_from_posting_keywords():
+    company = job_hunt._words("Northern Tech Solutions")
+    kws = job_hunt._posting_keywords(NOISY_POSTING, exclude=company)
+    assert "northern" not in kws and "solutions" not in kws and "tech" not in kws
+    assert "python" in kws and "sql" in kws  # real skills survive
+
+
+def test_generic_filler_is_not_scored():
+    kws = job_hunt._posting_keywords(NOISY_POSTING)
+    for junk in ("familiarity", "handle", "handling", "organized", "information", "bonus"):
+        assert junk not in kws
+
+
+async def test_fit_check_auto_strips_company_from_a_company_line():
+    r = await job_hunt.fit_check(NOISY_POSTING, RESUME)
+    pool = set(r["matched"]) | set(r["missing"])
+    # the company name must not be scored as a skill (neither matched nor missing)
+    assert not ({"northern", "solutions", "tech"} & pool)
+    assert "python" in r["matched"] and "sql" in r["matched"]
+
+
+async def test_fit_check_explicit_exclude_arg():
+    # a caller (e.g. the CLI) can pass the company name even without a Company: line
+    posting = "Analyst at Acme. Needs Python, SQL, and Acme-specific data entry."
+    r = await job_hunt.fit_check(posting, RESUME, exclude="Acme")
+    assert not ({"acme"} & (set(r["matched"]) | set(r["missing"])))
+
+
+async def test_company_named_after_a_skill_does_not_hide_the_skill():
+    # REGRESSION (found by hard testing): excluding company *tokens* wrongly dropped a
+    # real skill when the company is named after it. Stripping only the mentions fixes it.
+    trap = ("Data Analyst\nCompany: Python Solutions Inc\n"
+            "You will write Python and SQL daily to build data pipelines.")
+    r = await job_hunt.fit_check(trap, "Experienced in Python, SQL, data pipelines.")
+    assert "python" in r["matched"]  # the real requirement survived, not silently dropped
+    assert "sql" in r["matched"]
+    assert not ({"solutions", "inc"} & (set(r["matched"]) | set(r["missing"])))  # company gone
+
+
+async def test_html_page_chrome_is_not_scored_as_skills():
+    # a real fetched posting is a whole HTML page; nav/cookie/footer must not pose as skills
+    page = (
+        "<!doctype html><title>Data Analyst - Acme</title>"
+        "<nav>Home Jobs Login Sign Up</nav><h1>Data Analyst</h1><p>Company: Acme</p>"
+        "<p>Need SQL and Python and PowerBI.</p>"
+        "<footer>Privacy Terms Contact Follow us on Twitter (c) 2026 Acme</footer>")
+    p = await job_hunt.parse_job_posting(page)
+    for junk in ("home", "login", "privacy", "terms", "contact", "follow", "twitter", "jobs"):
+        assert junk not in p["keywords"], f"chrome leaked: {junk}"
+    assert "sql" in p["keywords"] and "python" in p["keywords"]
+
+
 # --- tracker: save / list / update -----------------------------------------
 async def test_save_list_update_roundtrip():
     saved = await job_hunt.save_application("Acme", "Analyst", url="http://x", fit_score=72)
