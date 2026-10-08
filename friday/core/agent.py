@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -1566,6 +1567,41 @@ async def voice_agent_run(
     return _spoken(response.choices[0].message.content)
 
 
+# --- Tool-call trust guards -------------------------------------------------
+# Deterministic, $0 defenses against the two most common agentic hallucinations:
+# a model that invents a tool name, and a model that omits/invents arguments.
+# Both return a structured error the model can self-correct from, BEFORE the skill
+# runs — so a bad call can't produce a wrong action or a phantom "success".
+def _tool_param_names(fn_name: str) -> list[str]:
+    """Declared parameter names for a skill (sorted), or [] if unknown/none."""
+    try:
+        meta = registry.get(fn_name)
+        return sorted(meta.schema["function"]["parameters"].get("properties", {}))
+    except Exception:  # noqa: BLE001 — a lookup/schema problem must never break dispatch
+        return []
+
+
+def _missing_required_args(meta: Any, args: dict[str, Any]) -> list[str]:
+    """Required params the model failed to supply (safe: `required` is explicit)."""
+    try:
+        required = meta.schema["function"]["parameters"].get("required", [])
+    except Exception:  # noqa: BLE001
+        return []
+    return [p for p in required if p not in args]
+
+
+def _unknown_skill_result(fn_name: str) -> dict[str, Any]:
+    """Circuit-breaker for a hallucinated tool name: name the closest real skills so
+    the model self-corrects instead of re-inventing (vs. a bare 'Unknown skill')."""
+    close = difflib.get_close_matches(fn_name, registry.list_skills(), n=5, cutoff=0.4)
+    return {
+        "error": f"Unknown skill: {fn_name}",
+        "did_you_mean": close,
+        "note": ("That tool does not exist. Call tools only by their exact registered "
+                 "name — never invent a tool. Pick from did_you_mean, or choose another."),
+    }
+
+
 async def _run_tool_calls(
     tool_calls: list[Any],
     confirm: ConfirmFn | None = None,
@@ -1614,7 +1650,18 @@ async def _run_tool_calls(
         try:
             meta = registry.get(fn_name)
             _emit("tool_start", {"skill": fn_name, "args": args, "gated": not meta.auto_confirm})
-            if not meta.auto_confirm and not (confirm and await confirm(fn_name, args)):
+            missing = _missing_required_args(meta, args)
+            if missing:
+                # Hallucinated/omitted args — reject BEFORE running so no half-action
+                # or phantom success can occur; hand the model what it needs to retry.
+                result = {
+                    "error": "missing required arguments",
+                    "skill": fn_name,
+                    "missing_required": missing,
+                    "expected_params": _tool_param_names(fn_name),
+                    "note": "Call again with the missing argument(s); use only expected_params — don't invent parameters.",
+                }
+            elif not meta.auto_confirm and not (confirm and await confirm(fn_name, args)):
                 result = {
                     "declined": True,
                     "skill": fn_name,
@@ -1627,11 +1674,11 @@ async def _run_tool_calls(
                 )
         except KeyError:
             _emit("tool_start", {"skill": fn_name, "args": args, "gated": False})
-            result = {"error": f"Unknown skill: {fn_name}"}
+            result = _unknown_skill_result(fn_name)
         except TimeoutError:
             result = {"error": f"Skill '{fn_name}' timed out"}
         except Exception as e:  # noqa: BLE001
-            result = {"error": str(e)}
+            result = {"error": str(e), "expected_params": _tool_param_names(fn_name)}
 
         status = (
             "declined" if isinstance(result, dict) and result.get("declined")
