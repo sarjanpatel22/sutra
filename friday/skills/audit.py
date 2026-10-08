@@ -39,6 +39,7 @@ REVIEWED_AUTO_EXCEPTIONS: dict[str, str] = {
     "open_url": "opens a scheme-validated http(s) URL — reversible (close the tab)",
     "browser_open": "navigates Sutra's browser to an http(s) URL — reversible, sends no data",
     "open_app": "launches a desktop GUI app by name — low-stakes, reversible (close it)",
+    "update_application": "reversible local tracker status/notes update, no external effect",
 }
 
 # Must exist and must be gated: a regression lock on the known irreversible surface
