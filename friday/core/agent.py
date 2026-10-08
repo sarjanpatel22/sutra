@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from friday.core import injection_guard, persona
+from friday.core import injection_guard, persona, postcheck
 from friday.core.router import Tier, complete
 from friday.core.turnlog import log_text_turn, log_turn
 from friday.memory.store import get_store, looks_like_noise
@@ -1566,6 +1567,41 @@ async def voice_agent_run(
     return _spoken(response.choices[0].message.content)
 
 
+# --- Tool-call trust guards -------------------------------------------------
+# Deterministic, $0 defenses against the two most common agentic hallucinations:
+# a model that invents a tool name, and a model that omits/invents arguments.
+# Both return a structured error the model can self-correct from, BEFORE the skill
+# runs — so a bad call can't produce a wrong action or a phantom "success".
+def _tool_param_names(fn_name: str) -> list[str]:
+    """Declared parameter names for a skill (sorted), or [] if unknown/none."""
+    try:
+        meta = registry.get(fn_name)
+        return sorted(meta.schema["function"]["parameters"].get("properties", {}))
+    except Exception:  # noqa: BLE001 — a lookup/schema problem must never break dispatch
+        return []
+
+
+def _missing_required_args(meta: Any, args: dict[str, Any]) -> list[str]:
+    """Required params the model failed to supply (safe: `required` is explicit)."""
+    try:
+        required = meta.schema["function"]["parameters"].get("required", [])
+    except Exception:  # noqa: BLE001
+        return []
+    return [p for p in required if p not in args]
+
+
+def _unknown_skill_result(fn_name: str) -> dict[str, Any]:
+    """Circuit-breaker for a hallucinated tool name: name the closest real skills so
+    the model self-corrects instead of re-inventing (vs. a bare 'Unknown skill')."""
+    close = difflib.get_close_matches(fn_name, registry.list_skills(), n=5, cutoff=0.4)
+    return {
+        "error": f"Unknown skill: {fn_name}",
+        "did_you_mean": close,
+        "note": ("That tool does not exist. Call tools only by their exact registered "
+                 "name — never invent a tool. Pick from did_you_mean, or choose another."),
+    }
+
+
 async def _run_tool_calls(
     tool_calls: list[Any],
     confirm: ConfirmFn | None = None,
@@ -1611,10 +1647,23 @@ async def _run_tool_calls(
                 ),
             }
 
+        executed = False  # True only once a skill actually ran (produced real output)
         try:
             meta = registry.get(fn_name)
             _emit("tool_start", {"skill": fn_name, "args": args, "gated": not meta.auto_confirm})
-            if not meta.auto_confirm and not (confirm and await confirm(fn_name, args)):
+            missing = _missing_required_args(meta, args)
+            if missing:
+                # Hallucinated/omitted args — reject BEFORE running so no half-action
+                # or phantom success can occur; hand the model what it needs to retry.
+                result = {
+                    "error": "missing required arguments",
+                    "skill": fn_name,
+                    "missing_required": missing,
+                    "expected_params": _tool_param_names(fn_name),
+                    "note": ("Retry with the missing argument(s); use only the names "
+                             "listed in expected_params."),
+                }
+            elif not meta.auto_confirm and not (confirm and await confirm(fn_name, args)):
                 result = {
                     "declined": True,
                     "skill": fn_name,
@@ -1625,13 +1674,34 @@ async def _run_tool_calls(
                     registry.call(fn_name, **args),
                     timeout=meta.timeout_s,
                 )
+                executed = True
         except KeyError:
             _emit("tool_start", {"skill": fn_name, "args": args, "gated": False})
-            result = {"error": f"Unknown skill: {fn_name}"}
+            result = _unknown_skill_result(fn_name)
         except TimeoutError:
             result = {"error": f"Skill '{fn_name}' timed out"}
         except Exception as e:  # noqa: BLE001
-            result = {"error": str(e)}
+            result = {"error": str(e), "expected_params": _tool_param_names(fn_name)}
+
+        # Verify-before-claim: for a skill that reports success, check its real
+        # postcondition. If it can't be confirmed, downgrade to an error the model
+        # MUST acknowledge — so it can never report a phantom success (and a verified
+        # success is tagged so downstream can trust it).
+        if isinstance(result, dict) and not result.get("error") and not result.get("declined"):
+            verdict = postcheck.verify(fn_name, args, result)
+            if verdict is not None:
+                ok, note = verdict
+                if ok:
+                    result = {**result, "verified": True}
+                else:
+                    result = {
+                        "error": "action not verified",
+                        "skill": fn_name,
+                        "verify_failed": note,
+                        "note": ("The skill ran but its result could not be confirmed — "
+                                 "do NOT report this as done. Investigate or retry."),
+                        "raw_result": result,
+                    }
 
         status = (
             "declined" if isinstance(result, dict) and result.get("declined")
@@ -1639,14 +1709,18 @@ async def _run_tool_calls(
             else "ok"
         )
         _emit("tool_end", {"skill": fn_name, "status": status})
-        # Injection guard: tool output is untrusted data — flag any embedded prompt-injection
-        # right where the model consumes it (OWASP-LLM01 defense). Never drops content.
-        guarded = injection_guard.guard_tool_result(fn_name, json.dumps(result))
+        # Injection guard: flag embedded prompt-injection in genuine external skill OUTPUT
+        # (OWASP-LLM01, never drops content). It is NOT run on the loop's own synthetic
+        # control/error messages (unknown-tool, missing-arg) — those are trusted and may
+        # legitimately name real skills, which would otherwise false-trip the guard.
+        payload = json.dumps(result)
+        if executed:
+            payload = injection_guard.guard_tool_result(fn_name, payload)
         return {
             "role": "tool",
             "tool_call_id": tc.id,
             "name": fn_name,
-            "content": _cap_tool_content(guarded),
+            "content": _cap_tool_content(payload),
         }
 
     return await asyncio.gather(*[_call_one(tc) for tc in tool_calls])
