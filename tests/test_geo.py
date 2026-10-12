@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from friday.skills import geo as geo_mod
 from friday.skills import registry
 from friday.skills.geo import geocode, reverse_geocode, satellite_view
+
+
+@pytest.fixture(autouse=True)
+def _no_throttle(monkeypatch):
+    # Don't actually sleep between Nominatim calls during tests.
+    monkeypatch.setattr(geo_mod, "_MIN_INTERVAL", 0.0)
 
 
 class _Resp:
@@ -86,6 +93,28 @@ async def test_geocode_no_results(monkeypatch):
     assert out["found"] is False
 
 
+async def test_geocode_malformed_result_no_raise(monkeypatch):
+    # A row missing lat/lon, or with a bad bbox, must be dropped — never raise.
+    payload = [
+        {"display_name": "no coords here"},
+        {"lat": "bad", "lon": "x"},
+        {"lat": "1.0", "lon": "2.0", "boundingbox": ["a", "b", "c", "d"]},
+    ]
+    monkeypatch.setattr(geo_mod.httpx, "AsyncClient", _client(_Resp(payload)))
+    out = await geocode("partial")
+    # only the third row is usable, and its bad bbox degrades to None
+    assert out["found"] is True
+    assert len(out["candidates"]) == 1
+    assert out["lat"] == 1.0
+    assert out["bbox_south_north_west_east"] is None
+
+
+async def test_geocode_all_malformed_found_false(monkeypatch):
+    monkeypatch.setattr(geo_mod.httpx, "AsyncClient", _client(_Resp([{"foo": "bar"}])))
+    out = await geocode("junk")
+    assert out["found"] is False
+
+
 async def test_geocode_network_error(monkeypatch):
     monkeypatch.setattr(
         geo_mod.httpx, "AsyncClient", _client(exc=httpx.ConnectError("dns"))
@@ -132,6 +161,20 @@ async def test_satellite_view_saves_png(monkeypatch, tmp_path):
     w, s, e, n = out["bbox_west_south_east_north"]
     assert w < e and s < n
     os.remove(p)
+
+
+async def test_satellite_view_rejects_non_png(monkeypatch, tmp_path):
+    # Esri can return a JSON error with HTTP 200 — must NOT be saved as a PNG.
+    monkeypatch.setattr(geo_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        geo_mod.httpx,
+        "AsyncClient",
+        _client(_Resp(content=b'{"error":{"code":400,"message":"Invalid bbox"}}')),
+    )
+    out = await satellite_view(46.5, -80.9)
+    assert "error" in out and "image_path" not in out
+    assert "Invalid bbox" in out["detail"]
+    assert not list(tmp_path.iterdir())  # nothing written
 
 
 async def test_satellite_view_network_error(monkeypatch):

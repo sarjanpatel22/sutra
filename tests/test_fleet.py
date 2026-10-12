@@ -14,12 +14,12 @@ NEAR = (46.5375, -80.9036)  # ~100 m north
 FAR = (46.6000, -80.8000)
 
 
-def _write(tmp_path: Path, rows: list[tuple[str, float, float, str]]) -> str:
+def _write(tmp_path: Path, rows: list[tuple[str, float, float, str]], name="b.csv") -> str:
     """rows = (datetime, lat, lon, vehicle); returns the CSV path."""
     lines = ["DateTime,Lat,Lon,Vehicle"]
     for t, la, lo, v in rows:
         lines.append(f"{t},{la},{lo},{v}")
-    p = tmp_path / "breadcrumbs.csv"
+    p = tmp_path / name
     p.write_text("\n".join(lines))
     return str(p)
 
@@ -87,6 +87,58 @@ async def test_vehicle_filter(tmp_path):
     assert one["stops"][0]["arrive"].startswith("2026-01-15")
 
 
+async def test_vehicle_label_matches_across_columns(tmp_path):
+    # Numeric 'veh' column (1/2) AND a labelled 'Vehicle' column (#01/#02): a query of
+    # "01" must still match via the label column (this failed before hardening).
+    p = tmp_path / "two_cols.csv"
+    p.write_text(
+        "veh,Vehicle,Lat,Lon,DateTime\n"
+        f"1,#01,{SITE[0]},{SITE[1]},2026-01-15 09:00:00\n"
+        f"1,#01,{SITE[0]},{SITE[1]},2026-01-15 09:20:00\n"
+        f"2,#02,{SITE[0]},{SITE[1]},2026-01-16 09:00:00\n"
+        f"2,#02,{SITE[0]},{SITE[1]},2026-01-16 09:20:00\n"
+    )
+    out = await fleet_gps_stops(str(p), *SITE, vehicle="01")
+    assert out["visit_count"] == 1
+    assert out["stops"][0]["arrive"].startswith("2026-01-15")
+
+
+async def test_vehicle_filter_without_column_warns(tmp_path):
+    # No vehicle column at all, but a filter was requested -> warn, don't silently drop it.
+    p = tmp_path / "noveh.csv"
+    p.write_text(
+        "Lat,Lon,DateTime\n"
+        f"{SITE[0]},{SITE[1]},2026-01-15 09:00:00\n"
+        f"{SITE[0]},{SITE[1]},2026-01-15 09:20:00\n"
+    )
+    out = await fleet_gps_stops(str(p), *SITE, vehicle="01")
+    assert out["visit_count"] == 1
+    assert "warning" in out
+
+
+async def test_tz_aware_and_mixed_timestamps(tmp_path):
+    # One tz-aware stamp, one naive: must normalise and not raise (dwell still 20 min).
+    rows = [
+        ("2026-01-15 09:00:00", *SITE, "Truck 01"),          # naive
+        ("2026-01-15 09:20:00+00:00", *SITE, "Truck 01"),    # tz-aware UTC
+    ]
+    out = await fleet_gps_stops(_write(tmp_path, rows), *SITE)
+    assert out["visit_count"] == 1
+    assert out["stops"][0]["dwell_min"] == 20.0
+
+
+async def test_semicolon_delimiter(tmp_path):
+    p = tmp_path / "euro.csv"
+    p.write_text(
+        "DateTime;Lat;Lon\n"
+        f"2026-01-15 09:00:00;{SITE[0]};{SITE[1]}\n"
+        f"2026-01-15 09:20:00;{SITE[0]};{SITE[1]}\n"
+    )
+    out = await fleet_gps_stops(str(p), *SITE)
+    assert out["visit_count"] == 1
+    assert out["stops"][0]["dwell_min"] == 20.0
+
+
 async def test_no_pings_in_geofence(tmp_path):
     rows = [
         ("2026-01-15 09:00:00", *FAR, "Truck 01"),
@@ -106,6 +158,12 @@ async def test_missing_columns(tmp_path):
     assert out["columns"] == ["foo", "bar"]
 
 
+async def test_bad_param_types(tmp_path):
+    rows = [("2026-01-15 09:00:00", *SITE, "Truck 01")]
+    out = await fleet_gps_stops(_write(tmp_path, rows), "not-a-number", SITE[1])
+    assert "error" in out
+
+
 async def test_bad_path():
     out = await fleet_gps_stops("/no/such/file.csv", *SITE)
     assert "error" in out
@@ -113,6 +171,6 @@ async def test_bad_path():
 
 async def test_empty_csv(tmp_path):
     p = tmp_path / "empty.csv"
-    p.write_text("DateTime,Lat,Lon,Vehicle\n")
+    p.write_text("")
     out = await fleet_gps_stops(str(p), *SITE)
     assert "error" in out

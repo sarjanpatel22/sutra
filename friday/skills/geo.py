@@ -9,6 +9,7 @@ aerial* to confirm the real site. No API keys — both services are public.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import tempfile
 import time
@@ -24,8 +25,29 @@ _ESRI = (
     "https://server.arcgisonline.com/ArcGIS/rest/services/"
     "World_Imagery/MapServer/export"
 )
-# Nominatim asks for a real User-Agent and ~1 req/sec; we send one per call.
+# Nominatim asks for a real User-Agent and no more than ~1 request/second.
 _UA = {"User-Agent": "sutra-geo/1.0 (personal assistant; +local use)"}
+_MIN_INTERVAL = 1.0  # seconds between Nominatim calls (their usage policy)
+_nominatim_lock = asyncio.Lock()
+_last_nominatim = 0.0
+
+
+async def _throttle() -> None:
+    """Space Nominatim calls to ~1/sec so a loop of lookups isn't rate-limited."""
+    global _last_nominatim
+    async with _nominatim_lock:
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_nominatim)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_nominatim = time.monotonic()
+
+
+def _bbox(x: dict) -> list[float] | None:
+    bb = x.get("boundingbox") or []
+    try:
+        return [float(v) for v in bb] if len(bb) == 4 else None
+    except (TypeError, ValueError):
+        return None
 
 
 @skill(
@@ -38,7 +60,7 @@ _UA = {"User-Agent": "sutra-geo/1.0 (personal assistant; +local use)"}
         "coordinate' use reverse_geocode; to SEE the site use satellite_view."
     ),
     auto_confirm=True,
-    timeout_s=15,
+    timeout_s=20,
 )
 async def geocode(place: str, limit: int = 1) -> dict[str, Any]:
     """Forward-geocode a name/address to coordinates.
@@ -49,8 +71,12 @@ async def geocode(place: str, limit: int = 1) -> dict[str, Any]:
     place = (place or "").strip()
     if not place:
         return {"error": "empty place", "found": False}
-    limit = max(1, min(5, int(limit)))
     try:
+        limit = max(1, min(5, int(limit)))
+    except (TypeError, ValueError):
+        limit = 1
+    try:
+        await _throttle()
         async with httpx.AsyncClient(timeout=15, headers=_UA) as client:
             r = await client.get(
                 f"{_NOMINATIM}/search",
@@ -61,22 +87,26 @@ async def geocode(place: str, limit: int = 1) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001 — hand the error to the model, don't raise
         return {"error": f"geocode failed: {e}", "place": place, "found": False}
 
-    if not data:
+    if not isinstance(data, list) or not data:
         return {"place": place, "found": False}
 
-    def _one(x: dict) -> dict:
-        # Nominatim boundingbox is [south, north, west, east] as strings.
-        bb = x.get("boundingbox") or []
+    def _one(x: dict) -> dict | None:
+        try:
+            lat_v, lon_v = float(x["lat"]), float(x["lon"])
+        except (KeyError, TypeError, ValueError):
+            return None
         return {
             "display_name": x.get("display_name"),
-            "lat": float(x["lat"]),
-            "lon": float(x["lon"]),
+            "lat": lat_v,
+            "lon": lon_v,
             "type": x.get("type"),
             "category": x.get("class"),
-            "bbox_south_north_west_east": [float(v) for v in bb] if len(bb) == 4 else None,
+            "bbox_south_north_west_east": _bbox(x),
         }
 
-    cands = [_one(x) for x in data]
+    cands = [c for c in (_one(x) for x in data) if c]
+    if not cands:
+        return {"place": place, "found": False}
     top = cands[0]
     return {
         "place": place,
@@ -101,7 +131,7 @@ async def geocode(place: str, limit: int = 1) -> dict[str, Any]:
         "that spot. The inverse of geocode. Public OSM data, no key."
     ),
     auto_confirm=True,
-    timeout_s=15,
+    timeout_s=20,
 )
 async def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
     """Reverse-geocode a coordinate to an address.
@@ -109,6 +139,7 @@ async def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
     lat, lon: decimal degrees (e.g. 46.5366, -80.9036).
     """
     try:
+        await _throttle()
         async with httpx.AsyncClient(timeout=15, headers=_UA) as client:
             r = await client.get(
                 f"{_NOMINATIM}/reverse",
@@ -148,7 +179,11 @@ async def satellite_view(lat: float, lon: float, radius_m: int = 400) -> dict[st
     lat, lon: centre of the view, decimal degrees.
     radius_m: half-width of the frame in metres (~200-1000 reads well for a worksite).
     """
-    radius_m = max(50, min(5000, int(radius_m)))
+    try:
+        lat, lon = float(lat), float(lon)
+        radius_m = max(50, min(5000, int(radius_m)))
+    except (TypeError, ValueError):
+        return {"error": "lat, lon and radius_m must be numbers"}
     # Equirectangular bbox around the point; pixel mapping is then linear.
     dlat = radius_m / 111_320.0
     dlon = radius_m / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
@@ -173,9 +208,16 @@ async def satellite_view(lat: float, lon: float, radius_m: int = 400) -> dict[st
 
     if not img_bytes:
         return {"error": "empty image from imagery service", "lat": lat, "lon": lon}
+    if not img_bytes.startswith(b"\x89PNG"):
+        # Esri returns a JSON error with HTTP 200 on a bad request — don't save it as a PNG.
+        return {
+            "error": "imagery service did not return a PNG (likely a service error)",
+            "detail": img_bytes[:200].decode("utf-8", "replace"),
+            "lat": lat,
+            "lon": lon,
+        }
 
-    stamp = f"{int(time.time())}_{abs(hash((lat, lon))) % 10000}"
-    out = Path(tempfile.gettempdir()) / f"sat_{stamp}.png"
+    out = Path(tempfile.gettempdir()) / f"sat_{time.time_ns()}.png"
     out.write_bytes(img_bytes)
     return {
         "lat": lat,
