@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from friday.skills import registry
 from friday.skills import web_scrape as ws_mod
 from friday.skills.web_scrape import web_scrape
@@ -59,6 +61,7 @@ async def test_links(monkeypatch):
 
 
 async def test_tables(monkeypatch):
+    pytest.importorskip("bs4")  # the tables path needs the optional [scrape] extra
     monkeypatch.setattr(ws_mod.httpx, "AsyncClient", _client(_Resp(HTML)))
     out = await web_scrape("https://example.com", mode="tables")
     assert out["table_count"] == 1
@@ -66,6 +69,7 @@ async def test_tables(monkeypatch):
 
 
 async def test_select(monkeypatch):
+    pytest.importorskip("bs4")  # the CSS-select path needs the optional [scrape] extra
     monkeypatch.setattr(ws_mod.httpx, "AsyncClient", _client(_Resp(HTML)))
     out = await web_scrape("https://example.com", mode="select", select=".price")
     assert out["count"] == 1 and out["results"][0]["text"] == "$9.99"
