@@ -67,11 +67,12 @@ async def ahash() -> int:
     average), sensitive to switching windows, scrolling, or opening a dialog. Returns
     0 if capture fails, so the caller treats it as 'unknown' instead of crashing.
     """
-    if not _IMPORT:
-        return 0  # ImageMagick 'import' absent — 'unknown', same as a capture failure
+    # Narrow _IMPORT (str | None) to str without short-circuiting: if the binary is absent
+    # _run still runs and raises ScreenUnavailable -> 0 (and stays monkeypatchable in tests).
+    imp = _IMPORT or "import"
     try:
         raw = await _run(
-            [_IMPORT, "-window", "root", "-resize", "8x8!", "-colorspace", "Gray",
+            [imp, "-window", "root", "-resize", "8x8!", "-colorspace", "Gray",
              "-depth", "8", "gray:-"]
         )
     except ScreenUnavailable:
