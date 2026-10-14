@@ -10,6 +10,7 @@ and degrades to a clear instruction if absent (CI-safe). Passive OSINT, auto-con
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import socket
 import urllib.error
@@ -48,7 +49,7 @@ def _lookup(ip: str, key: str) -> dict[str, Any]:
         if e.code == 401:
             return {"_error": "Shodan rejected the API key (401) — check SHODAN_API_KEY"}
         return {"_error": f"Shodan HTTP {e.code}"}
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return {"_error": f"could not reach Shodan: {str(e)[:80]}"}
     except json.JSONDecodeError:
         return {"_error": "Shodan returned non-JSON"}

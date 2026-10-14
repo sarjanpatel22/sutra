@@ -10,6 +10,7 @@ hunters at GraphQL; this gives it a real tool. One read-only POST, pure-stdlib, 
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import re
 import urllib.error
@@ -50,7 +51,7 @@ def _post(url: str) -> tuple[int, dict[str, Any] | None, str | None]:
             raw, status = e.read(1_000_000).decode("utf-8", "replace"), e.code
         except Exception:  # noqa: BLE001
             return e.code, None, None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, None, str(e)[:160]
     try:
         return status, json.loads(raw), None

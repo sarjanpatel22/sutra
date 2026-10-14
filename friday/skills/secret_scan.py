@@ -11,6 +11,7 @@ CI-safe, $0. Findings are CANDIDATES — verify the secret is live and in scope 
 from __future__ import annotations
 
 import asyncio
+import http.client
 import re
 import urllib.error
 import urllib.request
@@ -77,7 +78,7 @@ def _fetch(url: str) -> tuple[int, str, str, str | None]:
             return e.code, e.read(1_000_000).decode("utf-8", "replace"), "", None
         except Exception:  # noqa: BLE001
             return e.code, "", "", None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, "", "", str(e)[:160]
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib
 import importlib.util
 import inspect
@@ -67,15 +68,33 @@ def skill(
 
     def decorator(fn: F) -> F:
         schema = _build_schema(fn, name, description)
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        async def _safe(*args: Any, **kwargs: Any) -> Any:
+            # Argument-binding errors (an invented/extra kwarg) must propagate: the agent's
+            # tool loop turns them into the helpful "expected_params" correction. So bind the
+            # signature BEFORE the guard — only the skill BODY is wrapped.
+            sig.bind(*args, **kwargs)
+            # Enforce the never-raise skill contract at one place: a skill that lets an
+            # unexpected exception escape (e.g. urllib raising ValueError/InvalidURL on a
+            # malformed URL) returns a clean error dict instead. CancelledError/KeyboardInterrupt
+            # are BaseException, not Exception, so cooperative cancellation still propagates.
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001 — contract: skills return errors, never raise
+                _log.warning("skill %s raised %s: %s", name, type(e).__name__, e)
+                return {"error": f"{name} failed: {type(e).__name__}: {e}"}
+
         _registry[name] = SkillMeta(
             name=name,
             description=description,
-            fn=fn,
+            fn=_safe,
             auto_confirm=auto_confirm,
             timeout_s=timeout_s,
             schema=schema,
         )
-        return fn
+        return _safe  # type: ignore[return-value]
 
     return decorator
 

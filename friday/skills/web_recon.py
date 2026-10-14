@@ -13,6 +13,7 @@ install never breaks (gobuster/ffuf live on the Kali box, not CI). Authorized ta
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import re
@@ -245,7 +246,7 @@ async def _js_endpoints(js_urls: list[str], base: str) -> list[str]:
                 with urllib.request.urlopen(u, timeout=8) as r:  # noqa: S310
                     text: str = r.read(3_000_000).decode("utf-8", "replace")
                     return text
-            except (urllib.error.URLError, OSError):
+            except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
                 return ""
 
         body = await asyncio.to_thread(_fetch)

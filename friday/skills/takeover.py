@@ -11,6 +11,7 @@ Confirm by actually claiming the resource (in scope) before reporting. CI-safe, 
 from __future__ import annotations
 
 import asyncio
+import http.client
 import shutil
 import urllib.error
 import urllib.request
@@ -73,7 +74,7 @@ def _fetch_body(host: str) -> str:
                 return e.read(500_000).decode("utf-8", "replace")
             except Exception:  # noqa: BLE001
                 return ""
-        except (urllib.error.URLError, OSError):
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
             continue
     return ""
 

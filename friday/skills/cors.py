@@ -12,6 +12,7 @@ endpoint before reporting. CI-safe, $0.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -52,7 +53,7 @@ def _probe(url: str, origin: str) -> tuple[int, str | None, str | None, str | No
             e.headers.get("Access-Control-Allow-Credentials"),
             None,
         )
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, None, None, str(e)[:160]
 
 

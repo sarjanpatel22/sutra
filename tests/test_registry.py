@@ -85,3 +85,45 @@ def test_autodiscover_skips_broken_skill_module(monkeypatch):
     assert "system_info" not in failed                          # good sibling unaffected
     assert any(n.endswith(".system_info") for n in imported), \
         "discovery stopped at the broken module instead of continuing"
+
+
+# --- never-raise contract: the decorator guards the skill body -------------
+
+async def test_skill_body_exception_becomes_error_dict() -> None:
+    @skill(name="boom", description="raises in its body")
+    async def boom(x: str) -> dict:
+        raise RuntimeError("kaboom")
+
+    out = await call("boom", x="hi")               # must NOT raise
+    assert isinstance(out, dict) and "error" in out
+    assert "boom" in out["error"] and "RuntimeError" in out["error"]
+
+
+async def test_skill_success_passes_through_untouched() -> None:
+    @skill(name="ok", description="returns normally")
+    async def ok(x: str) -> dict:
+        return {"value": x.upper()}
+
+    assert await call("ok", x="hi") == {"value": "HI"}   # net is transparent on success
+
+
+async def test_invented_kwarg_still_raises_for_the_agent_layer() -> None:
+    # Binding errors must propagate (not be swallowed) so _run_tool_calls can hand the
+    # model the expected_params correction.
+    @skill(name="strict", description="one param")
+    async def strict(message: str) -> dict:
+        return {"message": message}
+
+    with pytest.raises(TypeError):
+        await call("strict", message="x", nope=1)
+
+
+async def test_cancellederror_is_not_swallowed() -> None:
+    @skill(name="cancels", description="raises CancelledError")
+    async def cancels(x: str) -> dict:
+        import asyncio
+        raise asyncio.CancelledError
+
+    import asyncio
+    with pytest.raises(asyncio.CancelledError):   # BaseException — cooperative cancel survives
+        await call("cancels", x="hi")

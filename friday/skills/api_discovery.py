@@ -11,6 +11,7 @@ GraphQL typename query, no payloads. Pure-stdlib (urllib + json), CI-safe, $0.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -39,7 +40,7 @@ def _get(url: str) -> tuple[int, str]:
             return e.code, e.read(2_000_000).decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
             return e.code, ""
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
         return 0, ""
 
 
@@ -56,7 +57,7 @@ def _post_graphql(url: str) -> tuple[int, str]:
             return e.code, e.read(200_000).decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
             return e.code, ""
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
         return 0, ""
 
 

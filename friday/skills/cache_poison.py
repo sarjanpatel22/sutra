@@ -15,6 +15,7 @@ headers) → gated. Pure-stdlib (urllib), CI-safe, $0.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import secrets
 import urllib.error
 import urllib.request
@@ -45,7 +46,7 @@ def _req(url: str, extra: dict[str, str]) -> tuple[str, dict[str, str], int] | N
         except Exception:  # noqa: BLE001
             body = ""
         return body, {k.lower(): str(v) for k, v in e.headers.items()}, e.code
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
         return None
 
 

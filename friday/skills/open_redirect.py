@@ -10,6 +10,7 @@ actually fires in a browser / the real OAuth flow before reporting.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -93,7 +94,7 @@ def _probe(url: str) -> tuple[int, str | None, str | None]:
             return r.status, r.headers.get("Location"), None
     except urllib.error.HTTPError as e:  # a blocked 3xx surfaces here, Location intact
         return e.code, e.headers.get("Location"), None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, None, str(e)[:160]
 
 
