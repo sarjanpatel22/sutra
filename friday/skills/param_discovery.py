@@ -83,7 +83,10 @@ async def find_params(url: str, extra: str = "") -> dict[str, Any]:
     if not url.startswith(("http://", "https://")):
         url = "http://" + url
 
+    # Bound the candidate set: `extra` is caller-supplied and otherwise unbounded, and each word
+    # becomes live requests against the target. Dedupe, then cap at 1000.
     words = list(dict.fromkeys([*_WORDLIST, *[w.strip() for w in extra.split(",") if w.strip()]]))
+    words = words[:1000]
 
     def _run() -> tuple[list[dict[str, Any]], bool, bool]:
         discovered: list[dict[str, Any]] = []
