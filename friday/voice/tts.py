@@ -35,7 +35,7 @@ class TTS:
     """
 
     def __init__(self, voice: str | None = None, speed: float | None = None) -> None:
-        from kokoro_onnx import Kokoro  # type: ignore[import-untyped]
+        from kokoro_onnx import Kokoro
 
         # Read at construction (after load_dotenv). am_adam is Sarjan's pick — a
         # warmer, more natural default than the old af_heart; .env can override.

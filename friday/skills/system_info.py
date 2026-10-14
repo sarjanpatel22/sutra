@@ -8,7 +8,7 @@ import re
 import shutil
 import time
 
-import psutil  # type: ignore[import-untyped]
+import psutil
 
 from friday.skills.registry import skill
 

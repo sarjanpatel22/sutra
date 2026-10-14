@@ -136,7 +136,7 @@ async def _make_confirm(
             )
         return approved
 
-    return _confirm  # type: ignore[return-value]
+    return _confirm
 
 
 async def handle_message(update: Any, context: Any) -> None:
@@ -240,7 +240,7 @@ async def handle_callback(update: Any, context: Any) -> None:
     try:
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([]))
         await query.edit_message_text(
-            text=f"{query.message.text or ''}\n\n_{label}_",  # type: ignore[union-attr]
+            text=f"{query.message.text or ''}\n\n_{label}_",
             parse_mode="Markdown",
         )
     except Exception:  # noqa: BLE001 — message may have expired

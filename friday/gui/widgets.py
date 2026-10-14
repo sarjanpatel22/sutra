@@ -289,7 +289,7 @@ def _layout_key_value(data: dict[str, Any], summary: str) -> Layout:
 def _llm_compose(answer_text: str, tool_data: Any) -> Layout | None:
     """Ask the free Groq LLM to produce a widget layout JSON. Returns None on any failure."""
     try:
-        import litellm  # type: ignore[import-untyped]
+        import litellm
     except ImportError:
         return None
 

@@ -52,7 +52,7 @@ def _attr(obj: object, key: str, default: object = None) -> object:
     return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
 
-def _serialize_tool_calls(tcs: object) -> list[dict[str, Any]] | None:
+def _serialize_tool_calls(tcs: Any) -> list[dict[str, Any]] | None:
     """Flatten LiteLLM/OpenAI tool-call objects (or dicts) to plain JSON dicts with names AND
     arguments intact — the .md transcript keeps only names, which is useless for training."""
     if not tcs:

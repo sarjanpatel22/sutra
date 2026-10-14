@@ -118,11 +118,11 @@ def list_devices() -> list[dict[str, object]]:
 
 
 def default_input_device() -> int:
-    return sd.default.device[0]  # type: ignore[index]
+    return sd.default.device[0]  # type: ignore[no-any-return]
 
 
 def default_output_device() -> int:
-    return sd.default.device[1]  # type: ignore[index]
+    return sd.default.device[1]  # type: ignore[no-any-return]
 
 
 def record_while_held(stop_event: threading.Event, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
