@@ -1842,9 +1842,9 @@ def _mcp_audit_batch(batch_file: str, reachable_only: bool) -> None:
             status.update(f"[cyan]({i}/{len(urls)}) {name} …[/cyan]")
             tmp = _tf.mkdtemp(prefix="mcp-batch-")
             try:
-                r = _sp.run(["git", "clone", "--depth", "1", url, tmp],  # noqa: S603,S607
-                            capture_output=True, text=True, timeout=180)
-                if r.returncode != 0:
+                proc = _sp.run(["git", "clone", "--depth", "1", url, tmp],  # noqa: S603,S607
+                               capture_output=True, text=True, timeout=180)
+                if proc.returncode != 0:
                     console.print(f"[dim]clone failed: {name}[/dim]")
                     continue
                 results.append((url, mcp_audit.audit_report(tmp)))
