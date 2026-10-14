@@ -62,10 +62,10 @@ def _eval(node: ast.AST) -> Any:
             raise ValueError(f"exponent too large (>{_MAX_EXPONENT})")
         return op(left, right)
     if isinstance(node, ast.UnaryOp):
-        op = _UNARY_OPS.get(type(node.op))
-        if op is None:
+        uop = _UNARY_OPS.get(type(node.op))
+        if uop is None:
             raise ValueError(f"unsupported unary op: {type(node.op).__name__}")
-        return op(_eval(node.operand))
+        return uop(_eval(node.operand))
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name) or node.func.id not in _FUNCS:
             fn = getattr(node.func, "id", "?")
@@ -85,7 +85,7 @@ def evaluate(expression: str) -> float:
     """Safely evaluate a math expression string. Raises ValueError on anything
     outside the whitelist (operators, math functions, constants)."""
     tree = ast.parse(expression, mode="eval")
-    return _eval(tree.body)
+    return float(_eval(tree.body))
 
 
 @skill(

@@ -113,7 +113,11 @@ async def detect_waf(url: str) -> dict[str, Any]:
     detected = _match(headers, cookie_names)
     # de-dupe by WAF name, keep first evidence
     seen: set[str] = set()
-    unique = [d for d in detected if not (d["waf"] in seen or seen.add(d["waf"]))]
+    unique: list[dict[str, str]] = []
+    for d in detected:
+        if d["waf"] not in seen:
+            seen.add(d["waf"])
+            unique.append(d)
     return {
         "url": url,
         "status": status,

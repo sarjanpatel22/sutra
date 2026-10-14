@@ -68,7 +68,8 @@ def _scan_js(source_name: str, text: str) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     has_source_anywhere = bool(_SOURCES.search(text or ""))
     for n, line in enumerate(text.splitlines(), 1):
-        if not _SINKS.search(line):
+        line_sink = _SINKS.search(line)
+        if not line_sink:
             continue
         highs_this_line = 0
         for sm in _SINKS.finditer(line):
@@ -87,7 +88,7 @@ def _scan_js(source_name: str, text: str) -> list[dict[str, Any]]:
         if highs_this_line == 0 and has_source_anywhere:  # sink here, source elsewhere → weak lead
             findings.append({
                 "file": source_name, "line": n, "confidence": "low",
-                "source": "(elsewhere in file)", "sink": _SINKS.search(line).group(0),
+                "source": "(elsewhere in file)", "sink": line_sink.group(0),
                 "snippet": line.strip()[:200],
             })
         if len(findings) >= _MAX_FINDINGS:

@@ -149,8 +149,8 @@ def _compute(
 
     inside = [i for i in range(len(times)) if dist[i] <= radius_m]
     if not inside:
-        res = {"site": [lat, lon], "radius_m": radius_m, "stops": [], "visit_count": 0,
-               "note": "no breadcrumbs within the geofence"}
+        res: dict[str, Any] = {"site": [lat, lon], "radius_m": radius_m, "stops": [],
+                               "visit_count": 0, "note": "no breadcrumbs within the geofence"}
         if warning:
             res["warning"] = warning
         return res
@@ -178,7 +178,7 @@ def _compute(
             cl.append(cur)
     _close(cl)
 
-    res: dict[str, Any] = {
+    res = {
         "site": [lat, lon],
         "radius_m": radius_m,
         "min_dwell_min": min_dwell_min,
