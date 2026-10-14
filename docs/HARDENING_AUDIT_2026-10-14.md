@@ -84,11 +84,14 @@ maybe-None `.group`, dedup idioms, calc operator confusion, the CardsWidget vali
 dropping model instances, the `except as e` reuse) were all fixed or were safe-at-runtime.
 
 ## Remaining (for the next session)
-### Skills still without dedicated tests (6, down from 9)
-audit, calc, clock, delegate, desktop, preferences. (calc/clock are nearly trivial;
-desktop + delegate are the meaningful ones.)
+### Skills without dedicated tests — CLOSED
+Added `test_calc.py` / `test_clock.py` / `test_preferences.py` / `test_desktop.py` (+51
+tests). `audit` + `delegate` turned out to be already exercised by
+`test_confirmation_audit.py` (the earlier "6 untested" list was by filename, not
+coverage). So every skill now has coverage, directly or via a shared suite.
 
-### Not yet done
+### Not yet done — the one big remaining item
 - Per-skill *behavioral* deep-review beyond types/tests (adversarial gap-fill like the
-  earlier geo/fleet pass) across all 82 skills — only types + the security-sensitive
-  skills were covered. This is the big remaining item.
+  earlier geo/fleet pass) across all 82 skills — only types, the security-sensitive
+  skills, and these six were covered. This is the remaining large effort: go skill by
+  skill, enumerate the failure class up front, harden, leave each committed-green.
