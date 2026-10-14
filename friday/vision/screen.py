@@ -53,6 +53,7 @@ async def grab_jpeg(quality: int = 70, max_width: int = 1280) -> bytes:
     """
     if not screen_available():
         raise ScreenUnavailable("no DISPLAY or ImageMagick 'import'")
+    assert _IMPORT  # screen_available() guarantees the binary; narrows str | None -> str
     q = max(20, min(95, quality))
     return await _run(
         [_IMPORT, "-window", "root", "-resize", f"{max_width}>", "-quality", str(q), "jpg:-"]
@@ -66,6 +67,8 @@ async def ahash() -> int:
     average), sensitive to switching windows, scrolling, or opening a dialog. Returns
     0 if capture fails, so the caller treats it as 'unknown' instead of crashing.
     """
+    if not _IMPORT:
+        return 0  # ImageMagick 'import' absent — 'unknown', same as a capture failure
     try:
         raw = await _run(
             [_IMPORT, "-window", "root", "-resize", "8x8!", "-colorspace", "Gray",

@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -127,7 +128,7 @@ def _preprocess(img: np.ndarray, scale: float) -> np.ndarray:
     return th
 
 
-def _ocr_tsv(img: np.ndarray, scale: float = 2.0) -> list[dict]:
+def _ocr_tsv(img: np.ndarray, scale: float = 2.0) -> list[dict[str, Any]]:
     if not shutil.which("tesseract"):
         return []
     with tempfile.TemporaryDirectory() as d:
@@ -137,7 +138,7 @@ def _ocr_tsv(img: np.ndarray, scale: float = 2.0) -> list[dict]:
         # psm 3 assumes a document and misses loose buttons/menus). Matches the old locate.py path.
         out = subprocess.run(["tesseract", p, "stdout", "--psm", "11", "tsv"],
                              capture_output=True, text=True).stdout
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for ln in out.splitlines()[1:]:
         c = ln.split("\t")
         if len(c) == 12 and c[11].strip():  # map coords back from the upscaled image
@@ -152,7 +153,7 @@ def _ocr_tsv(img: np.ndarray, scale: float = 2.0) -> list[dict]:
     return rows
 
 
-def ocr_words(image: np.ndarray, scale: float = 2.0) -> list[dict]:
+def ocr_words(image: np.ndarray, scale: float = 2.0) -> list[dict[str, Any]]:
     """Public OCR: every on-screen word with absolute coords, centre, and tesseract confidence.
     Preprocessed (upscale + binarize) so small light-on-dark UI text reads reliably."""
     return _ocr_tsv(image, scale)
