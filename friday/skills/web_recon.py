@@ -51,8 +51,10 @@ async def _wildcard_len(url: str) -> int | None:
     def _get() -> int | None:
         try:
             with urllib.request.urlopen(probe, timeout=8) as r:  # noqa: S310
-                return len(r.read()) if r.status == 200 else None
-        except (urllib.error.HTTPError, OSError):
+                # cap the read: a catch-all app shell is tiny; a hostile multi-GB body must
+                # not be buffered whole just to measure its length.
+                return len(r.read(2_000_000)) if r.status == 200 else None
+        except (urllib.error.HTTPError, OSError, ValueError, http.client.HTTPException):
             return None
 
     return await asyncio.to_thread(_get)
