@@ -90,8 +90,34 @@ tests). `audit` + `delegate` turned out to be already exercised by
 `test_confirmation_audit.py` (the earlier "6 untested" list was by filename, not
 coverage). So every skill now has coverage, directly or via a shared suite.
 
-### Not yet done — the one big remaining item
-- Per-skill *behavioral* deep-review beyond types/tests (adversarial gap-fill like the
-  earlier geo/fleet pass) across all 82 skills — only types, the security-sensitive
-  skills, and these six were covered. This is the remaining large effort: go skill by
-  skill, enumerate the failure class up front, harden, leave each committed-green.
+## Behavioral deep-review (started — the big item, in progress)
+Going skill-by-skill, enumerating the failure CLASS adversarially up front (not patching
+single examples), each fix committed-green.
+
+**Cluster 1 — crash-safety / never-raise contract (SYSTEMIC, done).** Fuzzing check_sqli
+and its siblings with malformed URLs (unclosed IPv6 `http://[::1`, control chars,
+non-latin host, non-numeric port) showed ~29 active probes RAISED instead of returning an
+error dict — urllib raises `ValueError` / `http.client.InvalidURL` (an HTTPException, NOT
+a ValueError) during URL parse/fetch, escaping the narrow `except (URLError, OSError)`.
+Fixed at the root: the `@skill` decorator now wraps every skill so a body exception
+returns `{"error": …}` — the never-raise contract is ENFORCED for all 126 skills at one
+point. Argument-binding errors (invented kwargs) are bound before the guard so they still
+reach the agent's `expected_params` correction; `CancelledError` (BaseException) is not
+swallowed. Also broadened the 28 probe fetch helpers to catch ValueError + HTTPException
+so the common malformed-URL case gives the specific "could not reach X". Adversarial
+harness: 126 hostile calls → 0 raises (was 29). +4 contract tests.
+
+**Cluster 2 — resource bounds (in progress).** `web_recon._wildcard_len` buffered a whole
+response via `r.read()` just to measure length (OOM on a hostile body, in the unattended
+`sutra hunt` path) → capped at 2MB. `param_discovery` built its candidate set from an
+unbounded caller `extra` CSV → capped at 1000.
+
+**Detection-logic review (spot-checks, sound).** reflected_xss (raw `<svg>` vs encoded
+`&lt;svg&gt;` — correct, conservative) and open_redirect (reserved `.example` canary +
+precise host check) reviewed for false-positive/negative traps: both correct. Consistent
+with the type pass — runtime correctness is in good shape; this review is more confirmation
+than bug-hunting.
+
+### Remaining
+- Continue the behavioral review across the rest of the 82 skills (recon/passive cluster,
+  desktop/vision cluster, agent/meta cluster) at the same bar.
