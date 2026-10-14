@@ -83,7 +83,7 @@ async def _resolve(host: str, sem: asyncio.Semaphore) -> tuple[str, list[str]]:
                 host, None, proto=socket.IPPROTO_TCP)
         except (socket.gaierror, OSError, UnicodeError):
             return host, []
-    return host, sorted({i[4][0] for i in infos})
+    return host, sorted({str(i[4][0]) for i in infos})
 
 
 async def _wildcard_ips(domain: str, sem: asyncio.Semaphore) -> set[str]:

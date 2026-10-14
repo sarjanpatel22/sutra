@@ -71,6 +71,12 @@ in CI where graphiti is absent).
 **Wired into CI** (`.github/workflows/ci.yml`): new `Mypy (strict types)` step between Ruff
 and the gate-audit; job renamed `ruff · mypy · gate-audit · tests`. The rot can't recur.
 
+**Lesson (caught by the first CI run):** CI installs the latest `mypy>=1.10`, whose newer
+bundled typeshed types `socket.getaddrinfo`'s sockaddr as `str | int` — so `dns_brute.py`
+had one extra set-comprehension error that an older local mypy (2.1.0) didn't flag. Fixed
+the same way as recon.py (`str(i[4][0])`) and **upgraded the local venv to the CI mypy
+version** so the gate is reproducible. Always run the same mypy version locally as CI.
+
 ## Key finding
 Almost every type error cleared was **loose typing / variable-name reuse, not a live
 bug** — reassuring about runtime correctness. The handful of genuine issues (dom_xss
