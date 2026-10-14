@@ -112,11 +112,19 @@ response via `r.read()` just to measure length (OOM on a hostile body, in the un
 `sutra hunt` path) → capped at 2MB. `param_discovery` built its candidate set from an
 unbounded caller `extra` CSV → capped at 1000.
 
-**Detection-logic review (spot-checks, sound).** reflected_xss (raw `<svg>` vs encoded
-`&lt;svg&gt;` — correct, conservative) and open_redirect (reserved `.example` canary +
-precise host check) reviewed for false-positive/negative traps: both correct. Consistent
-with the type pass — runtime correctness is in good shape; this review is more confirmation
-than bug-hunting.
+**Detection-logic review.** reflected_xss (raw `<svg>` vs encoded `&lt;svg&gt;` — correct,
+conservative), open_redirect (reserved `.example` canary + precise host check), csp_analyze
+(token-based directive/source parsing), and cors (tests exact origin reflection, correctly
+AVOIDS the `*`+credentials false positive) all reviewed for false-positive/negative traps:
+sound. **One real FP fixed — email_security:** `"p=none" in dmarc` also matched `sp=none`
+(subdomain policy), so a strong `p=reject; sp=none` was reported "monitor-only / spoofable".
+Fixed with exact DMARC-tag parsing; also tokenized the SPF `all`-mechanism check (caught a
+bare-`all` false negative too). +4 regression tests.
+
+**Desktop/vision cluster.** desktop_control (OCR→click take-over): `_perception_ready` returns
+a clean error when tools are absent, `best_match` uses a score threshold with honest no-match
+replies, `_llm_pick` degrades to None on any failure, clicks use real OCR coords. Graceful +
+crash-safe. No change needed.
 
 **Command-injection audit (clean bill).** All 16 subprocess call sites across the skills use
 `create_subprocess_exec` / list-form `subprocess.run`/`Popen` — zero `shell=True`, zero
@@ -124,6 +132,14 @@ than bug-hunting.
 shell, so user/model input passed as argv can't be shell-injected. The command-execution
 surface is injection-safe by construction. No change needed.
 
-### Remaining
-- Continue the behavioral review across the rest of the 82 skills (recon/passive cluster,
-  desktop/vision cluster, agent/meta cluster) at the same bar.
+### State at this checkpoint
+Full suite **1944**, mypy 0, ruff clean, CI green. The high-risk surface — every active/passive
+security probe, the command-execution paths, and the desktop take-over — has been reviewed for
+the material failure classes (crash-safety, resource bounds, detection false-positives/negatives,
+command injection). Every real bug found was fixed; the rest confirmed sound. Consistent with the
+type pass: **the codebase is fundamentally solid.**
+
+### Remaining (confirmation-level)
+- Per-skill confirmation review of the lower-risk agent/meta + util skills (council, dev_tools,
+  git_tools, job_hunt, llm_redteam, …). Crash-safety is already guaranteed for all 126 skills by
+  the registry net, so this is coverage-completeness, not an expected bug source.
