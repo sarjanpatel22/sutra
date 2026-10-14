@@ -80,7 +80,7 @@ def _redirects_to_canary(location: str | None) -> bool:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *a, **k):  # don't follow — we want to SEE the Location
+    def redirect_request(self, *a: Any, **k: Any) -> None:  # don't follow — we want the Location
         return None
 
 

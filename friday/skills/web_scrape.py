@@ -41,7 +41,7 @@ except ImportError:
     _HAS_BS4 = False
 
 
-def _soup(markup: str):
+def _soup(markup: str) -> Any:
     from bs4 import BeautifulSoup
 
     try:

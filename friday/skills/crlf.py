@@ -34,7 +34,7 @@ _DEFAULT_APPEND = ("redirect", "url", "lang", "q", "next", "page")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *a, **k):  # don't follow — we must read the raw response headers
+    def redirect_request(self, *a: Any, **k: Any) -> None:  # read the raw response headers
         return None
 
 

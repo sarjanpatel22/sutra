@@ -20,7 +20,7 @@ _CANARY = "evilcollab.example"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *a, **k):  # don't follow — we must not chase the spoofed host
+    def redirect_request(self, *a: Any, **k: Any) -> None:  # don't chase the spoofed host
         return None
 
 
