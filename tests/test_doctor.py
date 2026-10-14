@@ -92,10 +92,10 @@ def test_nim_model_rows_flags_eol(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         doctor, "_nim_alive",
         lambda model, key: (Status.WARN, f"{model} → HTTP 410 EOL — update the id")
-        if "glm" in model.lower() else (Status.OK, f"{model} live"))
+        if "550b" in model.lower() else (Status.OK, f"{model} live"))
     by_name = {r.name: r for r in doctor.nim_model_rows()}
-    assert by_name["NIM GLM"].status is Status.WARN and "EOL" in by_name["NIM GLM"].detail
-    assert by_name["NIM Nemotron"].status is Status.OK
+    assert by_name["NIM heavy"].status is Status.WARN and "EOL" in by_name["NIM heavy"].detail
+    assert by_name["NIM fast"].status is Status.OK
 
 
 def test_nim_model_rows_no_key(monkeypatch: pytest.MonkeyPatch) -> None:

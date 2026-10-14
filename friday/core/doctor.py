@@ -196,25 +196,27 @@ def _nim_alive(model: str, key: str) -> tuple[Status, str]:
         return Status.OK, f"{model} live"
     except urllib.error.HTTPError as e:
         if e.code in (404, 410):
-            return Status.WARN, f"{model} → HTTP {e.code} EOL — update GLM_MODEL/NEMOTRON_MODEL"
+            return Status.WARN, f"{model} → HTTP {e.code} EOL — update the NIM_*_MODEL ids"
         return Status.WARN, f"{model} → HTTP {e.code}"
     except Exception as e:  # noqa: BLE001 — any transport error is 'unknown', never fatal
         return Status.WARN, f"{model} unreachable: {type(e).__name__}"
 
 
 def nim_model_rows() -> list[_Row]:
-    """Liveness of the configured free NVIDIA NIM brains (GLM/Nemotron). NIM EOLs model ids (glm-5.1
-    went 410 Gone on 2026-07-02, silently wasting a round-trip on every reasoning call until caught)
-    — this pings each wired id so a dead pick surfaces here instead of rotting. Advisory (never
-    FAIL); only meaningful when the key is set."""
+    """Liveness of the configured free NVIDIA NIM brains (fast 120B / heavy 550B / fallback). NIM
+    EOLs model ids without warning (glm-5.1 AND glm-5.2 both went 410 Gone, silently wasting a
+    round-trip until caught) — this pings each wired id so a dead pick surfaces here instead of
+    rotting. Advisory (never FAIL); only meaningful when the key is set."""
     key = os.getenv("NVIDIA_NIM_API_KEY", "").strip()
     if not key:
         return [_Row("NIM brains", Status.WARN,
-                     "NVIDIA_NIM_API_KEY unset — free GLM/Nemotron reasoning tier off")]
-    from friday.core.router import _GLM, _NEMOTRON
+                     "NVIDIA_NIM_API_KEY unset — free NIM reasoning/tool tier off")]
+    from friday.core.router import _NIM_FALLBACK, _NIM_FAST, _NIM_HEAVY
 
     rows: list[_Row] = []
-    for label, wired in (("NIM GLM", _GLM), ("NIM Nemotron", _NEMOTRON)):
+    for label, wired in (
+        ("NIM fast", _NIM_FAST), ("NIM heavy", _NIM_HEAVY), ("NIM fallback", _NIM_FALLBACK)
+    ):
         model = wired.split("nvidia_nim/", 1)[-1]  # strip the litellm prefix → raw NIM id
         status, detail = _nim_alive(model, key)
         rows.append(_Row(label, status, detail))

@@ -281,25 +281,41 @@ def test_tool_incapable_false_for_cloud(model):
 # --- _wire_nvidia_nim: free NIM brains, per-tier ordering ------------------
 
 def test_wire_nvidia_nim_orders_brains_per_tier():
-    """GLM leads the reasoning tiers (REASON/HEAVY); Nemotron leads the tool/agent tier
-    (MEDIUM) for its ~1s tool calls; the local/paid model at index 0 always stays first.
-    Locks the insert() index math so a future free-brain edit can't silently reorder the
-    fallback chain (the bug this would catch is a $-relevant misroute)."""
-    glm, nem = "nvidia_nim/test-glm", "nvidia_nim/test-nemotron"
+    """The fast 120B LEADS the chat/tool tier (MEDIUM) so a live powerful answer comes before any
+    rate-limited/expired cloud bucket; the 550B heavy LEADS the reasoning tier (local stays behind
+    it as the offline fallback); on HEAVY the NIM brains sit just behind the paid leader at index 0
+    so ROUTER_ALLOW_PAID still wins. Locks the slice-insert math so a future edit can't silently
+    reorder the fallback chain (the bug this would catch is a $-relevant / weak-brain misroute)."""
+    fast, heavy, fb = "nvidia_nim/test-fast", "nvidia_nim/test-heavy", "nvidia_nim/test-fb"
     tiers = {
         Tier.REASON: ["ollama_chat/local", "gemini/flash"],
         Tier.HEAVY: ["claude-sonnet-4-6", "groq/llama"],
         Tier.MEDIUM: ["groq/a", "groq/b", "groq/c", "groq/d"],
     }
-    router._wire_nvidia_nim(tiers, glm, nem)
+    router._wire_nvidia_nim(tiers, fast, heavy, fb)
 
-    for t in (Tier.REASON, Tier.HEAVY):
-        assert tiers[t][0] not in (glm, nem), "local/paid model must stay at index 0"
-        assert tiers[t][1] == glm and tiers[t][2] == nem, "GLM ahead of Nemotron in reasoning tiers"
+    # MEDIUM (everyday chat + tools): fast 120B first, then heavy, then fallback, then the rest.
+    assert tiers[Tier.MEDIUM][:3] == [fast, heavy, fb], "fast 120B must lead the chat/tool tier"
+    assert tiers[Tier.MEDIUM][3] == "groq/a", "existing cloud buckets stay behind the NIM brains"
 
-    med = tiers[Tier.MEDIUM]
-    assert med.index(nem) < med.index(glm), "Nemotron ahead of GLM in the tool/agent tier"
-    assert med[0] == "groq/a", "existing primary stays first"
+    # REASON: heavy 550B leads, fast behind it, local model demoted to the offline fallback.
+    assert tiers[Tier.REASON][:2] == [heavy, fast], "550B reasoner must lead REASON"
+    assert tiers[Tier.REASON][2] == "ollama_chat/local", "local stays as the offline fallback"
+
+    # HEAVY: the paid leader keeps index 0; NIM brains sit right behind it.
+    assert tiers[Tier.HEAVY][0] == "claude-sonnet-4-6", "paid leader must stay at index 0"
+    assert tiers[Tier.HEAVY][1:3] == [heavy, fast], "free NIM brains sit behind the paid leader"
+
+
+def test_is_dead_model_error_detection():
+    """A persistent provider failure (EOL'd id / expired key) is classified distinctly from a
+    transient 429 so complete() cools it down for a LONG window and stops re-hitting it every
+    turn. Real strings seen live 2026-10-14: NIM 410 Gone, expired Groq key."""
+    assert router._is_dead_model_error(Exception("Error code: 410 - {'title': 'Gone'}"))
+    assert router._is_dead_model_error(Exception('"Invalid API Key","code":"expired_api_key"'))
+    assert router._is_dead_model_error(Exception("The model 'z-ai/glm-5.2' no longer exists"))
+    assert not router._is_dead_model_error(Exception("Error code: 429 - rate limit"))
+    assert not router._is_dead_model_error(Exception("connection refused"))
 
 
 # --- _prefer_local_tools: inject qwen immediately before gemma -------------

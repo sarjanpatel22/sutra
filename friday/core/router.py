@@ -98,32 +98,37 @@ TIER_MODELS: dict[Tier, list[str]] = {
     ],
 }
 
-# Two usable top free brains (NVIDIA NIM, OpenAI-compatible via LiteLLM), inserted ABOVE the free
-# fallbacks ONLY when the key is present — never thrashes when no key is set. LIVE-TESTED picks:
-# GLM is the stronger REASONER (leaderboard 83, reliable), Nemotron the faster FUNCTION-CALLER
-# (1s tool calls). DeepSeek-V4-Pro and Kimi-K2.6 were rejected — they time out / return garbage on
-# the free tier (rank ≠ usable). So GLM leads the reasoning tiers, Nemotron leads the tool/agent
-# tier, and each backs the other. Override ids with NEMOTRON_MODEL / GLM_MODEL.
-# NOTE: NIM EOLs model ids (glm-5.1 went 410 Gone on 2026-07-02, silently wasting a round-trip on
-# every reasoning call until caught) — `sutra doctor` now pings these ids so a dead pick surfaces.
-_NEMOTRON = os.getenv("NEMOTRON_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
-_GLM = os.getenv("GLM_MODEL", "nvidia_nim/z-ai/glm-5.2")
+# Three live, free NVIDIA NIM brains (OpenAI-compatible via LiteLLM), inserted into the free tiers
+# ONLY when the key is present. BENCHMARKED 2026-10-14 on real content + latency (not leaderboard
+# rank — rank ≠ usable): nemotron-3-super-120b (a12b active) answers in ~1s with clean content → the
+# lead chat/tool brain; nemotron-3-ultra-550b (a55b) is the heavy reasoner (~5s); kimi-k3 is a third
+# live fallback for quota headroom. DROPPED: the GLM ids (glm-5.2 → 410 Gone) and the "reasoning"
+# NIM models (glm-5.3, lightning-30b) that return EMPTY content on normal token budgets — they spend
+# the budget on hidden thinking, so they're unusable as a default. Override with the env ids below.
+# NOTE: NIM EOLs ids without warning (glm-5.1 AND glm-5.2 both went 410 Gone). complete() now cools
+# a dead/410/auth-failed model for a long window (see _is_dead_model_error), so a stale id costs ONE
+# wasted call — not one per turn; `sutra doctor` pings these ids so a dead pick surfaces here.
+_NIM_FAST = os.getenv("NIM_FAST_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
+_NIM_HEAVY = os.getenv("NIM_HEAVY_MODEL", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b")
+_NIM_FALLBACK = os.getenv("NIM_FALLBACK_MODEL", "nvidia_nim/moonshotai/kimi-k3")
 
 
-def _wire_nvidia_nim(tier_models: dict[Tier, list[str]], glm: str, nemotron: str) -> None:
-    """Insert the two free NVIDIA NIM brains into the free tiers IN PLACE, after the local/paid
-    model at index 0. GLM leads the reasoning tiers (REASON/HEAVY); Nemotron leads the tool/agent
-    tier (MEDIUM) for its ~1s tool calls, with GLM a reasoning-grade fallback behind it. A
-    standalone function so the ordering is unit-testable without import-time env juggling."""
-    for t in (Tier.REASON, Tier.HEAVY):           # reasoning tiers: GLM first, Nemotron behind it
-        tier_models[t].insert(1, nemotron)
-        tier_models[t].insert(1, glm)
-    tier_models[Tier.MEDIUM].insert(2, nemotron)  # tool/agent tier: Nemotron first (1s calls)
-    tier_models[Tier.MEDIUM].insert(3, glm)       # GLM as a reasoning-grade fallback
+def _wire_nvidia_nim(
+    tier_models: dict[Tier, list[str]], fast: str, heavy: str, fallback: str
+) -> None:
+    """Insert the live free NVIDIA NIM brains into the free tiers. The fast 120B LEADS the everyday
+    chat + tool/agent tier (MEDIUM) so a live, powerful answer comes first — ahead of any
+    rate-limited or expired cloud bucket — with the 550B and kimi behind it for headroom. The 550B
+    reasoner leads REASON (the local model stays behind it as the offline fallback). On HEAVY the
+    NIM brains sit just BEHIND the paid leader at index 0, so ROUTER_ALLOW_PAID still wins when set
+    but a FREE heavy turn gets the 550B, not a dead model."""
+    tier_models[Tier.MEDIUM][0:0] = [fast, heavy, fallback]  # chat/tools: the fast 120B leads
+    tier_models[Tier.REASON][0:0] = [heavy, fast]            # reasoning: 550B first, local behind
+    tier_models[Tier.HEAVY][1:1] = [heavy, fast]             # heavy: behind the paid leader (idx 0)
 
 
 if os.getenv("NVIDIA_NIM_API_KEY"):
-    _wire_nvidia_nim(TIER_MODELS, _GLM, _NEMOTRON)
+    _wire_nvidia_nim(TIER_MODELS, _NIM_FAST, _NIM_HEAVY, _NIM_FALLBACK)
 
 _COST_PER_1K: dict[str, tuple[float, float]] = {
     "claude-opus-4-8":                       (0.015, 0.075),
@@ -177,8 +182,41 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     )
 
 
-def _mark_cooling_down(model: str) -> None:
-    _RATE_LIMITED[model] = time.time() + _rl_cooldown_s()
+def _dead_cooldown_s() -> float:
+    """Cooldown for a PERSISTENT failure (EOL'd id, expired/invalid key, model-not-found). These
+    don't recover mid-session, so skip the model for a long window — one wasted call, not one per
+    turn. ROUTER_DEADMODEL_COOLDOWN (default 1h)."""
+    try:
+        return float(os.getenv("ROUTER_DEADMODEL_COOLDOWN", "3600"))
+    except ValueError:
+        return 3600.0
+
+
+def _is_dead_model_error(exc: Exception) -> bool:
+    """True for a PERSISTENT provider failure that won't fix itself this session: an EOL'd/retired
+    model id (410 Gone / model-not-found) or a bad credential (expired/invalid/unauthorized key).
+    Distinct from a transient 429 — these are cooled down for far longer (_dead_cooldown_s) so the
+    fallback chain stops re-hitting a dead endpoint on EVERY turn (the 'messy' failure mode). Seen
+    live 2026-10-14: NIM glm-5.2 → 'HTTP 410 Gone'; expired Groq key → 'Invalid API Key'."""
+    msg = str(exc).lower()
+    return (
+        "410" in msg
+        or "gone" in msg
+        or "model_not_found" in msg
+        or "does not exist" in msg
+        or "no longer" in msg
+        or "decommission" in msg
+        or "retired" in msg
+        or "expired_api_key" in msg
+        or "expired api key" in msg
+        or "invalid api key" in msg
+        or "invalid_api_key" in msg
+        or "unauthorized" in msg
+    )
+
+
+def _mark_cooling_down(model: str, seconds: float | None = None) -> None:
+    _RATE_LIMITED[model] = time.time() + (seconds if seconds is not None else _rl_cooldown_s())
 
 
 def _is_cooling_down(model: str) -> bool:
@@ -577,7 +615,11 @@ async def complete(
             return response
         except Exception as e:  # noqa: BLE001
             if _is_rate_limit_error(e):
-                _mark_cooling_down(model)  # skip this model on the next calls until it cools
+                _mark_cooling_down(model)  # transient 429 — short cooldown, let it back in soon
+            elif _is_dead_model_error(e):
+                # EOL'd id / expired key — won't recover this session, so skip it for a long
+                # window instead of wasting a round-trip on every turn (keeps the chain clean).
+                _mark_cooling_down(model, _dead_cooldown_s())
             last_err = e
             continue
 
