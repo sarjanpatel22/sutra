@@ -34,10 +34,18 @@ Branch: `harden-sutra` (stacked on the NIM-router work). **Not pushed** — awai
    **tests/test_system_info.py (5)** — stats keys, battery present/absent, run_command
    execution. (The safety-critical `is_catastrophic` + run_command refusal are already
    well-covered in test_autonomous.py.)
-5. **cli** (`<this commit>`): renamed a reused subprocess var so the ranked-rows loop
+5. **cli** (`f487911`): renamed a reused subprocess var so the ranked-rows loop
    types cleanly (not a live bug — name reuse confused mypy).
+6. **report dicts + stale ignores** (`a97628a`): mcp_audit.audit_report/rank_batch
+   `dict[str, object]`→`dict[str, Any]` (cleared 4 downstream cli errors too);
+   train._serialize_tool_calls `tcs: object`→`Any`; removed 7 stale `type: ignore`
+   comments and fixed audio.py's wrong ignore code.
+7. **collectors** (`f423c98`): typed `_RUN` as `dict[str, Any]` so `**_RUN` matches
+   subprocess.run's overloads (4 call-overload errors; valid kwargs at runtime).
+8. **remaining untyped helpers** (`889eec3`): annotated the `_NoRedirect.redirect_request`
+   overrides (open_redirect/host_header/crlf) and web_scrape._soup.
 
-Result: full suite **1886 passing** (+24 tests), ruff clean, **mypy ~160 → 100.**
+Result: full suite **1886 passing** (+24 tests), ruff clean, **mypy ~160 → 71** (56% down).
 
 ## Key finding
 Almost every remaining type error is **loose typing / variable-name reuse, not a live
@@ -47,15 +55,17 @@ either safe-at-runtime or fixed. A few categories below (`arg-type`, `attr-defin
 `str`) still deserve a line-by-line look for the rare real one.
 
 ## Remaining (for the next session)
-### mypy --strict: 100 errors in 44 files
-By file (top): voice/pipeline.py 13 · cli.py 10 · skills/recon.py 9 ·
-ambient/collectors.py 5 · voice/audio.py 4 · vision/perceive.py 3 · gui/server.py 3 ·
-core/mcp_audit.py 3 · then ~36 files with 1–2 each.
-By category: str 19 · no-any-return 16 · type-arg 12 · arg-type 11 · no-untyped-call 10 ·
-no-untyped-def 9 · unused-ignore 7 · call-overload 7 · attr-defined 6 · assignment 5.
-- `unused-ignore` (7) and `no-untyped-def` (9) are trivial mechanical wins.
-- `arg-type` (11) + `attr-defined` (6) + `str` (19) — review each for a real bug.
+### mypy --strict: 71 errors in 34 files
+By file (top): voice/pipeline.py 13 · skills/recon.py 9 · cli.py 6 · vision/perceive.py 3 ·
+gui/server.py 3 · then ~29 files with 1–2 each.
+By category: no-any-return 14 · type-arg 12 · no-untyped-call 10 · arg-type 9 ·
+no-untyped-def 5 · assignment 5 · str 3 · misc 3.
+- `voice/pipeline.py` (13) is the biggest single file left — needs a focused pass
+  (mostly return-type annotations + a few no-untyped-call on the pipecat API).
+- `arg-type` (9) + `assignment` (5) — review each for a real bug (most are the
+  numpy-ndarray / optional-dep boundaries, loose but not live bugs).
 - `recon.py` (9): the `cert`/`pk` Element-vs-dict typing needs the function annotated.
+- `no-any-return` (14) + `type-arg` (12) + `no-untyped-call` (10) are mostly mechanical.
 
 ### Skills still without dedicated tests (6, down from 9)
 audit, calc, clock, delegate, desktop, preferences. (calc/clock are nearly trivial;
