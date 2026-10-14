@@ -118,6 +118,12 @@ precise host check) reviewed for false-positive/negative traps: both correct. Co
 with the type pass — runtime correctness is in good shape; this review is more confirmation
 than bug-hunting.
 
+**Command-injection audit (clean bill).** All 16 subprocess call sites across the skills use
+`create_subprocess_exec` / list-form `subprocess.run`/`Popen` — zero `shell=True`, zero
+`os.system`/`os.popen`, zero string-form commands. `create_subprocess_exec` can't invoke a
+shell, so user/model input passed as argv can't be shell-injected. The command-execution
+surface is injection-safe by construction. No change needed.
+
 ### Remaining
 - Continue the behavioral review across the rest of the 82 skills (recon/passive cluster,
   desktop/vision cluster, agent/meta cluster) at the same bar.
