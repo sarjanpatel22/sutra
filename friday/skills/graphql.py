@@ -32,7 +32,7 @@ _SENSITIVE = re.compile(
 )
 
 
-def _post(url: str) -> tuple[int, dict | None, str | None]:
+def _post(url: str) -> tuple[int, dict[str, Any] | None, str | None]:
     """(status, parsed-json, error). Transport failure → error; non-JSON → parsed None."""
     body = json.dumps({"query": _QUERY}).encode()
     req = urllib.request.Request(
@@ -97,7 +97,7 @@ async def graphql_introspect(url: str) -> dict[str, Any]:
 
     by_name = {t.get("name"): t for t in schema.get("types") or [] if isinstance(t, dict)}
 
-    def _fields(type_ref: dict | None) -> list[str]:
+    def _fields(type_ref: dict[str, Any] | None) -> list[str]:
         t = by_name.get((type_ref or {}).get("name")) if type_ref else None
         return [f.get("name") for f in (t or {}).get("fields") or [] if f.get("name")]
 
