@@ -286,17 +286,18 @@ def test_wire_nvidia_nim_orders_brains_per_tier():
     it as the offline fallback); on HEAVY the NIM brains sit just behind the paid leader at index 0
     so ROUTER_ALLOW_PAID still wins. Locks the slice-insert math so a future edit can't silently
     reorder the fallback chain (the bug this would catch is a $-relevant / weak-brain misroute)."""
-    fast, heavy, fb = "nvidia_nim/test-fast", "nvidia_nim/test-heavy", "nvidia_nim/test-fb"
+    fast, heavy = "nvidia_nim/test-fast", "nvidia_nim/test-heavy"
+    extra = ["nvidia_nim/test-kimi", "nvidia_nim/test-ossb"]
     tiers = {
         Tier.REASON: ["ollama_chat/local", "gemini/flash"],
-        Tier.HEAVY: ["claude-sonnet-4-6", "groq/llama"],
-        Tier.MEDIUM: ["groq/a", "groq/b", "groq/c", "groq/d"],
+        Tier.HEAVY: ["claude-sonnet-4-6", "gemini/flash"],
+        Tier.MEDIUM: ["gemini/flash"],
     }
-    router._wire_nvidia_nim(tiers, fast, heavy, fb)
+    router._wire_nvidia_nim(tiers, fast, heavy, extra)
 
-    # MEDIUM (everyday chat + tools): fast 120B first, then heavy, then fallback, then the rest.
-    assert tiers[Tier.MEDIUM][:3] == [fast, heavy, fb], "fast 120B must lead the chat/tool tier"
-    assert tiers[Tier.MEDIUM][3] == "groq/a", "existing cloud buckets stay behind the NIM brains"
+    # MEDIUM (chat + tools): fast 120B first, then heavy, then the extra buckets, then the base.
+    assert tiers[Tier.MEDIUM][:4] == [fast, heavy, *extra], "fast 120B leads, extras behind it"
+    assert tiers[Tier.MEDIUM][4] == "gemini/flash", "the base free model stays behind the NIM pool"
 
     # REASON: heavy 550B leads, fast behind it, local model demoted to the offline fallback.
     assert tiers[Tier.REASON][:2] == [heavy, fast], "550B reasoner must lead REASON"
@@ -491,7 +492,7 @@ async def test_local_tools_first_falls_back_to_cloud_when_local_down(monkeypatch
     )
     assert resp.choices[0].message.content == "ok"
     assert calls[0]["model"].startswith("ollama_chat/qwen2.5"), "local is tried first"
-    assert any(c["model"].startswith("groq/") for c in calls), "then falls back to cloud"
+    assert any(c["model"].startswith("gemini/") for c in calls), "then falls back to cloud"
 
 
 @pytest.mark.asyncio
@@ -504,7 +505,7 @@ async def test_local_tools_first_does_not_affect_chat_turns(monkeypatch):
     monkeypatch.setattr(router.litellm, "acompletion", fake)
 
     await router.complete([{"role": "user", "content": "how are you?"}], tier=Tier.MEDIUM)
-    assert calls[0]["model"].startswith("groq/"), "chat turns stay cloud-first (no tools)"
+    assert calls[0]["model"].startswith("gemini/"), "chat turns stay cloud-first (no tools)"
 
 
 @pytest.mark.asyncio
@@ -518,7 +519,7 @@ async def test_local_tools_first_disabled_is_cloud_first(monkeypatch):
     await router.complete(
         [{"role": "user", "content": "open youtube"}], tier=Tier.MEDIUM, tools=[_FAKE_TOOL]
     )
-    assert calls[0]["model"].startswith("groq/"), "cloud-first when the flag is off"
+    assert calls[0]["model"].startswith("gemini/"), "cloud-first when the flag is off"
 
 
 # --- prompt caching: cache Claude's static system+tools prefix (cost fix) ----------
@@ -585,7 +586,7 @@ async def test_complete_applies_cache_control_for_claude(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_complete_no_cache_control_for_free_tier(monkeypatch):
-    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")  # cloud-first → a groq model is first
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")  # cloud-first → a free cloud model is first
     seen: list[dict] = []
     monkeypatch.setattr(router.litellm, "acompletion", _capturing_acompletion(seen))
     msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
@@ -640,28 +641,80 @@ def test_cooling_down_and_expiry(_clear_rl):
 
 @pytest.mark.asyncio
 async def test_rate_limited_model_skipped_on_next_call(monkeypatch, _clear_rl):
-    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")             # cloud-first → groq qwen3 first
+    # Mechanism test — inject a controlled 2-model cloud tier so it's independent of which real
+    # free models happen to be wired (the fake acompletion makes the ids arbitrary anyway).
+    monkeypatch.setitem(
+        router.TIER_MODELS, Tier.MEDIUM,
+        ["gemini/gemini-2.5-flash", "gemini/gemini-backup"],
+    )
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")            # cloud-first → first cloud model
     calls: list[str] = []
 
     async def fake(*, model, messages, tools=None, **kw):
         calls.append(model)
-        if model.endswith("qwen3-32b"):
+        if model == "gemini/gemini-2.5-flash":
             raise Exception("litellm.RateLimitError: 429 too many requests")
         return _fake_response()
 
     monkeypatch.setattr(router.litellm, "acompletion", fake)
     msgs = [{"role": "user", "content": "hi"}]
 
-    # Call 1: qwen3-32b 429s → marked cooling down → falls through to a working model.
+    # Call 1: the first cloud model 429s → marked cooling down → falls through to a working one.
     await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL])
-    assert calls[0].endswith("qwen3-32b")
-    assert router._is_cooling_down("groq/qwen/qwen3-32b")
+    assert calls[0] == "gemini/gemini-2.5-flash"
+    assert router._is_cooling_down("gemini/gemini-2.5-flash")
 
     # Call 2: the exhausted model is SKIPPED — no wasted 429 round-trip — yet a model still runs.
     calls.clear()
     await router.complete(msgs, tier=Tier.MEDIUM, tools=[_FAKE_TOOL])
-    assert not any(m.endswith("qwen3-32b") for m in calls), "cooled-down model must be skipped"
+    assert not any(m == "gemini/gemini-2.5-flash" for m in calls), "cooled model must be skipped"
     assert calls, "but it still routed to a working model"
+
+
+@pytest.mark.asyncio
+async def test_empty_response_rolls_to_next_model(monkeypatch, _clear_rl):
+    """A 200 with no content AND no tool_call isn't a usable answer — a reasoning model (the NIM
+    nemotron lead) can burn a tiny max_tokens budget on hidden thinking and emit nothing. The
+    router must roll to the next model, not hand back the blank (fallback otherwise only fires on
+    an exception)."""
+    monkeypatch.setitem(
+        router.TIER_MODELS, Tier.MEDIUM, ["nvidia_nim/empty-one", "gemini/gemini-2.5-flash"],
+    )
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")
+    calls: list[str] = []
+
+    async def fake(*, model, messages, tools=None, **kw):
+        calls.append(model)
+        return _fake_response(content="" if model == "nvidia_nim/empty-one" else "real answer")
+
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+    resp = await router.complete([{"role": "user", "content": "hi"}], tier=Tier.MEDIUM)
+    assert calls == ["nvidia_nim/empty-one", "gemini/gemini-2.5-flash"], "empty rolled forward"
+    assert resp.choices[0].message.content == "real answer"
+
+
+@pytest.mark.asyncio
+async def test_empty_content_with_tool_call_is_kept(monkeypatch, _clear_rl):
+    """A tool-call turn legitimately has empty content but a tool_calls array — that IS a usable
+    answer and must be returned, never mistaken for an empty response and rolled forward."""
+    tc = types.SimpleNamespace(function=types.SimpleNamespace(name="x", arguments="{}"))
+    monkeypatch.setitem(
+        router.TIER_MODELS, Tier.MEDIUM, ["nvidia_nim/tooler", "gemini/gemini-2.5-flash"],
+    )
+    monkeypatch.setenv("ROUTER_LOCAL_TOOLS_FIRST", "0")
+    calls: list[str] = []
+
+    async def fake(*, model, messages, tools=None, **kw):
+        calls.append(model)
+        message = types.SimpleNamespace(content="", tool_calls=[tc])
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)], usage=None)
+
+    monkeypatch.setattr(router.litellm, "acompletion", fake)
+    resp = await router.complete(
+        [{"role": "user", "content": "hi"}], tier=Tier.MEDIUM, tools=[_FAKE_TOOL],
+    )
+    assert calls == ["nvidia_nim/tooler"], "a tool-call response is returned, not rolled forward"
+    assert resp.choices[0].message.tool_calls
 
 
 @pytest.mark.asyncio
@@ -705,7 +758,7 @@ async def test_heavy_tier_stays_free_when_paid_disabled(monkeypatch):
     assert calls, "expected a model call"
     assert not any("claude" in c["model"] for c in calls), \
         f"billed a paid model at the $0 default: {[c['model'] for c in calls]}"
-    assert calls[0]["model"].startswith(("groq/", "gemini/")), "should use a free MEDIUM model"
+    assert calls[0]["model"].startswith(("gemini/", "nvidia_nim/")), "should use free MEDIUM model"
 
 
 @pytest.mark.asyncio

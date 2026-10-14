@@ -67,30 +67,20 @@ TIER_MODELS: dict[Tier, list[str]] = {
     # VRAM between code sessions. Free cloud fallback if Ollama is down.
     Tier.CODE: [
         os.getenv("ROUTER_CODE_MODEL", "ollama_chat/qwen2.5:14b"),
-        "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
     ],
-    # Free tier with headroom. Groq meters EACH model separately (≈100k tokens/day
-    # per model), and tool turns carry big tool schemas — so one model exhausts fast.
-    # Spread across several function-calling-capable Groq models (each its own quota)
-    # plus Gemini, so a rate-limited model rolls to a FRESH one that can still call
-    # tools, instead of collapsing to the local model (which can't function-call).
+    # Free cloud tier (chat + tool/agent turns). GROQ REMOVED 2026-10-14 (its key expired and
+    # the per-model-bucket approach wasn't wanted). The free headroom now comes from the live
+    # NVIDIA NIM brains that _wire_nvidia_nim prepends when the key is set (fast 120B + heavy
+    # 550B + kimi-k3 + gpt-oss-20b — all benchmarked live), backed by Gemini. Gemini is a
+    # separate provider, so it's a genuine extra quota bucket behind the NIM pool; local Ollama
+    # (LOCAL_TOOLS, prepended for tool turns) stays the offline/quota-proof floor. NOTE:
+    # gemini-2.0-flash was dropped too — it 404s (retired id); only 2.5-flash is live.
     Tier.MEDIUM: [
-        # Stronger function-callers, each its own Groq quota bucket → better answers AND
-        # more rate-limit headroom (one exhausting rolls to the next FRESH bucket). Kimi
-        # isn't hosted on Groq, so these qwen3 models are the realistic "bigger brain" pick.
-        "groq/qwen/qwen3-32b",
-        "groq/qwen/qwen3.6-27b",
-        "groq/llama-3.3-70b-versatile",
-        "groq/openai/gpt-oss-120b",  # Groq's recommended replacement for the retired llama-4-scout
         "gemini/gemini-2.5-flash",
-        "groq/llama-3.1-8b-instant",
-        "groq/openai/gpt-oss-20b",
-        "gemini/gemini-2.0-flash",
     ],
     Tier.HEAVY: [
         os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),
-        "groq/llama-3.3-70b-versatile",
     ],
     Tier.MAX: [
         os.getenv("ROUTER_CLOUD_MAX", "claude-opus-4-8"),
@@ -98,43 +88,49 @@ TIER_MODELS: dict[Tier, list[str]] = {
     ],
 }
 
-# Three live, free NVIDIA NIM brains (OpenAI-compatible via LiteLLM), inserted into the free tiers
-# ONLY when the key is present. BENCHMARKED 2026-10-14 on real content + latency (not leaderboard
-# rank — rank ≠ usable): nemotron-3-super-120b (a12b active) answers in ~1s with clean content → the
-# lead chat/tool brain; nemotron-3-ultra-550b (a55b) is the heavy reasoner (~5s); kimi-k3 is a third
-# live fallback for quota headroom. DROPPED: the GLM ids (glm-5.2 → 410 Gone) and the "reasoning"
-# NIM models (glm-5.3, lightning-30b) that return EMPTY content on normal token budgets — they spend
-# the budget on hidden thinking, so they're unusable as a default. Override with the env ids below.
+# The live, free NVIDIA NIM brains (OpenAI-compatible via LiteLLM), inserted into the free tiers
+# ONLY when the key is present. These REPLACE the removed Groq bench. BENCHMARKED 2026-10-14 on real
+# content + latency (not leaderboard rank, and NOT the /v1/models catalog — most listed ids 404 on
+# the free endpoint; only these actually serve): nemotron-3-super-120b (a12b active) answers in ~1s
+# with clean content → the lead chat/tool brain; nemotron-3-ultra-550b (a55b) is the heavy reasoner
+# (~5s); kimi-k3 (~4s) and gpt-oss-20b (~2s) are extra live buckets for headroom. DROPPED: the GLM
+# ids (glm-5.2 → 410 Gone) and the "reasoning" NIM models (glm-5.3, lightning-30b) that return EMPTY
+# on normal token budgets (they spend it on hidden thinking) — unusable as a default. Override the
+# leads with NIM_FAST_MODEL / NIM_HEAVY_MODEL; the extra buckets with NIM_EXTRA_MODELS (CSV).
 # NOTE: NIM EOLs ids without warning (glm-5.1 AND glm-5.2 both went 410 Gone). complete() now cools
 # a dead/410/auth-failed model for a long window (see _is_dead_model_error), so a stale id costs ONE
 # wasted call — not one per turn; `sutra doctor` pings these ids so a dead pick surfaces here.
 _NIM_FAST = os.getenv("NIM_FAST_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
 _NIM_HEAVY = os.getenv("NIM_HEAVY_MODEL", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b")
-_NIM_FALLBACK = os.getenv("NIM_FALLBACK_MODEL", "nvidia_nim/moonshotai/kimi-k3")
+_NIM_EXTRA = [
+    m.strip() for m in os.getenv(
+        "NIM_EXTRA_MODELS",
+        "nvidia_nim/moonshotai/kimi-k3,nvidia_nim/openai/gpt-oss-20b",
+    ).split(",") if m.strip()
+]
 
 
 def _wire_nvidia_nim(
-    tier_models: dict[Tier, list[str]], fast: str, heavy: str, fallback: str
+    tier_models: dict[Tier, list[str]], fast: str, heavy: str, extra: list[str]
 ) -> None:
     """Insert the live free NVIDIA NIM brains into the free tiers. The fast 120B LEADS the everyday
-    chat + tool/agent tier (MEDIUM) so a live, powerful answer comes first — ahead of any
-    rate-limited or expired cloud bucket — with the 550B and kimi behind it for headroom. The 550B
-    reasoner leads REASON (the local model stays behind it as the offline fallback). On HEAVY the
-    NIM brains sit just BEHIND the paid leader at index 0, so ROUTER_ALLOW_PAID still wins when set
-    but a FREE heavy turn gets the 550B, not a dead model."""
-    tier_models[Tier.MEDIUM][0:0] = [fast, heavy, fallback]  # chat/tools: the fast 120B leads
-    tier_models[Tier.REASON][0:0] = [heavy, fast]            # reasoning: 550B first, local behind
-    tier_models[Tier.HEAVY][1:1] = [heavy, fast]             # heavy: behind the paid leader (idx 0)
+    chat + tool/agent tier (MEDIUM) so a live, powerful answer comes first, with the 550B and the
+    `extra` buckets behind it (then Gemini) for headroom now that Groq is gone. The 550B reasoner
+    leads REASON (the local model stays behind it as the offline fallback). On HEAVY the NIM brains
+    sit just BEHIND the paid leader at index 0, so ROUTER_ALLOW_PAID still wins when set but a FREE
+    heavy turn gets the 550B, not a dead model."""
+    tier_models[Tier.MEDIUM][0:0] = [fast, heavy, *extra]  # chat/tools: fast 120B first, then rest
+    tier_models[Tier.REASON][0:0] = [heavy, fast]          # reasoning: 550B first, local behind
+    tier_models[Tier.HEAVY][1:1] = [heavy, fast]           # heavy: behind the paid leader (idx 0)
 
 
 if os.getenv("NVIDIA_NIM_API_KEY"):
-    _wire_nvidia_nim(TIER_MODELS, _NIM_FAST, _NIM_HEAVY, _NIM_FALLBACK)
+    _wire_nvidia_nim(TIER_MODELS, _NIM_FAST, _NIM_HEAVY, _NIM_EXTRA)
 
 _COST_PER_1K: dict[str, tuple[float, float]] = {
     "claude-opus-4-8":                       (0.015, 0.075),
     "claude-sonnet-4-6":                     (0.003, 0.015),
     "claude-haiku-4-5":                      (0.0008, 0.004),
-    "groq/llama-3.3-70b-versatile":          (0.0, 0.0),
     "gemini/gemini-2.5-flash": (0.0, 0.0),
     "ollama/gemma3:4b":                      (0.0, 0.0),
 }
@@ -612,6 +608,18 @@ async def complete(
                     cache_read=cr,
                     cache_write=cw,
                 )
+            # Treat a genuinely EMPTY completion as a failure and roll to the next model. A 200 with
+            # no content AND no tool_call isn't a usable answer — and reasoning models (the NIM
+            # nemotron leads) can burn a tiny max_tokens budget entirely on hidden thinking and emit
+            # nothing. Without this the blank would be handed back as-is (fallback only fires on an
+            # exception). A tool-call turn legitimately has empty content, so that's NOT treated as
+            # empty; streaming is checked by the consumer, not here.
+            msg = getattr(response.choices[0], "message", None) if response.choices else None
+            has_content = bool((getattr(msg, "content", None) or "").strip())
+            has_tool_call = bool(getattr(msg, "tool_calls", None))
+            if msg is not None and not has_content and not has_tool_call:
+                last_err = RuntimeError(f"{model} returned an empty response")
+                continue
             return response
         except Exception as e:  # noqa: BLE001
             if _is_rate_limit_error(e):

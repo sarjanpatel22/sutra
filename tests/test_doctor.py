@@ -96,6 +96,7 @@ def test_nim_model_rows_flags_eol(monkeypatch: pytest.MonkeyPatch) -> None:
     by_name = {r.name: r for r in doctor.nim_model_rows()}
     assert by_name["NIM heavy"].status is Status.WARN and "EOL" in by_name["NIM heavy"].detail
     assert by_name["NIM fast"].status is Status.OK
+    assert by_name["NIM extra1"].status is Status.OK  # kimi-k3, a live extra bucket
 
 
 def test_nim_model_rows_no_key(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -211,12 +211,12 @@ def nim_model_rows() -> list[_Row]:
     if not key:
         return [_Row("NIM brains", Status.WARN,
                      "NVIDIA_NIM_API_KEY unset — free NIM reasoning/tool tier off")]
-    from friday.core.router import _NIM_FALLBACK, _NIM_FAST, _NIM_HEAVY
+    from friday.core.router import _NIM_EXTRA, _NIM_FAST, _NIM_HEAVY
 
+    wired_ids = [("NIM fast", _NIM_FAST), ("NIM heavy", _NIM_HEAVY)]
+    wired_ids += [(f"NIM extra{i + 1}", m) for i, m in enumerate(_NIM_EXTRA)]
     rows: list[_Row] = []
-    for label, wired in (
-        ("NIM fast", _NIM_FAST), ("NIM heavy", _NIM_HEAVY), ("NIM fallback", _NIM_FALLBACK)
-    ):
+    for label, wired in wired_ids:
         model = wired.split("nvidia_nim/", 1)[-1]  # strip the litellm prefix → raw NIM id
         status, detail = _nim_alive(model, key)
         rows.append(_Row(label, status, detail))
