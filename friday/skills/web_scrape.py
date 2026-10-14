@@ -81,6 +81,20 @@ async def _cloudscraper_get(url: str) -> tuple[str | None, int | None, str | Non
         return None, None, f"cloudscraper failed: {e}"
 
 
+_BLOCK_STATUS = (403, 429, 503)
+
+
+def _block_hint(status: int | None) -> str | None:
+    """A WAF/JS-challenge status that even cloudscraper won't clear — point at browser_agent."""
+    if status in _BLOCK_STATUS:
+        return (
+            f"HTTP {status}: looks like a WAF / JS challenge (e.g. Cloudflare Turnstile or a "
+            "managed challenge). The cloudscraper tier only clears the older JS-math challenge, "
+            "not modern ones — use the browser_agent skill (a real browser) to render this URL."
+        )
+    return None
+
+
 async def _get_html(url: str, cloudflare: bool) -> tuple[str | None, int | None, str | None, str]:
     """Return (html, status, error, via). httpx first, cloudscraper on block/force."""
     err: str | None = None
@@ -158,6 +172,10 @@ async def web_scrape(
         return {"error": f"fetch failed: {err}", "url": url, "via": via}
 
     base = {"url": url, "status": status, "via": via, "mode": mode}
+    hint = _block_hint(status)
+    if hint:  # even the fallback couldn't clear it — say so instead of returning a block page
+        base["blocked"] = True
+        base["hint"] = hint
 
     if mode == "json":
         try:
