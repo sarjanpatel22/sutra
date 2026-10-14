@@ -39,7 +39,7 @@ class TTS:
 
         # Read at construction (after load_dotenv). am_adam is Sarjan's pick — a
         # warmer, more natural default than the old af_heart; .env can override.
-        voice = voice or os.getenv("KOKORO_VOICE", "am_adam")
+        voice = voice or os.getenv("KOKORO_VOICE") or "am_adam"
         # 1.0 felt slightly slow/robotic; 1.1 is a more natural conversational pace.
         speed = speed if speed is not None else float(os.getenv("KOKORO_SPEED", "1.1"))
 
@@ -53,7 +53,7 @@ class TTS:
         import onnxruntime as rt
         rt.set_default_logger_severity(3)  # ERROR only
         self._kokoro = Kokoro(model_path, voices_path)
-        self._voice = voice
+        self._voice: str = voice
         self._speed = speed
         self.sample_rate = 24000
 

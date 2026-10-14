@@ -16,11 +16,16 @@ import queue as q_mod
 import re
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from friday.voice.stt import STT
+    from friday.voice.tts import TTS
 
 from friday.gui.orb_client import push as orb_push
 from friday.voice import turn_detector
@@ -96,7 +101,7 @@ def _asks_about_screen(text: str) -> bool:
     return bool(_SCREEN_REQUEST.search(text or ""))
 
 
-def _get_stt():
+def _get_stt() -> STT:
     global _stt_instance
     if _stt_instance is None:
         from friday.voice.stt import STT
@@ -104,7 +109,7 @@ def _get_stt():
     return _stt_instance
 
 
-def _get_tts():
+def _get_tts() -> TTS:
     global _tts_instance
     if _tts_instance is None:
         from friday.voice.tts import TTS
@@ -326,7 +331,7 @@ async def process_audio(
     audio_queue: q_mod.Queue[Any] = q_mod.Queue()
 
     def tts_worker() -> None:
-        def _gen():
+        def _gen() -> Iterator[str]:
             while True:
                 tok = token_queue.get()
                 if tok is None:
@@ -364,7 +369,8 @@ async def process_audio(
             lat.total_ms = (time.monotonic() - t_total) * 1000
             first_audio = False
         _drive_orb_speaking(chunk.audio, sample_rate)  # trace loudness onto the orb
-        return chunk.audio
+        audio_out: np.ndarray = chunk.audio
+        return audio_out
 
     def play_blocking() -> None:
         while True:
@@ -536,7 +542,7 @@ async def process_text(text: str, history: list[dict[str, Any]]) -> str:
     audio_queue: q_mod.Queue[Any] = q_mod.Queue()
 
     def tts_worker() -> None:
-        def _gen():
+        def _gen() -> Iterator[str]:
             while True:
                 tok = token_queue.get()
                 if tok is None:
