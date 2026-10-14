@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -1326,7 +1327,7 @@ def hunt(
 
     from friday.core.hunt import hunt as run_hunt
 
-    def _obs(kind: str, data: dict) -> None:
+    def _obs(kind: str, data: dict[str, Any]) -> None:
         if kind == "enumerated":
             console.print(f"  [cyan]{data['count']} subdomain(s) found, "
                           f"{data.get('in_scope', data['count'])} in scope[/cyan]")
@@ -1835,7 +1836,7 @@ def _mcp_audit_batch(batch_file: str, reachable_only: bool) -> None:
         console.print("[yellow]batch file has no URLs[/yellow]")
         raise typer.Exit(0)
 
-    results: list[tuple[str, dict]] = []
+    results: list[tuple[str, dict[str, Any]]] = []
     with console.status(f"[cyan]scanning {len(urls)} repos …[/cyan]") as status:
         for i, url in enumerate(urls, 1):
             name = url.rstrip("/").split("/")[-1].removesuffix(".git")
@@ -2298,7 +2299,7 @@ def _render_plan(p: Any) -> None:
             console.print(f"     [dim]{s.result[:140]}[/dim]")
 
 
-def _plan_confirm(yes: bool):
+def _plan_confirm(yes: bool) -> Callable[[str, dict[str, Any]], Awaitable[bool]]:
     """Hands-free auto-approve with -y, else an interactive y/n per gated step."""
     async def _auto(skill: str, args: dict[str, Any]) -> bool:
         console.print(f"     [dim]↳ auto-approved {skill}[/dim]")

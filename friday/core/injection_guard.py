@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import Any
 
 _log = logging.getLogger("sutra.injection_guard")
 
@@ -115,7 +116,7 @@ def detect_injection(text: str) -> list[str]:
     return [d.category for d in scan(text)]
 
 
-def verdict(text: str) -> dict[str, object]:
+def verdict(text: str) -> dict[str, Any]:
     """A structured verdict for the CLI / skill: whether `text` looks like an injection, an overall
     severity + 0–1 score, the categories hit, and each detection. Heuristic, no model call."""
     dets = scan(text)
