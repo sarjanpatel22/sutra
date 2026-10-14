@@ -34,6 +34,7 @@ dev = [
     "mypy>=1.10",
 ]
 search = ["httpx>=0.27"]
+scrape = ["beautifulsoup4>=4.12", "lxml>=5.0", "cloudscraper>=1.2"]
 voice = [
     "faster-whisper>=1.0",
     "kokoro-onnx>=0.4",
