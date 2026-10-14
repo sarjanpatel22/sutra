@@ -109,3 +109,16 @@ async def test_tables_without_bs4(monkeypatch):
     monkeypatch.setattr(ws_mod, "_HAS_BS4", False)
     out = await web_scrape("https://x", mode="tables")
     assert "error" in out and "scrape" in out["error"]
+
+
+async def test_block_hint_points_to_browser_agent(monkeypatch):
+    # httpx 403 -> escalates to cloudscraper, which also hits a JS wall (403 body).
+    monkeypatch.setattr(ws_mod.httpx, "AsyncClient", _client(_Resp("blocked", status=403)))
+
+    async def _cf(url):
+        return "<html>Security Check — please enable JavaScript</html>", 403, None
+
+    monkeypatch.setattr(ws_mod, "_cloudscraper_get", _cf)
+    out = await web_scrape("https://www.g2.com", mode="text")
+    assert out["status"] == 403 and out["via"] == "cloudscraper"
+    assert out["blocked"] is True and "browser_agent" in out["hint"]
