@@ -85,7 +85,7 @@ async def dns_lookup(name: str, record_type: str = "A") -> dict[str, Any]:
             infos = await asyncio.to_thread(socket.getaddrinfo, name, None, fam)
         except OSError as e:
             return {"error": f"resolve failed: {e}", "name": name, "type": rtype}
-        records = sorted({i[4][0] for i in infos})
+        records = sorted({str(i[4][0]) for i in infos})
         return {"name": name, "type": rtype, "records": records,
                 "note": "dig not installed — stdlib A/AAAA only"}
     return {"error": f"'dig' is not installed — only A/AAAA resolvable here, not {rtype}"}
@@ -1010,11 +1010,13 @@ def _parse_sslscan(xml_text: str) -> dict[str, Any]:
         findings.append({"id": f"tls-cert-weaksig-{at}", "name": f"Weak cert signature: {sig}",
                          "severity": "medium", "matched_at": at,
                          "description": f"{host}'s certificate is signed with {sig}."})
-    pk = cert.get("pk") or {}
-    if pk.get("type") == "RSA" and pk.get("bits", "").isdigit() and int(pk["bits"]) < 2048:
-        findings.append({"id": f"tls-cert-weakkey-{at}", "name": f"Weak RSA key: {pk['bits']}-bit",
+    pk_info: dict[str, str] = cert.get("pk") or {}
+    bits = pk_info.get("bits", "")
+    if pk_info.get("type") == "RSA" and bits.isdigit() and int(bits) < 2048:
+        findings.append({"id": f"tls-cert-weakkey-{at}",
+                         "name": f"Weak RSA key: {bits}-bit",
                          "severity": "medium", "matched_at": at,
-                         "description": f"{host}'s certificate uses a {pk['bits']}-bit RSA key."})
+                         "description": f"{host}'s certificate uses a {bits}-bit RSA key."})
     return {"host": host, "port": port, "protocols_enabled": enabled,
             "weak_ciphers": weak, "certificate": cert, "findings": findings}
 
