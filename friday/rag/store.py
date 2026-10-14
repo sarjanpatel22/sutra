@@ -63,7 +63,8 @@ def embed(texts: list[str], kind: str = "document") -> np.ndarray:
     if not embs:
         raise EmbedUnavailable("no embeddings returned")
     m = np.asarray(embs, dtype=np.float32)
-    return m / np.clip(np.linalg.norm(m, axis=1, keepdims=True), 1e-8, None)
+    normed: np.ndarray = m / np.clip(np.linalg.norm(m, axis=1, keepdims=True), 1e-8, None)
+    return normed
 
 
 def warm() -> bool:

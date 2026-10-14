@@ -66,7 +66,8 @@ def _fetch_body(host: str) -> str:
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310 — authorized target
-                return r.read(500_000).decode("utf-8", "replace")
+                body: str = r.read(500_000).decode("utf-8", "replace")
+                return body
         except urllib.error.HTTPError as e:
             try:
                 return e.read(500_000).decode("utf-8", "replace")

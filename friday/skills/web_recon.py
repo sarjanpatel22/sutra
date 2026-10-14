@@ -97,7 +97,7 @@ async def web_enum(url: str, mode: str = "dirs", wordlist: str = "") -> dict[str
         rc, out, err = await _run(cmd, timeout=115)
         if rc != 0 and not out:
             return {"error": f"gobuster failed: {err.strip()[:200]}", "url": url}
-        found = [
+        found: list[dict[str, Any]] = [
             {"path": m.group(1) if m.group(1).startswith("/") else "/" + m.group(1),
              "status": int(m.group(2)),
              "size": int(m.group(3)) if m.group(3) else None}
@@ -243,7 +243,8 @@ async def _js_endpoints(js_urls: list[str], base: str) -> list[str]:
         def _fetch(u: str = ju) -> str:
             try:
                 with urllib.request.urlopen(u, timeout=8) as r:  # noqa: S310
-                    return r.read(3_000_000).decode("utf-8", "replace")
+                    text: str = r.read(3_000_000).decode("utf-8", "replace")
+                    return text
             except (urllib.error.URLError, OSError):
                 return ""
 

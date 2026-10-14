@@ -157,7 +157,8 @@ class FileActivityCollector(Collector):
 
 def _git(repo: Path, *args: str) -> str:
     try:
-        return subprocess.run(["git", "-C", str(repo), *args], **_RUN).stdout.strip()
+        out: str = subprocess.run(["git", "-C", str(repo), *args], **_RUN).stdout.strip()
+        return out
     except Exception:  # noqa: BLE001
         return ""
 

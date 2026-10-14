@@ -100,7 +100,8 @@ blocks you, use "done" and say so."""
 
 async def _mark(page: Any, cap: int) -> list[dict[str, Any]]:
     try:
-        return await page.evaluate(_MARK_JS, cap)
+        marked: list[dict[str, Any]] = await page.evaluate(_MARK_JS, cap)
+        return marked
     except Exception:  # noqa: BLE001
         return []
 

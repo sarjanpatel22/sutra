@@ -125,7 +125,11 @@ async def idor_check(
     method = (method or "GET").strip().upper()
     data = body.encode() if body else None
 
-    def _run_all() -> tuple[tuple, tuple | None, tuple | None]:
+    def _run_all() -> tuple[
+        tuple[int, str, str | None],
+        tuple[int, str, str | None] | None,
+        tuple[int, str, str | None] | None,
+    ]:
         a = _fetch(url, method, _parse_auth(auth_a), data)
         b = _fetch(url, method, _parse_auth(auth_b), data) if auth_b else None
         anon = _fetch(url, method, {}, data) if test_anon else None

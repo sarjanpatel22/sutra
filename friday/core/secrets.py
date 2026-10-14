@@ -43,7 +43,7 @@ def get_secret(name: str, default: str | None = None) -> str | None:
         try:
             val = kr.get_password(_SERVICE, name)  # type: ignore[attr-defined]
             if val:
-                return val
+                return str(val)
         except Exception as e:  # noqa: BLE001 — locked/missing backend → fall back to env
             logger.debug("keyring read failed for %s: %s", name, e)
     return os.getenv(name, default)

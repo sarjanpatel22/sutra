@@ -556,7 +556,7 @@ async def redteam_llm(
         if not _flags["first"]:
             _pace(delay_ms)   # no-op unless delay_ms>0 (rate-limit compliance on a live target)
         _flags["first"] = False
-        r = fn()
+        r: str = fn()
         _counts["calls"] += 1
         if not r:             # a 429 / timeout / empty reply — track it, don't silently drop it
             _counts["blanks"] += 1

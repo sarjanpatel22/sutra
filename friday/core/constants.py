@@ -16,7 +16,7 @@ import os
 
 # Free multimodal model behind every vision path. Gemini Flash (free tier) replaced Groq's
 # retired llama-4-scout. Override via VISION_MODEL; GROQ_VISION_MODEL kept as a legacy alias.
-VISION_MODEL = os.getenv("VISION_MODEL") or os.getenv(
-    "GROQ_VISION_MODEL", "gemini/gemini-2.5-flash"
+VISION_MODEL = (
+    os.getenv("VISION_MODEL") or os.getenv("GROQ_VISION_MODEL") or "gemini/gemini-2.5-flash"
 )
 GROQ_VISION_MODEL = VISION_MODEL  # legacy alias — still imported by the vision skills

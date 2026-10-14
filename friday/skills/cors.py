@@ -83,7 +83,7 @@ async def check_cors(url: str, origins: str = "") -> dict[str, Any]:
         url = "http://" + url
     test_origins = [o.strip() for o in origins.split(",") if o.strip()] or _origins(url)
 
-    def _run() -> list[tuple[str, tuple]]:
+    def _run() -> list[tuple[str, tuple[int, str | None, str | None, str | None]]]:
         return [(o, _probe(url, o)) for o in test_origins]
 
     probed = await asyncio.to_thread(_run)

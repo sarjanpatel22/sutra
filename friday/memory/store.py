@@ -245,7 +245,9 @@ class MemoryStore:
         # Reuse the local LLM as reranker so no OpenAI key is ever required.
         reranker = OpenAIRerankerClient(
             config=LLMConfig(api_key=_LLM_API_KEY, model=_LLM_MODEL, base_url=_OLLAMA_BASE),
-            client=llm,
+            # Intentionally reuse the local generic LLM client as the reranker so no OpenAI key
+            # is needed; graphiti takes it at runtime, its stub only lists the OpenAI client types.
+            client=llm,  # type: ignore[arg-type]
         )
         # database MUST be the group_id: Graphiti routes WRITES (add_episode) to a
         # graph named after the group_id, but its search execute_query reads from
@@ -394,11 +396,11 @@ class MemoryStore:
 
         episode_uuids: list[str] = []
         seen: set[str] = set()
-        for e in edges:
-            fact = getattr(e, "fact", None)
+        for edge in edges:
+            fact = getattr(edge, "fact", None)
             if fact:
                 result["matched"].append(fact)
-            for uid in getattr(e, "episodes", None) or []:
+            for uid in getattr(edge, "episodes", None) or []:
                 if uid not in seen:
                     seen.add(uid)
                     episode_uuids.append(uid)

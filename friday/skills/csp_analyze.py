@@ -33,7 +33,7 @@ def _fetch_csp(url: str) -> tuple[str | None, int] | str:
 def _read_csp(headers: Any) -> str | None:
     for k, v in headers.items():
         if k.lower() == "content-security-policy":
-            return v
+            return str(v)
     return None
 
 
