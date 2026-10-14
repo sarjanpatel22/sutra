@@ -7,7 +7,7 @@ on:
 
 jobs:
   verify:
-    name: ruff · gate-audit · tests
+    name: ruff · mypy · gate-audit · tests
     runs-on: ubuntu-latest
     timeout-minutes: 15  # backstop: never let a hung step (e.g. a stalled apt mirror) run for hours
     steps:
@@ -43,6 +43,13 @@ jobs:
       # The same verify gate run by hand before every change — now enforced on every push.
       - name: Ruff (lint)
         run: ruff check friday/ tests/
+
+      # Static types, enforced. pyproject sets strict=true + ignore_missing_imports, so the
+      # heavy optional deps (voice/memory/action/scrape) that CI doesn't install are treated
+      # as Any rather than erroring — the package was brought to zero strict errors on exactly
+      # this basis, so a regression here means a real new type hole, not an env difference.
+      - name: Mypy (strict types)
+        run: mypy friday
 
       - name: Confirmation-gate audit
         run: python scripts/audit_confirmation.py

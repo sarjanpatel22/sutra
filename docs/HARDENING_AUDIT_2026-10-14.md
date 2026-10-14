@@ -47,26 +47,37 @@ Branch: `harden-sutra` (stacked on the NIM-router work). **Not pushed** — awai
 
 Result: full suite **1886 passing** (+24 tests), ruff clean, **mypy ~160 → 71** (56% down).
 
+## Update — second pass (same day): mypy --strict driven to ZERO + wired into CI
+Continued in focused, per-area commits (each green, ruff + targeted tests before commit):
+- voice package (pipeline.py 13 + vad/tts): lazy STT/TTS getters typed via TYPE_CHECKING,
+  Iterator[str] generators, Kokoro voice resolved to guaranteed str.
+- recon + recon_assets (11): stopped reusing `pk` for both an XML Element and the parsed
+  dict; str()-ed the getaddrinfo sockaddr; widened the gather guard to BaseException.
+- cli.py (6) + injection_guard.verdict: widened the too-tight `dict[str, object]` return.
+- gui + vision (12): Popen[bytes]; a real def for the agent observe hook; **CardsWidget
+  validator was silently dropping CardItem instances — fixed**; ImageMagick-binary narrowing.
+- final 27 across skills/core/memory/rag/ambient/watch: two real smells fixed (forget()
+  reused the deleted `except as e` name; agentic_target coerces server_address to str/int),
+  root-caused the watch model errors to `constants.VISION_MODEL` (the
+  `getenv(x) or getenv(y, default)` idiom types as str|None under this mypy — rewrote as
+  `... or ... or "literal"`); shodan now guards `ip is None`; the rest mechanical.
+
+**`mypy --strict` now reports `Success: no issues found in 159 source files` (0 errors).**
+Verified against a *simulated CI install* (optional voice/memory/action/scrape deps forced
+to Any via follow_imports=skip) — also 0, so the one graphiti-boundary cast is env-safe
+(used `cast(Any, llm)`, not a bare `type: ignore`, so it can't become an "unused ignore"
+in CI where graphiti is absent).
+
+**Wired into CI** (`.github/workflows/ci.yml`): new `Mypy (strict types)` step between Ruff
+and the gate-audit; job renamed `ruff · mypy · gate-audit · tests`. The rot can't recur.
+
 ## Key finding
-Almost every remaining type error is **loose typing / variable-name reuse, not a live
-bug** — which is reassuring about runtime correctness. The genuine latent-bug candidates
-found (dom_xss maybe-None `.group`, the dedup idioms, calc operator confusion) were all
-either safe-at-runtime or fixed. A few categories below (`arg-type`, `attr-defined`,
-`str`) still deserve a line-by-line look for the rare real one.
+Almost every type error cleared was **loose typing / variable-name reuse, not a live
+bug** — reassuring about runtime correctness. The handful of genuine issues (dom_xss
+maybe-None `.group`, dedup idioms, calc operator confusion, the CardsWidget validator
+dropping model instances, the `except as e` reuse) were all fixed or were safe-at-runtime.
 
 ## Remaining (for the next session)
-### mypy --strict: 71 errors in 34 files
-By file (top): voice/pipeline.py 13 · skills/recon.py 9 · cli.py 6 · vision/perceive.py 3 ·
-gui/server.py 3 · then ~29 files with 1–2 each.
-By category: no-any-return 14 · type-arg 12 · no-untyped-call 10 · arg-type 9 ·
-no-untyped-def 5 · assignment 5 · str 3 · misc 3.
-- `voice/pipeline.py` (13) is the biggest single file left — needs a focused pass
-  (mostly return-type annotations + a few no-untyped-call on the pipecat API).
-- `arg-type` (9) + `assignment` (5) — review each for a real bug (most are the
-  numpy-ndarray / optional-dep boundaries, loose but not live bugs).
-- `recon.py` (9): the `cert`/`pk` Element-vs-dict typing needs the function annotated.
-- `no-any-return` (14) + `type-arg` (12) + `no-untyped-call` (10) are mostly mechanical.
-
 ### Skills still without dedicated tests (6, down from 9)
 audit, calc, clock, delegate, desktop, preferences. (calc/clock are nearly trivial;
 desktop + delegate are the meaningful ones.)
@@ -74,7 +85,4 @@ desktop + delegate are the meaningful ones.)
 ### Not yet done
 - Per-skill *behavioral* deep-review beyond types/tests (adversarial gap-fill like the
   earlier geo/fleet pass) across all 82 skills — only types + the security-sensitive
-  skills were covered this pass.
-- **Wire `mypy --strict` into CI** — the durable fix so this can't rot again. Do it
-  **once errors hit 0** (a hard gate at 100 would just make CI red). Until then it's the
-  tracking number above.
+  skills were covered. This is the big remaining item.

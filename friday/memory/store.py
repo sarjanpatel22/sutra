@@ -16,7 +16,7 @@ import logging
 import os
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +247,9 @@ class MemoryStore:
             config=LLMConfig(api_key=_LLM_API_KEY, model=_LLM_MODEL, base_url=_OLLAMA_BASE),
             # Intentionally reuse the local generic LLM client as the reranker so no OpenAI key
             # is needed; graphiti takes it at runtime, its stub only lists the OpenAI client types.
-            client=llm,  # type: ignore[arg-type]
+            # cast (not type: ignore) so this is env-independent — graphiti is an optional dep and
+            # becomes Any when it's absent (e.g. in CI), which would make a bare ignore "unused".
+            client=cast(Any, llm),
         )
         # database MUST be the group_id: Graphiti routes WRITES (add_episode) to a
         # graph named after the group_id, but its search execute_query reads from
