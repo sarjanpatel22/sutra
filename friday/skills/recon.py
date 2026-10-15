@@ -68,6 +68,8 @@ async def dns_lookup(name: str, record_type: str = "A") -> dict[str, Any]:
     rtype = (record_type or "A").strip().upper()
     if not name:
         return {"error": "no name to look up"}
+    if name.startswith("-"):  # never a real hostname; blocks dig option-injection (e.g. -f)
+        return {"error": f"invalid name {name!r}"}
     if rtype not in _DNS_TYPES:
         return {"error": f"unsupported record_type {record_type!r}; "
                          f"use one of {', '.join(_DNS_TYPES)}"}
@@ -108,6 +110,8 @@ async def whois(query: str) -> dict[str, Any]:
     query = (query or "").strip()
     if not query:
         return {"error": "no domain/IP to look up"}
+    if query.startswith("-"):  # never a real domain/IP; blocks whois option-injection (e.g. -h)
+        return {"error": f"invalid query {query!r}"}
     binary = shutil.which("whois")
     if not binary:
         return {"error": "'whois' is not installed"}
@@ -247,10 +251,15 @@ async def searchsploit(term: str) -> dict[str, Any]:
     term = (term or "").strip()
     if not term:
         return {"error": "no search term"}
+    # Search keywords are positive terms; a token beginning with '-' would be parsed as a
+    # searchsploit option (e.g. --nmap reads a file) rather than a query word — reject it.
+    tokens = term.split()
+    if any(t.startswith("-") for t in tokens):
+        return {"error": f"invalid search term {term!r} — no option-style tokens"}
     binary = shutil.which("searchsploit")
     if not binary:
         return {"error": "'searchsploit' is not installed (part of the exploitdb package)"}
-    rc, out, err = await _run([binary, "-j", *term.split()], timeout=20)
+    rc, out, err = await _run([binary, "-j", *tokens], timeout=20)
     if not out:
         return {"error": f"searchsploit failed: {err.strip()[:200]}", "term": term}
     try:

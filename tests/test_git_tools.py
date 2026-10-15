@@ -69,3 +69,21 @@ async def test_rejects_non_repo_and_outside_home(repo):
     plain.mkdir()
     assert "not a git repository" in (await git_status(str(plain)))["error"]
     assert "error" in await git_status("/tmp")
+
+
+async def test_diff_ref_cannot_option_inject(repo, tmp_path):
+    # A ref beginning with '-' must not be parsed as a git option: `--output=FILE` would
+    # otherwise make `git diff` write to an arbitrary path (an unintended write from a read).
+    (repo / "a.txt").write_text("two\n")
+    sentinel = tmp_path / "pwned"
+    out = await git_diff(str(repo), ref=f"--output={sentinel}")
+    assert not sentinel.exists()  # the file write was prevented
+    assert "error" in out  # git rejected the bogus ref instead
+
+
+async def test_diff_legit_ref_still_works(repo):
+    # The --end-of-options guard must not break ordinary refs/ranges.
+    (repo / "a.txt").write_text("two\n")
+    await git_commit("second", repo=str(repo), paths=["a.txt"])
+    out = await git_diff(str(repo), ref="HEAD~1")
+    assert "+two" in out["diff"] and out["empty"] is False

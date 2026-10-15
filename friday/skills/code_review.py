@@ -51,7 +51,9 @@ async def code_review(
     if staged:
         args.append("--staged")
     if ref:
-        args.append(ref)
+        # --end-of-options: a ref beginning with '-' (e.g. "--output=FILE") must not be
+        # parsed as a git option, or this read could write an arbitrary file. See git_diff.
+        args += ["--end-of-options", ref]
     code, diff, err = await _git(p, *args)
     if code != 0:
         return {"error": err.strip() or f"git diff failed ({code})"}

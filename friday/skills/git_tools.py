@@ -92,7 +92,11 @@ async def git_diff(
     if staged:
         args.append("--staged")
     if ref:
-        args.append(ref)
+        # --end-of-options stops git parsing a ref that begins with '-' as an option
+        # (e.g. a crafted ref="--output=FILE" would otherwise make `git diff` write to an
+        # arbitrary file — an unintended write from this auto_confirm read). Refs/ranges
+        # like HEAD~1 or main...HEAD are unaffected.
+        args += ["--end-of-options", ref]
     if path:
         args += ["--", path]
     code, out, err = await _git(p, *args)
