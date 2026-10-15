@@ -12,6 +12,7 @@ Pure-stdlib (urllib + regex), CI-safe, $0.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import re
 import urllib.error
 import urllib.request
@@ -43,7 +44,7 @@ def _fetch(url: str) -> tuple[str, list[str], str | None]:
             return e.read(2_000_000).decode("utf-8", "replace"), cookies, None
         except Exception:  # noqa: BLE001
             return "", [], None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return "", [], str(e)[:160]
 
 

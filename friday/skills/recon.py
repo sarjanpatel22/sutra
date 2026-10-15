@@ -68,6 +68,8 @@ async def dns_lookup(name: str, record_type: str = "A") -> dict[str, Any]:
     rtype = (record_type or "A").strip().upper()
     if not name:
         return {"error": "no name to look up"}
+    if name.startswith("-"):  # never a real hostname; blocks dig option-injection (e.g. -f)
+        return {"error": f"invalid name {name!r}"}
     if rtype not in _DNS_TYPES:
         return {"error": f"unsupported record_type {record_type!r}; "
                          f"use one of {', '.join(_DNS_TYPES)}"}
@@ -85,7 +87,7 @@ async def dns_lookup(name: str, record_type: str = "A") -> dict[str, Any]:
             infos = await asyncio.to_thread(socket.getaddrinfo, name, None, fam)
         except OSError as e:
             return {"error": f"resolve failed: {e}", "name": name, "type": rtype}
-        records = sorted({i[4][0] for i in infos})
+        records = sorted({str(i[4][0]) for i in infos})
         return {"name": name, "type": rtype, "records": records,
                 "note": "dig not installed — stdlib A/AAAA only"}
     return {"error": f"'dig' is not installed — only A/AAAA resolvable here, not {rtype}"}
@@ -108,6 +110,8 @@ async def whois(query: str) -> dict[str, Any]:
     query = (query or "").strip()
     if not query:
         return {"error": "no domain/IP to look up"}
+    if query.startswith("-"):  # never a real domain/IP; blocks whois option-injection (e.g. -h)
+        return {"error": f"invalid query {query!r}"}
     binary = shutil.which("whois")
     if not binary:
         return {"error": "'whois' is not installed"}
@@ -247,10 +251,15 @@ async def searchsploit(term: str) -> dict[str, Any]:
     term = (term or "").strip()
     if not term:
         return {"error": "no search term"}
+    # Search keywords are positive terms; a token beginning with '-' would be parsed as a
+    # searchsploit option (e.g. --nmap reads a file) rather than a query word — reject it.
+    tokens = term.split()
+    if any(t.startswith("-") for t in tokens):
+        return {"error": f"invalid search term {term!r} — no option-style tokens"}
     binary = shutil.which("searchsploit")
     if not binary:
         return {"error": "'searchsploit' is not installed (part of the exploitdb package)"}
-    rc, out, err = await _run([binary, "-j", *term.split()], timeout=20)
+    rc, out, err = await _run([binary, "-j", *tokens], timeout=20)
     if not out:
         return {"error": f"searchsploit failed: {err.strip()[:200]}", "term": term}
     try:
@@ -1010,11 +1019,13 @@ def _parse_sslscan(xml_text: str) -> dict[str, Any]:
         findings.append({"id": f"tls-cert-weaksig-{at}", "name": f"Weak cert signature: {sig}",
                          "severity": "medium", "matched_at": at,
                          "description": f"{host}'s certificate is signed with {sig}."})
-    pk = cert.get("pk") or {}
-    if pk.get("type") == "RSA" and pk.get("bits", "").isdigit() and int(pk["bits"]) < 2048:
-        findings.append({"id": f"tls-cert-weakkey-{at}", "name": f"Weak RSA key: {pk['bits']}-bit",
+    pk_info: dict[str, str] = cert.get("pk") or {}
+    bits = pk_info.get("bits", "")
+    if pk_info.get("type") == "RSA" and bits.isdigit() and int(bits) < 2048:
+        findings.append({"id": f"tls-cert-weakkey-{at}",
+                         "name": f"Weak RSA key: {bits}-bit",
                          "severity": "medium", "matched_at": at,
-                         "description": f"{host}'s certificate uses a {pk['bits']}-bit RSA key."})
+                         "description": f"{host}'s certificate uses a {bits}-bit RSA key."})
     return {"host": host, "port": port, "protocols_enabled": enabled,
             "weak_ciphers": weak, "certificate": cert, "findings": findings}
 

@@ -29,7 +29,7 @@ class History:
         self._key = f"sutra:history:{session}"
         self._max = max_turns
         self._mem: list[dict[str, Any]] = []
-        self._redis = self._connect(url or os.getenv("REDIS_URL", "redis://localhost:6380"))
+        self._redis = self._connect(url or os.getenv("REDIS_URL") or "redis://localhost:6380")
 
     @staticmethod
     def _connect(url: str) -> Any:

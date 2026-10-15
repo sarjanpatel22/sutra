@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -56,7 +57,7 @@ def _fetch(
         except Exception:  # noqa: BLE001
             body = ""
         return e.code, body, None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, "", str(e)[:160]
 
 
@@ -125,7 +126,11 @@ async def idor_check(
     method = (method or "GET").strip().upper()
     data = body.encode() if body else None
 
-    def _run_all() -> tuple[tuple, tuple | None, tuple | None]:
+    def _run_all() -> tuple[
+        tuple[int, str, str | None],
+        tuple[int, str, str | None] | None,
+        tuple[int, str, str | None] | None,
+    ]:
         a = _fetch(url, method, _parse_auth(auth_a), data)
         b = _fetch(url, method, _parse_auth(auth_b), data) if auth_b else None
         anon = _fetch(url, method, {}, data) if test_anon else None

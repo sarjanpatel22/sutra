@@ -97,7 +97,7 @@ _KIOSK_BROWSERS = (
 )
 
 
-def _launch_fullscreen(url: str) -> subprocess.Popen | None:
+def _launch_fullscreen(url: str) -> subprocess.Popen[bytes] | None:
     """Open url full-screen (borderless --app) in a Chromium-family browser. None if none.
 
     Hard-won flags for a *stable* ambient window:
@@ -159,7 +159,7 @@ def serve(
 def serve_background(
     host: str = "127.0.0.1", port: int = 8710,
     open_browser: bool = True, fullscreen: bool = True,
-) -> tuple[ThreadingHTTPServer | None, subprocess.Popen | None]:
+) -> tuple[ThreadingHTTPServer | None, subprocess.Popen[bytes] | None]:
     """Start the orb server in a daemon thread (non-blocking) and open the window.
 
     Returns (httpd, browser_proc) so the caller can httpd.shutdown() / proc.terminate()
@@ -175,7 +175,7 @@ def serve_background(
     except OSError:
         pass  # already serving on this port — reuse it for the window
     url = f"http://{host}:{port}/"
-    proc: subprocess.Popen | None = None
+    proc: subprocess.Popen[bytes] | None = None
     if open_browser:
         proc = _launch_fullscreen(url) if fullscreen else None
         if proc is None:

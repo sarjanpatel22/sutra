@@ -141,7 +141,7 @@ class _Handler(BaseHTTPRequestHandler):
                 data = fetch_graph()
                 self._send(200, json.dumps(data).encode(), "application/json")
             except Exception as e:  # noqa: BLE001 — surface DB-down to the UI
-                payload = {"error": str(e), "nodes": [], "links": [], "stats": {}}
+                payload: dict[str, Any] = {"error": str(e), "nodes": [], "links": [], "stats": {}}
                 self._send(200, json.dumps(payload).encode(), "application/json")
             return
         if path == "/api/recall":

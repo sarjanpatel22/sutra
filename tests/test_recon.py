@@ -171,6 +171,22 @@ async def test_searchsploit_missing_binary(monkeypatch):
     assert "error" in await recon.searchsploit("anything")
 
 
+# --- argv option-injection guards (reject '-'-leading positionals before subprocess) ---
+
+async def test_option_injection_guards_short_circuit(monkeypatch):
+    # A '-'-leading target/term would be parsed as a tool OPTION (dig -f, whois -h,
+    # searchsploit --nmap) rather than a lookup value. The guard must reject it BEFORE any
+    # subprocess runs — so _run is replaced with a tripwire that fails if it's ever reached.
+    async def boom(cmd, timeout=20):
+        raise AssertionError(f"subprocess must not run for a guarded input: {cmd!r}")
+
+    monkeypatch.setattr(recon, "_run", boom)
+    monkeypatch.setattr(recon.shutil, "which", lambda b: f"/usr/bin/{b}")
+    assert "error" in await recon.dns_lookup("--output=/tmp/x", "A")
+    assert "error" in await recon.whois("-h evil")
+    assert "error" in await recon.searchsploit("vsftpd --nmap /etc/passwd")
+
+
 # --- find_subdomains (passive OSINT — mocked subprocess) ----------------------------
 
 async def test_find_subdomains_parses_and_cleans(monkeypatch):

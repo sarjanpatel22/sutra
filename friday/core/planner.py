@@ -24,12 +24,13 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from friday.core.router import Tier, complete
 
 # Hooks threaded into step execution (same shapes the agent uses).
-ConfirmFn = Callable[[str, dict], Awaitable[bool]]   # (skill, args) -> allow?
-ObserveFn = Callable[[str, dict], None]              # (kind, data) live progress
+ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]   # (skill, args) -> allow?
+ObserveFn = Callable[[str, dict[str, Any]], None]              # (kind, data) live progress
 
 _PLANS_DIR = Path.home() / ".local" / "share" / "friday" / "plans"
 
@@ -317,7 +318,7 @@ def _named_paths(description: str) -> list[Path]:
     return [Path(m.rstrip(".,;:)")).expanduser() for m in _PATH_RE.findall(description or "")]
 
 
-def _succeeded_tools(history: list[dict]) -> set[str]:
+def _succeeded_tools(history: list[dict[str, Any]]) -> set[str]:
     """Names of tools whose call returned a NON-error result in this step (declined/blocked/errored
     calls don't count — nothing actually happened)."""
     names: set[str] = set()
@@ -327,7 +328,7 @@ def _succeeded_tools(history: list[dict]) -> set[str]:
     return names
 
 
-def _step_progressed(description: str, history: list[dict]) -> bool:
+def _step_progressed(description: str, history: list[dict[str, Any]]) -> bool:
     """Did the action step actually DO its job (vs. only narrate it)? At least one tool must have
     SUCCEEDED; and a WRITE step that names a file must really have written it — a write tool
     succeeded, or the named file now exists on disk (covers a shell-written file). This is the
@@ -366,7 +367,7 @@ def _step_prompt(plan: Plan, step: Step) -> str:
     )
 
 
-def _step_result_text(reply: str, history: list[dict], cap: int = 1600) -> str:
+def _step_result_text(reply: str, history: list[dict[str, Any]], cap: int = 1600) -> str:
     """What a finished step hands to LATER steps. The model's prose reply alone loses the real DATA
     a tool produced (the actual open ports, the search hits) — so a later 'write it up' step works
     blind and a weak model then FABRICATES plausible output (the live phantom: it invented Ubuntu
@@ -617,7 +618,7 @@ async def run_plan_spoken(
     n = len(plan.steps)
     speak(f"Okay — {n} step{'s' if n != 1 else ''}. Starting now.")
 
-    def _observe(kind: str, data: dict) -> None:
+    def _observe(kind: str, data: dict[str, Any]) -> None:
         if kind == "step_start":
             speak(f"Step {data.get('n')}: {_shorten(str(data.get('description', '')))}.")
 

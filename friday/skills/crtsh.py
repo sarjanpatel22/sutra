@@ -11,6 +11,7 @@ alongside find_subdomains. PASSIVE: queries CT services, never the target. Pure-
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import time
 import urllib.error
@@ -44,7 +45,7 @@ def _fetch(url: str, attempts: int = 3) -> tuple[str, str | None]:
             last = f"HTTP {e.code}"
             if e.code not in _RETRY_CODES:
                 return "", last
-        except (urllib.error.URLError, OSError) as e:
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
             last = str(e)[:120]
         if i < attempts - 1:
             time.sleep(0.4 * (i + 1))  # brief backoff before retry

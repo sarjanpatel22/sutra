@@ -41,7 +41,7 @@ except ImportError:
     _HAS_BS4 = False
 
 
-def _soup(markup: str):
+def _soup(markup: str) -> Any:
     from bs4 import BeautifulSoup
 
     try:
@@ -61,6 +61,12 @@ def _links_stdlib(markup: str, base: str) -> list[str]:
     return [urljoin(base, h) for h in re.findall(r'href=["\']([^"\']+)["\']', markup)]
 
 
+# Hard ceiling on bytes read from a fetched page. A hostile/misbehaving URL can serve an unbounded
+# (multi-GB) body; reading it whole via resp.text would OOM before the max_chars slice. We stream
+# and stop here. 10 MB dwarfs any real HTML page; a bigger body is simply truncated.
+_MAX_BYTES = 10_000_000
+
+
 async def _cloudscraper_get(url: str) -> tuple[str | None, int | None, str | None]:
     try:
         import cloudscraper  # noqa: F401
@@ -71,8 +77,13 @@ async def _cloudscraper_get(url: str) -> tuple[str | None, int | None, str | Non
         import cloudscraper
 
         s = cloudscraper.create_scraper()
-        resp = s.get(url, timeout=30)
-        return resp.text, resp.status_code
+        resp = s.get(url, timeout=30, stream=True)  # stream so we can cap the body
+        body = bytearray()
+        for chunk in resp.iter_content(65536):
+            body += chunk
+            if len(body) >= _MAX_BYTES:
+                break
+        return bytes(body).decode(resp.encoding or "utf-8", "replace"), resp.status_code
 
     try:
         text, status = await asyncio.to_thread(_run)
@@ -104,11 +115,17 @@ async def _get_html(url: str, cloudflare: bool) -> tuple[str | None, int | None,
         ) as c:
             for attempt in range(3):
                 try:
-                    r = await c.get(url)
-                    if r.status_code not in (403, 429):
-                        return r.text, r.status_code, None, "httpx"
-                    err = f"HTTP {r.status_code} (blocked)"
-                    break  # a WAF block — let cloudscraper try
+                    async with c.stream("GET", url) as r:
+                        if r.status_code in (403, 429):
+                            err = f"HTTP {r.status_code} (blocked)"
+                            break  # a WAF block — let cloudscraper try (don't read the body)
+                        body = bytearray()
+                        async for chunk in r.aiter_bytes():
+                            body += chunk
+                            if len(body) >= _MAX_BYTES:  # cap: an unbounded body can't OOM us
+                                break
+                        page = bytes(body).decode(r.encoding or "utf-8", "replace")
+                        return page, r.status_code, None, "httpx"
                 except Exception as e:  # noqa: BLE001
                     err = str(e)
                     await asyncio.sleep(0.4 * (attempt + 1))

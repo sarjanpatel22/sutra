@@ -61,7 +61,8 @@ class ExfilCollector:
     def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
         self._srv = ThreadingHTTPServer((host, port), _Handler)
         self._srv.hits = []  # type: ignore[attr-defined]
-        self.host, self.port = self._srv.server_address[0], self._srv.server_address[1]
+        self.host = str(self._srv.server_address[0])
+        self.port = int(self._srv.server_address[1])
         self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
 
     @property

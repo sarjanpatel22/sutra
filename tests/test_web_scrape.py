@@ -17,9 +17,29 @@ HTML = """<html><head><title>T</title><style>x{}</style></head><body>
 
 
 class _Resp:
+    """Streaming httpx.Response stand-in: the body is delivered through aiter_bytes()."""
+
     def __init__(self, text="", status=200):
-        self.text = text
+        self._body = text.encode()
         self.status_code = status
+        self.encoding = "utf-8"
+
+    async def aiter_bytes(self):
+        yield self._body
+
+
+class _StreamCM:
+    def __init__(self, resp, exc):
+        self._resp = resp
+        self._exc = exc
+
+    async def __aenter__(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._resp
+
+    async def __aexit__(self, *a):
+        return False
 
 
 def _client(resp=None, exc=None):
@@ -33,10 +53,8 @@ def _client(resp=None, exc=None):
         async def __aexit__(self, *a):
             return False
 
-        async def get(self, url, **kw):
-            if exc is not None:
-                raise exc
-            return resp
+        def stream(self, method, url, **kw):
+            return _StreamCM(resp, exc)
 
     return _Client
 

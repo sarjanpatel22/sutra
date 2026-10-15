@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -45,10 +46,11 @@ def _headless() -> bool:
 async def _reset() -> None:
     """Tear down the current session, swallowing cross-loop/teardown errors."""
     global _pw, _context, _loop
-    for closer in (
+    closers: tuple[Callable[[], Any], ...] = (
         lambda: _context and _context.close(),
         lambda: _pw and _pw.stop(),
-    ):
+    )
+    for closer in closers:
         try:
             coro = closer()
             if coro:

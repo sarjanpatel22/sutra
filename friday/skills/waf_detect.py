@@ -13,6 +13,7 @@ Pure-stdlib
 from __future__ import annotations
 
 import asyncio
+import http.client
 import urllib.error
 import urllib.request
 from http.cookies import SimpleCookie
@@ -54,7 +55,7 @@ def _fetch_meta(url: str) -> tuple[dict[str, str], str, int] | str:
             return _collect(r.headers, r.status)
     except urllib.error.HTTPError as e:  # a 403/406 page still carries the WAF's fingerprints
         return _collect(e.headers, e.code)
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return f"could not reach {url}: {str(e)[:120]}"
 
 
@@ -113,7 +114,11 @@ async def detect_waf(url: str) -> dict[str, Any]:
     detected = _match(headers, cookie_names)
     # de-dupe by WAF name, keep first evidence
     seen: set[str] = set()
-    unique = [d for d in detected if not (d["waf"] in seen or seen.add(d["waf"]))]
+    unique: list[dict[str, str]] = []
+    for d in detected:
+        if d["waf"] not in seen:
+            seen.add(d["waf"])
+            unique.append(d)
     return {
         "url": url,
         "status": status,

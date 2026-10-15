@@ -11,6 +11,7 @@ crafted requests) so it is gated. Pure-stdlib (urllib), CI-safe, $0. Confirm imp
 from __future__ import annotations
 
 import asyncio
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -34,7 +35,7 @@ _DEFAULT_APPEND = ("redirect", "url", "lang", "q", "next", "page")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *a, **k):  # don't follow — we must read the raw response headers
+    def redirect_request(self, *a: Any, **k: Any) -> None:  # read the raw response headers
         return None
 
 
@@ -55,7 +56,7 @@ def _probe(url: str) -> tuple[int, list[tuple[str, str]], str | None]:
             return r.status, list(r.headers.items()), None
     except urllib.error.HTTPError as e:
         return e.code, list(e.headers.items()), None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, [], str(e)[:160]
 
 

@@ -14,6 +14,7 @@ commands unattended.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from friday.core.router import Tier, complete
 from friday.skills import registry
@@ -81,7 +82,7 @@ SUBAGENTS: dict[str, SubAgent] = {
 }
 
 
-def _tools_for(sa: SubAgent) -> list[dict] | None:
+def _tools_for(sa: SubAgent) -> list[dict[str, Any]] | None:
     """The OpenAI tool schemas this sub-agent is allowed to call (None = all)."""
     if sa.tools is None:
         return registry.all_tools() or None
@@ -101,7 +102,7 @@ async def run_subagent(name: str, task: str, context: str = "") -> str:
 
     tools = _tools_for(sa)
     prompt = task if not context else f"{task}\n\nContext:\n{context}"
-    messages: list[dict] = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": sa.system_prompt},
         {"role": "user", "content": prompt},
     ]

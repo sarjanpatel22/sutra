@@ -48,6 +48,8 @@ async def recon_assets(domain: str) -> dict[str, Any]:
     if not bare:
         return {"error": "no domain to look up"}
 
+    sub_res: dict[str, Any] | BaseException
+    crt_res: dict[str, Any] | BaseException
     sub_res, crt_res = await asyncio.gather(
         find_subdomains(bare), crtsh_subdomains(bare), return_exceptions=True
     )
@@ -55,7 +57,7 @@ async def recon_assets(domain: str) -> dict[str, Any]:
     sources: dict[str, list[str]] = {}
     errors: dict[str, str] = {}
     for name, res in (("subfinder", sub_res), ("crtsh", crt_res)):
-        if isinstance(res, Exception):
+        if isinstance(res, BaseException):
             errors[name] = str(res)[:120]
             continue
         if res.get("error"):

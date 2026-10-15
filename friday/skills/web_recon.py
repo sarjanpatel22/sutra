@@ -13,6 +13,7 @@ install never breaks (gobuster/ffuf live on the Kali box, not CI). Authorized ta
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import re
@@ -50,8 +51,10 @@ async def _wildcard_len(url: str) -> int | None:
     def _get() -> int | None:
         try:
             with urllib.request.urlopen(probe, timeout=8) as r:  # noqa: S310
-                return len(r.read()) if r.status == 200 else None
-        except (urllib.error.HTTPError, OSError):
+                # cap the read: a catch-all app shell is tiny; a hostile multi-GB body must
+                # not be buffered whole just to measure its length.
+                return len(r.read(2_000_000)) if r.status == 200 else None
+        except (urllib.error.HTTPError, OSError, ValueError, http.client.HTTPException):
             return None
 
     return await asyncio.to_thread(_get)
@@ -97,7 +100,7 @@ async def web_enum(url: str, mode: str = "dirs", wordlist: str = "") -> dict[str
         rc, out, err = await _run(cmd, timeout=115)
         if rc != 0 and not out:
             return {"error": f"gobuster failed: {err.strip()[:200]}", "url": url}
-        found = [
+        found: list[dict[str, Any]] = [
             {"path": m.group(1) if m.group(1).startswith("/") else "/" + m.group(1),
              "status": int(m.group(2)),
              "size": int(m.group(3)) if m.group(3) else None}
@@ -243,8 +246,9 @@ async def _js_endpoints(js_urls: list[str], base: str) -> list[str]:
         def _fetch(u: str = ju) -> str:
             try:
                 with urllib.request.urlopen(u, timeout=8) as r:  # noqa: S310
-                    return r.read(3_000_000).decode("utf-8", "replace")
-            except (urllib.error.URLError, OSError):
+                    text: str = r.read(3_000_000).decode("utf-8", "replace")
+                    return text
+            except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
                 return ""
 
         body = await asyncio.to_thread(_fetch)

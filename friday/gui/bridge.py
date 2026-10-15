@@ -161,13 +161,17 @@ class Bridge:
     async def _turn(self, text: str, tier: Tier) -> None:
         set_state("listening", 0.35)  # orb leans in while she thinks
         self.bus.publish("status", phase="thinking")
+
+        def _observe(kind: str, data: dict[str, Any]) -> None:
+            self.bus.publish(kind, **data)  # discard the publish return (observe is -> None)
+
         try:
             reply, self._history = await agent.run(
                 text,
                 history=self._history,
                 tier=tier,
                 confirm=self._confirm,
-                observe=lambda kind, data: self.bus.publish(kind, **data),
+                observe=_observe,
             )
         except Exception as e:  # noqa: BLE001 — surface, never kill the loop thread
             self.bus.publish("error", text=f"agent error: {e}")
@@ -177,7 +181,7 @@ class Bridge:
         self._history = self._history[-_MAX_HISTORY:]
         # Compose widget layout for Generative UI — fire-and-forget; fallback is a
         # markdown widget so this can never break the reply path.
-        widgets_json: list[dict] = []
+        widgets_json: list[dict[str, Any]] = []
         try:
             from friday.gui.widgets import compose_layout
 

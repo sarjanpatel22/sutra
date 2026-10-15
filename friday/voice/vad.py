@@ -110,7 +110,7 @@ class VAD:
     def is_speech(self, pcm_bytes: bytes) -> bool:
         """Frame must be exactly 10/20/30ms of 16-bit PCM (160/320/480 samples @16k)."""
         try:
-            return self._vad.is_speech(pcm_bytes, self._sample_rate)
+            return bool(self._vad.is_speech(pcm_bytes, self._sample_rate))
         except Exception:  # noqa: BLE001
             return False
 

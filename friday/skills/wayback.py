@@ -11,6 +11,7 @@ Pure-stdlib (urllib + json), CI-safe, $0.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -34,7 +35,7 @@ def _fetch(url: str) -> tuple[str, str | None]:
     try:
         with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 — archive.org, not target
             return r.read(8_000_000).decode("utf-8", "replace"), None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return "", str(e)[:160]
 
 

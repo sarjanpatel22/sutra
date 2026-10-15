@@ -42,7 +42,7 @@ async def _throttle() -> None:
         _last_nominatim = time.monotonic()
 
 
-def _bbox(x: dict) -> list[float] | None:
+def _bbox(x: dict[str, Any]) -> list[float] | None:
     bb = x.get("boundingbox") or []
     try:
         return [float(v) for v in bb] if len(bb) == 4 else None
@@ -90,7 +90,7 @@ async def geocode(place: str, limit: int = 1) -> dict[str, Any]:
     if not isinstance(data, list) or not data:
         return {"place": place, "found": False}
 
-    def _one(x: dict) -> dict | None:
+    def _one(x: dict[str, Any]) -> dict[str, Any] | None:
         try:
             lat_v, lon_v = float(x["lat"]), float(x["lon"])
         except (KeyError, TypeError, ValueError):

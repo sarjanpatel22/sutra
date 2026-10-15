@@ -14,6 +14,7 @@ import ast
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from friday.core.router import Tier, complete
 from friday.skills.registry import USER_SKILLS_DIR
@@ -85,7 +86,7 @@ def _extract_name(code: str, fallback: str) -> str:
     return m.group(1) if m else fallback
 
 
-async def draft_skill(description: str, *, tier: Tier = Tier.MEDIUM) -> dict:
+async def draft_skill(description: str, *, tier: Tier = Tier.MEDIUM) -> dict[str, Any]:
     """Draft a skill from `description`. Writes inert source to the pending dir — never runs it.
 
     Returns {name, path, code, flags} on success, or {error, ...}. The code is validated as

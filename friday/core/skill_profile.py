@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 _PROFILE = Path.home() / ".local" / "share" / "friday" / "skill_profile.json"
 
@@ -19,7 +20,7 @@ LEVELS = ("new", "learning", "comfortable", "strong")
 _LEVEL_RANK = {lvl: i for i, lvl in enumerate(LEVELS)}
 
 
-def _load() -> dict[str, dict]:
+def _load() -> dict[str, dict[str, Any]]:
     try:
         data = json.loads(_PROFILE.read_text())
         return data if isinstance(data, dict) else {}
@@ -27,7 +28,7 @@ def _load() -> dict[str, dict]:
         return {}
 
 
-def _save(data: dict) -> None:
+def _save(data: dict[str, Any]) -> None:
     _PROFILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = _PROFILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2))

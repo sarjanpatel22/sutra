@@ -23,6 +23,28 @@ async def _txt(name: str) -> list[str]:
     return [ln.strip().strip('"') for ln in (out or "").splitlines() if ln.strip()]
 
 
+def _spf_all_qualifier(spf: str) -> str:
+    """Qualifier on the SPF 'all' mechanism: one of + - ~ ? (a bare 'all' defaults to '+'),
+    or '' if there is no 'all' mechanism. Tokenized so it can't match inside an include/macro."""
+    for tok in spf.split():
+        t = tok.strip().lower()
+        if t == "all":
+            return "+"
+        if t[1:] == "all" and t[:1] in "+-~?":
+            return t[0]
+    return ""
+
+
+def _dmarc_tag(record: str, tag: str) -> str:
+    """Value of a specific DMARC tag (e.g. 'p'), matched EXACTLY so 'p' is never confused with
+    'sp' (subdomain policy) — the substring trap that mislabels p=reject;sp=none as monitor-only."""
+    for part in record.split(";"):
+        k, sep, v = part.partition("=")
+        if sep and k.strip().lower() == tag:
+            return v.strip().lower()
+    return ""
+
+
 @skill(
     name="check_email_spoofing",
     description=(
@@ -57,7 +79,7 @@ async def check_email_spoofing(domain: str) -> dict[str, Any]:
             "id": "spf-missing", "severity": "low", "matched_at": domain, "name": "No SPF record",
             "description": f"{domain} has no SPF (v=spf1) TXT record — no sender policy.",
         })
-    elif any(t in spf.lower() for t in ("+all", "?all")):
+    elif _spf_all_qualifier(spf) in ("+", "?"):
         findings.append({
             "id": "spf-weak", "severity": "medium", "matched_at": domain,
             "name": "Permissive SPF (+all/?all)",
@@ -71,7 +93,7 @@ async def check_email_spoofing(domain: str) -> dict[str, Any]:
             "description": (f"{domain} has no DMARC record — receivers won't reject spoofed "
                             "mail claiming to be from this domain."),
         })
-    elif "p=none" in dmarc.replace(" ", "").lower():
+    elif _dmarc_tag(dmarc, "p") == "none":
         findings.append({
             "id": "dmarc-none", "severity": "low", "matched_at": domain,
             "name": "DMARC policy p=none (monitor only)",

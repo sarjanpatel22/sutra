@@ -87,12 +87,14 @@ class CardsWidget(BaseModel):
 
     @field_validator("items", mode="before")
     @classmethod
-    def coerce_items(cls, v: Any) -> list[dict[str, str]]:
+    def coerce_items(cls, v: Any) -> list[Any]:
         if not isinstance(v, list):
             return []
-        out = []
+        out: list[Any] = []
         for item in v:
-            if isinstance(item, dict):
+            if isinstance(item, CardItem):  # already a model — keep it (don't silently drop)
+                out.append(item)
+            elif isinstance(item, dict):
                 out.append({
                     "title": str(item.get("title", "")),
                     "subtitle": str(item.get("subtitle", item.get("url", ""))),
@@ -265,13 +267,13 @@ def _layout_system_info(data: dict[str, Any], summary: str) -> Layout:
 
 def _layout_search(results: list[dict[str, Any]], summary: str) -> Layout:
     """Convert search results list into a cards widget."""
-    raw_items: list[dict[str, str]] = []
+    raw_items: list[CardItem] = []
     for r in results[:8]:  # cap at 8 cards
-        raw_items.append({
-            "title": str(r.get("title", r.get("name", ""))),
-            "subtitle": str(r.get("content", r.get("snippet", r.get("description", "")))),
-            "url": str(r.get("url", r.get("link", ""))),
-        })
+        raw_items.append(CardItem(
+            title=str(r.get("title", r.get("name", ""))),
+            subtitle=str(r.get("content", r.get("snippet", r.get("description", "")))),
+            url=str(r.get("url", r.get("link", ""))),
+        ))
     widgets: list[AnyWidget] = [CardsWidget(items=raw_items)]
     if summary:
         widgets.insert(0, MarkdownWidget(text=summary))
@@ -289,7 +291,7 @@ def _layout_key_value(data: dict[str, Any], summary: str) -> Layout:
 def _llm_compose(answer_text: str, tool_data: Any) -> Layout | None:
     """Ask the free Groq LLM to produce a widget layout JSON. Returns None on any failure."""
     try:
-        import litellm  # type: ignore[import-untyped]
+        import litellm
     except ImportError:
         return None
 

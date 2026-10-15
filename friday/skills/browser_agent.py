@@ -73,7 +73,7 @@ _IN_MAIN_JS = (
 
 
 async def _collect_frame(frame: Any, is_subframe: bool,
-                         primary: list, chrome: list) -> None:
+                         primary: list[tuple[Any, str]], chrome: list[tuple[Any, str]]) -> None:
     """Pull interactive elements from one frame into primary/chrome buckets.
 
     Sites like TryHackMe render the real content (Start Machine, tasks) inside an

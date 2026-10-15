@@ -70,7 +70,8 @@ def _send(url: str, param: str, payload: str, method: str) -> str:
             req = urllib.request.Request(
                 url, data=body, headers={**headers, "Content-Type": form_ct})
         with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 — authorized target
-            return r.read(1_000_000).decode("utf-8", "replace").lower()
+            text: str = r.read(1_000_000).decode("utf-8", "replace").lower()
+            return text
     except urllib.error.HTTPError as e:
         try:
             return e.read(1_000_000).decode("utf-8", "replace").lower()

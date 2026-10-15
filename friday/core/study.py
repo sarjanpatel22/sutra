@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from friday.core.router import Tier, complete
 
@@ -116,7 +117,7 @@ def _signals_to_prompt(s: Signals) -> str:
     return "\n".join(lines)
 
 
-def _parse_reflection(text: str) -> dict:
+def _parse_reflection(text: str) -> dict[str, Any]:
     """Tolerantly pull the JSON object out of the model's reply; {} if it isn't parseable (we then
     record nothing rather than fabricate)."""
     m = re.search(r"\{.*\}", text or "", re.S)

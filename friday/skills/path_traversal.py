@@ -11,9 +11,11 @@ Active (sends crafted requests) so it is gated. Pure-stdlib (urllib), CI-safe, $
 from __future__ import annotations
 
 import asyncio
+import http.client
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -28,7 +30,7 @@ _TARGETS: list[tuple[str, re.Pattern[str], str]] = [
 
 # Traversal encoders — each takes a depth and the target, returns one payload string. Covers the
 # plain sequence plus the bypasses that beat naive ../ stripping and single-decode filters.
-_ENCODERS = [
+_ENCODERS: list[Callable[[int, str], str]] = [
     lambda d, t: "../" * d + t,  # plain
     lambda d, t: "..%2f" * d + t,  # url-encoded slash
     lambda d, t: "%2e%2e%2f" * d + t,  # fully url-encoded
@@ -103,7 +105,7 @@ def _probe(url: str) -> tuple[int, str, str | None]:
         except Exception:  # noqa: BLE001
             body = ""
         return e.code, body, None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, "", str(e)[:160]
 
 

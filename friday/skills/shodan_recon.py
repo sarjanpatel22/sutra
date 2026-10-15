@@ -10,6 +10,7 @@ and degrades to a clear instruction if absent (CI-safe). Passive OSINT, auto-con
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import socket
 import urllib.error
@@ -40,14 +41,15 @@ def _lookup(ip: str, key: str) -> dict[str, Any]:
     req = urllib.request.Request(url, headers={"User-Agent": "sutra-shodan/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 — fixed Shodan API host
-            return json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+            record: dict[str, Any] = json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+            return record
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return {"_none": True}  # Shodan has no record for this host
         if e.code == 401:
             return {"_error": "Shodan rejected the API key (401) — check SHODAN_API_KEY"}
         return {"_error": f"Shodan HTTP {e.code}"}
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return {"_error": f"could not reach Shodan: {str(e)[:80]}"}
     except json.JSONDecodeError:
         return {"_error": "Shodan returned non-JSON"}
@@ -78,8 +80,8 @@ async def shodan_host(target: str) -> dict[str, Any]:
         return {"error": "no Shodan API key — set SHODAN_API_KEY (keyring or env); free tier works"}
 
     ip, err = await asyncio.to_thread(_resolve, target)
-    if err:
-        return {"error": err, "target": target}
+    if err or ip is None:
+        return {"error": err or f"could not resolve {target}", "target": target}
     data = await asyncio.to_thread(_lookup, ip, key)
     if data.get("_error"):
         return {"error": data["_error"], "ip": ip}

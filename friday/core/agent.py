@@ -10,6 +10,7 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,20 @@ from friday.memory.store import get_store, looks_like_noise
 from friday.skills import registry
 
 _log = logging.getLogger("sutra.agent")
+
+
+@dataclass
+class _TurnStats:
+    """Per-turn instrumentation for `sutra stats` — typed so the counters stay int/str/list
+    instead of a dict[str, object] that mypy (and a future refactor) can't reason about."""
+
+    rounds: int = 0
+    model: str = ""
+    in_tokens: int = 0
+    out_tokens: int = 0
+    tool_names: list[str] = field(default_factory=list)
+    ok: bool = True
+    error: str = ""
 
 # Tier capability rank — used to ESCALATE a turn to autoroute's chosen tier without ever
 # downgrading an explicit higher --tier (max() by this rank).
@@ -277,37 +292,36 @@ async def run(
 
     # Per-turn instrumentation for `sutra stats` (Gate 2 shakedown). Best-effort.
     t_start = time.monotonic()
-    stats = {"rounds": 0, "model": "", "in_tokens": 0, "out_tokens": 0,
-             "tool_names": [], "ok": True, "error": ""}
+    stats = _TurnStats()
 
     def _account(response: Any) -> None:
         usage = getattr(response, "usage", None)
         if usage:
-            stats["in_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
-            stats["out_tokens"] += getattr(usage, "completion_tokens", 0) or 0
-        stats["model"] = getattr(response, "model", None) or stats["model"]
+            stats.in_tokens += getattr(usage, "prompt_tokens", 0) or 0
+            stats.out_tokens += getattr(usage, "completion_tokens", 0) or 0
+        stats.model = getattr(response, "model", None) or stats.model
 
     def _finish(reply: str) -> tuple[str, list[dict[str, Any]]]:
         elapsed_ms = (time.monotonic() - t_start) * 1000
         log_text_turn(
             tier=tier.value,
-            model=stats["model"],
-            tool_rounds=stats["rounds"],
+            model=stats.model,
+            tool_rounds=stats.rounds,
             total_ms=elapsed_ms,
-            in_tokens=stats["in_tokens"],
-            out_tokens=stats["out_tokens"],
+            in_tokens=stats.in_tokens,
+            out_tokens=stats.out_tokens,
             preview=user_input,
         )
         log_turn(
             surface="text",
             tier=tier.value,
-            tool_calls=list(stats["tool_names"]),
-            tokens_in=stats["in_tokens"],
-            tokens_out=stats["out_tokens"],
+            tool_calls=list(stats.tool_names),
+            tokens_in=stats.in_tokens,
+            tokens_out=stats.out_tokens,
             latency_ms=elapsed_ms,
-            ok=stats["ok"],
-            error=stats["error"],
-            model=stats["model"],
+            ok=stats.ok,
+            error=stats.error,
+            model=stats.model,
         )
         # Persist in the background so the reply returns now (was a ~18s block).
         persist_turn_async(user_input, reply, source="conversation")
@@ -331,12 +345,12 @@ async def run(
                 # No more tool calls — done
                 return _finish(msg.content or "")
 
-            stats["rounds"] += 1
+            stats.rounds += 1
             # Collect tool names for the structured turn log.
             for tc in tool_calls:
                 fn = getattr(tc, "function", None)
                 if fn and hasattr(fn, "name"):
-                    stats["tool_names"].append(fn.name)
+                    stats.tool_names.append(fn.name)
             # Execute all tool calls (in parallel where possible)
             tool_results = await _run_tool_calls(tool_calls, confirm=confirm, observe=observe)
             messages.extend(tool_results)
@@ -353,8 +367,8 @@ async def run(
         return _finish(msg.content or "")
     except Exception as exc:
         # Log the error turn, then re-raise so callers can handle/display it.
-        stats["ok"] = False
-        stats["error"] = str(exc)
+        stats.ok = False
+        stats.error = str(exc)
         _finish("")  # best-effort log; return value discarded
         raise
 

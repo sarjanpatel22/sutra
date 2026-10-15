@@ -16,7 +16,7 @@ import logging
 import os
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,11 @@ class MemoryStore:
         # Reuse the local LLM as reranker so no OpenAI key is ever required.
         reranker = OpenAIRerankerClient(
             config=LLMConfig(api_key=_LLM_API_KEY, model=_LLM_MODEL, base_url=_OLLAMA_BASE),
-            client=llm,
+            # Intentionally reuse the local generic LLM client as the reranker so no OpenAI key
+            # is needed; graphiti takes it at runtime, its stub only lists the OpenAI client types.
+            # cast (not type: ignore) so this is env-independent — graphiti is an optional dep and
+            # becomes Any when it's absent (e.g. in CI), which would make a bare ignore "unused".
+            client=cast(Any, llm),
         )
         # database MUST be the group_id: Graphiti routes WRITES (add_episode) to a
         # graph named after the group_id, but its search execute_query reads from
@@ -394,11 +398,11 @@ class MemoryStore:
 
         episode_uuids: list[str] = []
         seen: set[str] = set()
-        for e in edges:
-            fact = getattr(e, "fact", None)
+        for edge in edges:
+            fact = getattr(edge, "fact", None)
             if fact:
                 result["matched"].append(fact)
-            for uid in getattr(e, "episodes", None) or []:
+            for uid in getattr(edge, "episodes", None) or []:
                 if uid not in seen:
                     seen.add(uid)
                     episode_uuids.append(uid)

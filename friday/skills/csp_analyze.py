@@ -11,6 +11,7 @@ PASSIVE: one ordinary GET → auto-confirmed. Pure-stdlib (urllib), CI-safe, $0.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -26,14 +27,14 @@ def _fetch_csp(url: str) -> tuple[str | None, int] | str:
             return _read_csp(r.headers), r.status
     except urllib.error.HTTPError as e:
         return _read_csp(e.headers), e.code
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return f"could not reach {url}: {str(e)[:120]}"
 
 
 def _read_csp(headers: Any) -> str | None:
     for k, v in headers.items():
         if k.lower() == "content-security-policy":
-            return v
+            return str(v)
     return None
 
 

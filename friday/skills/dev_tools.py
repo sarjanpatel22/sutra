@@ -49,9 +49,11 @@ async def run_tests(
         return {"error": f"not a directory: {root}"}
     timeout_s = max(10, min(600, timeout_s))
 
-    argv = [sys.executable, "-m", "pytest", path, "-q", "--no-header", "-p", "no:cacheprovider"]
+    argv = [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider"]
     if expr:
         argv += ["-k", expr]
+    # Pass `path` after `--` so a value beginning with '-' is a file arg, not a pytest option.
+    argv += ["--", path]
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,

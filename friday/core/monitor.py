@@ -327,7 +327,8 @@ async def _safe(name: str, coro: Any) -> CheckResult:
     """Run a check, turning any unexpected error into a FAIL result — one bad
     check must never crash the whole watchdog (gather would otherwise propagate)."""
     try:
-        return await coro
+        result: CheckResult = await coro
+        return result
     except Exception as e:  # noqa: BLE001
         return CheckResult(name, Status.FAIL, f"check error: {e}")
 

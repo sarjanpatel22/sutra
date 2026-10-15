@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 _SRC_EXT = {".py", ".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx"}
 _SKIP_DIRS = {"node_modules", ".git", "dist", "build", "__pycache__", ".venv", "venv", "vendor",
@@ -494,7 +495,7 @@ def is_known_vuln(name_or_url: str) -> bool:
     return any(k == base or (len(base) >= 5 and (k in base or base in k)) for k in _KNOWN_VULN)
 
 
-def audit_report(root: str | Path) -> dict[str, object]:
+def audit_report(root: str | Path) -> dict[str, Any]:
     """Structured audit summary for the CLI / skill: counts + the ranked findings."""
     findings = scan_repo(root)
     by_cat: dict[str, int] = {}
@@ -515,14 +516,14 @@ def audit_report(root: str | Path) -> dict[str, object]:
     }
 
 
-def rank_batch(results: list[tuple[str, dict[str, object]]]) -> list[dict[str, object]]:
+def rank_batch(results: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
     """Rank scanned repos for the funnel: fresh repos with tool-reachable HIGH findings first (the
     likely paydays), known-vuln repos last (dups). `results` = [(repo, audit_report(...))]."""
-    rows: list[dict[str, object]] = []
+    rows: list[dict[str, Any]] = []
     for name, rep in results:
         findings = rep.get("findings", [])
         reach_high = sum(1 for f in findings if f["severity"] == "high" and f["reachable"])
-        by_cat: dict[str, int] = rep.get("by_category", {})  # type: ignore[assignment]
+        by_cat: dict[str, int] = rep.get("by_category", {})
         top = ", ".join(f"{k}×{v}" for k, v in sorted(by_cat.items(), key=lambda x: -x[1])[:3])
         rows.append({
             "repo": name,

@@ -54,8 +54,11 @@ def rerank(query: str, candidates: list[str], k: int = 5) -> list[str]:
         return candidates[:k]
 
     seen: set[int] = set()
-    ranked = [candidates[i] for i in order
-              if 0 <= i < len(candidates) and not (i in seen or seen.add(i))]
+    ranked: list[str] = []
+    for i in order:
+        if 0 <= i < len(candidates) and i not in seen:
+            seen.add(i)
+            ranked.append(candidates[i])
     # Append anything the model didn't mention, in original order — never drop a fact.
     ranked += [c for j, c in enumerate(candidates) if j not in seen]
     return ranked[:k]

@@ -77,7 +77,7 @@ class WakeWord:
     """
 
     def __init__(self, model_name: str | None = None) -> None:
-        self.model_name = (model_name or os.getenv("WAKEWORD_MODEL", "hey_jarvis")).strip()
+        self.model_name = (model_name or os.getenv("WAKEWORD_MODEL") or "hey_jarvis").strip()
         self._model: Any = None
 
     def _resolve_path(self) -> str:

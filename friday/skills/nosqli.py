@@ -16,6 +16,7 @@ and scope before reporting; never dump production data or actually bypass a real
 from __future__ import annotations
 
 import asyncio
+import http.client
 import re
 import secrets
 import urllib.error
@@ -80,7 +81,7 @@ def _probe(url: str) -> tuple[int, str, str | None]:
         except Exception:  # noqa: BLE001
             body = ""
         return e.code, body, None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, "", str(e)[:160]
 
 

@@ -12,12 +12,15 @@ import subprocess
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import psutil
 
 from friday.ambient import config
 
-_RUN = dict(capture_output=True, text=True, timeout=2)
+# dict[str, Any] (not the inferred dict[str, int]) so **_RUN matches subprocess.run's
+# typed kwargs — the values are a mix of bool and int.
+_RUN: dict[str, Any] = dict(capture_output=True, text=True, timeout=2)
 
 # Prettier names for common process names seen in the active window.
 _APP_NAMES = {
@@ -154,7 +157,8 @@ class FileActivityCollector(Collector):
 
 def _git(repo: Path, *args: str) -> str:
     try:
-        return subprocess.run(["git", "-C", str(repo), *args], **_RUN).stdout.strip()
+        out: str = subprocess.run(["git", "-C", str(repo), *args], **_RUN).stdout.strip()
+        return out
     except Exception:  # noqa: BLE001
         return ""
 

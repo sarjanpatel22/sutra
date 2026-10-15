@@ -10,6 +10,7 @@ account takeover) or the web cache. Active (crafted headers), gated. Pure-stdlib
 from __future__ import annotations
 
 import asyncio
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -20,7 +21,7 @@ _CANARY = "evilcollab.example"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *a, **k):  # don't follow — we must not chase the spoofed host
+    def redirect_request(self, *a: Any, **k: Any) -> None:  # don't chase the spoofed host
         return None
 
 
@@ -42,7 +43,7 @@ def _probe(url: str, extra: dict[str, str]) -> tuple[int, str | None, str, str |
         except Exception:  # noqa: BLE001
             body = ""
         return e.code, e.headers.get("Location"), body, None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, None, "", str(e)[:160]
 
 

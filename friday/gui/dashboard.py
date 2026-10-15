@@ -85,7 +85,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length) or b"{}")
+        data: dict[str, Any] = json.loads(self.rfile.read(length) or b"{}")
+        return data
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib API)
         path = self.path.split("?")[0]

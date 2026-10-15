@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from friday.skills.registry import skill
 
@@ -110,7 +111,7 @@ async def edit_file(
     auto_confirm=True,
     timeout_s=5,
 )
-async def list_directory(path: str = "~", pattern: str = "*") -> dict[str, list[str]]:
+async def list_directory(path: str = "~", pattern: str = "*") -> dict[str, Any]:
     """List a directory.
 
     path: Directory path to list (default: home).
@@ -118,6 +119,6 @@ async def list_directory(path: str = "~", pattern: str = "*") -> dict[str, list[
     """
     p = _safe_path(path)
     if not p.is_dir():
-        return {"error": [f"Not a directory: {p}"]}
+        return {"error": f"Not a directory: {p}"}
     entries = sorted(str(e.relative_to(p)) for e in p.glob(pattern) if not e.name.startswith("."))
     return {"entries": entries[:200], "path": str(p)}

@@ -10,6 +10,7 @@ hunters at GraphQL; this gives it a real tool. One read-only POST, pure-stdlib, 
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import re
 import urllib.error
@@ -32,7 +33,7 @@ _SENSITIVE = re.compile(
 )
 
 
-def _post(url: str) -> tuple[int, dict | None, str | None]:
+def _post(url: str) -> tuple[int, dict[str, Any] | None, str | None]:
     """(status, parsed-json, error). Transport failure → error; non-JSON → parsed None."""
     body = json.dumps({"query": _QUERY}).encode()
     req = urllib.request.Request(
@@ -50,7 +51,7 @@ def _post(url: str) -> tuple[int, dict | None, str | None]:
             raw, status = e.read(1_000_000).decode("utf-8", "replace"), e.code
         except Exception:  # noqa: BLE001
             return e.code, None, None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         return 0, None, str(e)[:160]
     try:
         return status, json.loads(raw), None
@@ -97,7 +98,7 @@ async def graphql_introspect(url: str) -> dict[str, Any]:
 
     by_name = {t.get("name"): t for t in schema.get("types") or [] if isinstance(t, dict)}
 
-    def _fields(type_ref: dict | None) -> list[str]:
+    def _fields(type_ref: dict[str, Any] | None) -> list[str]:
         t = by_name.get((type_ref or {}).get("name")) if type_ref else None
         return [f.get("name") for f in (t or {}).get("fields") or [] if f.get("name")]
 
