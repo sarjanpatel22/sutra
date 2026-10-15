@@ -67,30 +67,20 @@ TIER_MODELS: dict[Tier, list[str]] = {
     # VRAM between code sessions. Free cloud fallback if Ollama is down.
     Tier.CODE: [
         os.getenv("ROUTER_CODE_MODEL", "ollama_chat/qwen2.5:14b"),
-        "groq/llama-3.3-70b-versatile",
         "gemini/gemini-2.5-flash",
     ],
-    # Free tier with headroom. Groq meters EACH model separately (≈100k tokens/day
-    # per model), and tool turns carry big tool schemas — so one model exhausts fast.
-    # Spread across several function-calling-capable Groq models (each its own quota)
-    # plus Gemini, so a rate-limited model rolls to a FRESH one that can still call
-    # tools, instead of collapsing to the local model (which can't function-call).
+    # Free cloud tier (chat + tool/agent turns). GROQ REMOVED 2026-10-14 (its key expired and
+    # the per-model-bucket approach wasn't wanted). The free headroom now comes from the live
+    # NVIDIA NIM brains that _wire_nvidia_nim prepends when the key is set (fast 120B + heavy
+    # 550B + kimi-k3 + gpt-oss-20b — all benchmarked live), backed by Gemini. Gemini is a
+    # separate provider, so it's a genuine extra quota bucket behind the NIM pool; local Ollama
+    # (LOCAL_TOOLS, prepended for tool turns) stays the offline/quota-proof floor. NOTE:
+    # gemini-2.0-flash was dropped too — it 404s (retired id); only 2.5-flash is live.
     Tier.MEDIUM: [
-        # Stronger function-callers, each its own Groq quota bucket → better answers AND
-        # more rate-limit headroom (one exhausting rolls to the next FRESH bucket). Kimi
-        # isn't hosted on Groq, so these qwen3 models are the realistic "bigger brain" pick.
-        "groq/qwen/qwen3-32b",
-        "groq/qwen/qwen3.6-27b",
-        "groq/llama-3.3-70b-versatile",
-        "groq/openai/gpt-oss-120b",  # Groq's recommended replacement for the retired llama-4-scout
         "gemini/gemini-2.5-flash",
-        "groq/llama-3.1-8b-instant",
-        "groq/openai/gpt-oss-20b",
-        "gemini/gemini-2.0-flash",
     ],
     Tier.HEAVY: [
         os.getenv("ROUTER_CLOUD_HEAVY", "claude-sonnet-4-6"),
-        "groq/llama-3.3-70b-versatile",
     ],
     Tier.MAX: [
         os.getenv("ROUTER_CLOUD_MAX", "claude-opus-4-8"),
@@ -98,38 +88,49 @@ TIER_MODELS: dict[Tier, list[str]] = {
     ],
 }
 
-# Two usable top free brains (NVIDIA NIM, OpenAI-compatible via LiteLLM), inserted ABOVE the free
-# fallbacks ONLY when the key is present — never thrashes when no key is set. LIVE-TESTED picks:
-# GLM is the stronger REASONER (leaderboard 83, reliable), Nemotron the faster FUNCTION-CALLER
-# (1s tool calls). DeepSeek-V4-Pro and Kimi-K2.6 were rejected — they time out / return garbage on
-# the free tier (rank ≠ usable). So GLM leads the reasoning tiers, Nemotron leads the tool/agent
-# tier, and each backs the other. Override ids with NEMOTRON_MODEL / GLM_MODEL.
-# NOTE: NIM EOLs model ids (glm-5.1 went 410 Gone on 2026-07-02, silently wasting a round-trip on
-# every reasoning call until caught) — `sutra doctor` now pings these ids so a dead pick surfaces.
-_NEMOTRON = os.getenv("NEMOTRON_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
-_GLM = os.getenv("GLM_MODEL", "nvidia_nim/z-ai/glm-5.2")
+# The live, free NVIDIA NIM brains (OpenAI-compatible via LiteLLM), inserted into the free tiers
+# ONLY when the key is present. These REPLACE the removed Groq bench. BENCHMARKED 2026-10-14 on real
+# content + latency (not leaderboard rank, and NOT the /v1/models catalog — most listed ids 404 on
+# the free endpoint; only these actually serve): nemotron-3-super-120b (a12b active) answers in ~1s
+# with clean content → the lead chat/tool brain; nemotron-3-ultra-550b (a55b) is the heavy reasoner
+# (~5s); kimi-k3 (~4s) and gpt-oss-20b (~2s) are extra live buckets for headroom. DROPPED: the GLM
+# ids (glm-5.2 → 410 Gone) and the "reasoning" NIM models (glm-5.3, lightning-30b) that return EMPTY
+# on normal token budgets (they spend it on hidden thinking) — unusable as a default. Override the
+# leads with NIM_FAST_MODEL / NIM_HEAVY_MODEL; the extra buckets with NIM_EXTRA_MODELS (CSV).
+# NOTE: NIM EOLs ids without warning (glm-5.1 AND glm-5.2 both went 410 Gone). complete() now cools
+# a dead/410/auth-failed model for a long window (see _is_dead_model_error), so a stale id costs ONE
+# wasted call — not one per turn; `sutra doctor` pings these ids so a dead pick surfaces here.
+_NIM_FAST = os.getenv("NIM_FAST_MODEL", "nvidia_nim/nvidia/nemotron-3-super-120b-a12b")
+_NIM_HEAVY = os.getenv("NIM_HEAVY_MODEL", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b")
+_NIM_EXTRA = [
+    m.strip() for m in os.getenv(
+        "NIM_EXTRA_MODELS",
+        "nvidia_nim/moonshotai/kimi-k3,nvidia_nim/openai/gpt-oss-20b",
+    ).split(",") if m.strip()
+]
 
 
-def _wire_nvidia_nim(tier_models: dict[Tier, list[str]], glm: str, nemotron: str) -> None:
-    """Insert the two free NVIDIA NIM brains into the free tiers IN PLACE, after the local/paid
-    model at index 0. GLM leads the reasoning tiers (REASON/HEAVY); Nemotron leads the tool/agent
-    tier (MEDIUM) for its ~1s tool calls, with GLM a reasoning-grade fallback behind it. A
-    standalone function so the ordering is unit-testable without import-time env juggling."""
-    for t in (Tier.REASON, Tier.HEAVY):           # reasoning tiers: GLM first, Nemotron behind it
-        tier_models[t].insert(1, nemotron)
-        tier_models[t].insert(1, glm)
-    tier_models[Tier.MEDIUM].insert(2, nemotron)  # tool/agent tier: Nemotron first (1s calls)
-    tier_models[Tier.MEDIUM].insert(3, glm)       # GLM as a reasoning-grade fallback
+def _wire_nvidia_nim(
+    tier_models: dict[Tier, list[str]], fast: str, heavy: str, extra: list[str]
+) -> None:
+    """Insert the live free NVIDIA NIM brains into the free tiers. The fast 120B LEADS the everyday
+    chat + tool/agent tier (MEDIUM) so a live, powerful answer comes first, with the 550B and the
+    `extra` buckets behind it (then Gemini) for headroom now that Groq is gone. The 550B reasoner
+    leads REASON (the local model stays behind it as the offline fallback). On HEAVY the NIM brains
+    sit just BEHIND the paid leader at index 0, so ROUTER_ALLOW_PAID still wins when set but a FREE
+    heavy turn gets the 550B, not a dead model."""
+    tier_models[Tier.MEDIUM][0:0] = [fast, heavy, *extra]  # chat/tools: fast 120B first, then rest
+    tier_models[Tier.REASON][0:0] = [heavy, fast]          # reasoning: 550B first, local behind
+    tier_models[Tier.HEAVY][1:1] = [heavy, fast]           # heavy: behind the paid leader (idx 0)
 
 
 if os.getenv("NVIDIA_NIM_API_KEY"):
-    _wire_nvidia_nim(TIER_MODELS, _GLM, _NEMOTRON)
+    _wire_nvidia_nim(TIER_MODELS, _NIM_FAST, _NIM_HEAVY, _NIM_EXTRA)
 
 _COST_PER_1K: dict[str, tuple[float, float]] = {
     "claude-opus-4-8":                       (0.015, 0.075),
     "claude-sonnet-4-6":                     (0.003, 0.015),
     "claude-haiku-4-5":                      (0.0008, 0.004),
-    "groq/llama-3.3-70b-versatile":          (0.0, 0.0),
     "gemini/gemini-2.5-flash": (0.0, 0.0),
     "ollama/gemma3:4b":                      (0.0, 0.0),
 }
@@ -177,8 +178,41 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     )
 
 
-def _mark_cooling_down(model: str) -> None:
-    _RATE_LIMITED[model] = time.time() + _rl_cooldown_s()
+def _dead_cooldown_s() -> float:
+    """Cooldown for a PERSISTENT failure (EOL'd id, expired/invalid key, model-not-found). These
+    don't recover mid-session, so skip the model for a long window — one wasted call, not one per
+    turn. ROUTER_DEADMODEL_COOLDOWN (default 1h)."""
+    try:
+        return float(os.getenv("ROUTER_DEADMODEL_COOLDOWN", "3600"))
+    except ValueError:
+        return 3600.0
+
+
+def _is_dead_model_error(exc: Exception) -> bool:
+    """True for a PERSISTENT provider failure that won't fix itself this session: an EOL'd/retired
+    model id (410 Gone / model-not-found) or a bad credential (expired/invalid/unauthorized key).
+    Distinct from a transient 429 — these are cooled down for far longer (_dead_cooldown_s) so the
+    fallback chain stops re-hitting a dead endpoint on EVERY turn (the 'messy' failure mode). Seen
+    live 2026-10-14: NIM glm-5.2 → 'HTTP 410 Gone'; expired Groq key → 'Invalid API Key'."""
+    msg = str(exc).lower()
+    return (
+        "410" in msg
+        or "gone" in msg
+        or "model_not_found" in msg
+        or "does not exist" in msg
+        or "no longer" in msg
+        or "decommission" in msg
+        or "retired" in msg
+        or "expired_api_key" in msg
+        or "expired api key" in msg
+        or "invalid api key" in msg
+        or "invalid_api_key" in msg
+        or "unauthorized" in msg
+    )
+
+
+def _mark_cooling_down(model: str, seconds: float | None = None) -> None:
+    _RATE_LIMITED[model] = time.time() + (seconds if seconds is not None else _rl_cooldown_s())
 
 
 def _is_cooling_down(model: str) -> bool:
@@ -574,10 +608,26 @@ async def complete(
                     cache_read=cr,
                     cache_write=cw,
                 )
+            # Treat a genuinely EMPTY completion as a failure and roll to the next model. A 200 with
+            # no content AND no tool_call isn't a usable answer — and reasoning models (the NIM
+            # nemotron leads) can burn a tiny max_tokens budget entirely on hidden thinking and emit
+            # nothing. Without this the blank would be handed back as-is (fallback only fires on an
+            # exception). A tool-call turn legitimately has empty content, so that's NOT treated as
+            # empty; streaming is checked by the consumer, not here.
+            msg = getattr(response.choices[0], "message", None) if response.choices else None
+            has_content = bool((getattr(msg, "content", None) or "").strip())
+            has_tool_call = bool(getattr(msg, "tool_calls", None))
+            if msg is not None and not has_content and not has_tool_call:
+                last_err = RuntimeError(f"{model} returned an empty response")
+                continue
             return response
         except Exception as e:  # noqa: BLE001
             if _is_rate_limit_error(e):
-                _mark_cooling_down(model)  # skip this model on the next calls until it cools
+                _mark_cooling_down(model)  # transient 429 — short cooldown, let it back in soon
+            elif _is_dead_model_error(e):
+                # EOL'd id / expired key — won't recover this session, so skip it for a long
+                # window instead of wasting a round-trip on every turn (keeps the chain clean).
+                _mark_cooling_down(model, _dead_cooldown_s())
             last_err = e
             continue
 
