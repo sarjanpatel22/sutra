@@ -139,7 +139,58 @@ the material failure classes (crash-safety, resource bounds, detection false-pos
 command injection). Every real bug found was fixed; the rest confirmed sound. Consistent with the
 type pass: **the codebase is fundamentally solid.**
 
-### Remaining (confirmation-level)
-- Per-skill confirmation review of the lower-risk agent/meta + util skills (council, dev_tools,
-  git_tools, job_hunt, llm_redteam, …). Crash-safety is already guaranteed for all 126 skills by
-  the registry net, so this is coverage-completeness, not an expected bug source.
+### Confirmation-level sweep — DONE (lower-risk agent/meta + util skills)
+Reviewed the remaining skills by the same failure classes. Two more real issues found and fixed;
+one earlier wording corrected; the rest confirmed sound.
+
+**New class found — argv OPTION-injection (a real bug).** Command-injection was clean (no shell),
+but argv-form is still unsafe when a model-supplied value lands in an *option-parseable* positional
+slot. Confirmed exploitable: `git_diff`/`code_review` with `ref="--output=FILE"` made `git diff`
+write to an **arbitrary path** — an unintended file write from an `auto_confirm=True` read (a
+prompt-injected model could trigger it silently). Fixed:
+- git_diff + code_review: `--end-of-options` before the ref (legit HEAD~1 / main...HEAD unaffected).
+- run_tests: `path` passed after `--` (can't be a pytest option).
+- recon dns_lookup/whois/searchsploit: reject '-'-leading targets/terms (matches tls_scan's
+  pre-existing guard; blocks dig -f / whois -h / searchsploit --nmap). sslscan was already guarded.
+- Reviewed-sound (no fix): reversing/disassemble (objdump/file have no write primitive + path is
+  is_file()-guarded), open_app (binary from an allowlist, fixed flags), crawl (url via stdin),
+  connect_vpn/subfinder (value-of-option). +4 regression tests.
+
+**Correction (truth-discipline).** The earlier command-injection note said "zero string-form
+commands / zero shell". That was imprecise by one: `run_command` (system_info.py) DOES use
+`create_subprocess_shell` — but that is *by design* (its contract is "run the explicit shell command
+the user gives"), and it is gated (auto_confirm=False) + floored by `is_catastrophic`. There is no
+*unintended* shell-injection surface, so the substance of the clean bill holds; the blanket wording
+did not. Logged here so the record is exact.
+
+**Resource bounds (Cluster 2 completed).** http_request + web_scrape read the whole response into
+memory (resp.text/.json) before the max_chars slice → a hostile/unbounded body could OOM
+(web_scrape is auto_confirm=True / unattended). Now stream with a 10 MB byte cap; oversize bodies
+truncate honestly. check_buckets capped its candidate set at 1000 (same bound as find_params) so a
+hostile `extra` can't fan out into thousands of cloud probes. +1 cap test.
+
+**Confirmed sound (no bug).**
+- job_hunt: the grounding contract holds — tools load the REAL resume and compute *literal* overlap
+  (fit_check guards empty-keywords div-by-zero); the model writes the letter grounded in that text;
+  nothing fabricates or sends; save/update have verify-before-claim postchecks.
+- The red-team battery (llm_redteam / agentic_redteam / agentic_target) is the most
+  truth-disciplined code in the repo: white-box uses planted canary tokens; black-box leak needs
+  CROSS-FRAMING AGREEMENT (independent framings converge on the same >=40-char span, refusal
+  fragments + attack echoes excluded) and is marked candidate-tier; agentic_target confirms exfil
+  by a token arriving at a local collector. No FP/FN inversion.
+- auth.analyze_jwt: alg=="none" is exact-match; the weak-secret finding only fires when the HMAC is
+  actually cracked (proof, not heuristic); exp is type-checked; wordlist capped at 200k.
+- check_buckets detection: a high-sev finding requires status 200 AND the `<ListBucketResult` XML
+  root (token-anchored, not a loose substring); the looser `signature` match only feeds leads.
+- mcp_audit (bounds limit, guards path), code_review (caps diff + handles model-down),
+  prompt_injection (echo-proof reversed-token confirmation), council/delegate (thin core wrappers).
+- The genuinely-thin util/vision wrappers (audit, memory, rag, web_search, weather, windows, guide,
+  apps, recon_assets, encoding, clock, preferences, calc, file_ops, desktop*, see_screen,
+  vision_agent, browse*, firefox_login, web_actions) emit no security verdict (nothing to FP), do no
+  unbounded HTTP read, and contain no eval/shell; crash-safety is guaranteed by the registry net.
+
+### Final state
+Suite **1948 green**, mypy 0, ruff clean, CI-green. Every skill with verdict / grounding / resource
+/ subprocess logic has been reviewed for the material classes; every real bug found was fixed. The
+high-risk surface and the lower-risk remainder are both covered. **Sutra's codebase is
+fundamentally solid.** Commits this sweep: `6268b9d` (option-injection), `8ecccaa` (resource bounds).
