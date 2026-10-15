@@ -54,7 +54,10 @@ def _candidates(domain: str, extra: str) -> list[str]:
             names.append(pre + base)
     # S3 names: lowercase, 3-63 chars, no underscores — keep the valid ones, deduped
     valid = [n for n in dict.fromkeys(names) if 3 <= len(n) <= 63 and "_" not in n]
-    return valid
+    # `extra` is caller-supplied and otherwise unbounded, and each name becomes two live cloud
+    # probes (S3 + GCS) — cap the candidate set so a hostile `extra` can't fan out into thousands
+    # of outbound requests in the unattended hunt path (same bound as find_params).
+    return valid[:1000]
 
 
 def _probe(url: str) -> tuple[int, str, str | None]:

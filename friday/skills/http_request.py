@@ -9,6 +9,7 @@ NOT hands-free, so it always escalates to the operator.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -16,6 +17,11 @@ import httpx
 from friday.skills.registry import skill
 
 _MAX_CHARS = 6000
+# Hard ceiling on bytes pulled from the response: a hostile/misbehaving endpoint can return an
+# unbounded (multi-GB) body, and reading it whole (resp.text/.json) would OOM the process before
+# the max_chars slice ever runs. We stream and stop at this cap. 10 MB is far above any real API
+# payload a tool call needs; a larger body is truncated honestly (truncated=True).
+_MAX_BYTES = 10_000_000
 _METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
 
@@ -51,25 +57,36 @@ async def http_request(
         return {"error": "url must start with http:// or https://"}
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
-            resp = await client.request(
+            async with client.stream(
                 method, url,
                 headers=headers or None,
                 json=json_body if json_body else None,
                 content=data.encode() if (data and not json_body) else None,
-            )
+            ) as resp:
+                body = bytearray()
+                capped = False
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                    if len(body) >= _MAX_BYTES:  # stop before an unbounded body can OOM us
+                        capped = True
+                        break
+                status = resp.status_code
+                content_type = resp.headers.get("content-type", "")
+                final_url = str(resp.url)
+                encoding = resp.encoding or "utf-8"
     except Exception as e:  # noqa: BLE001 — surface the failure, don't raise into the loop
         return {"error": f"request failed: {e}", "url": url}
 
-    out: dict[str, Any] = {
-        "status": resp.status_code,
-        "url": str(resp.url),
-        "content_type": resp.headers.get("content-type", ""),
-    }
-    if "application/json" in out["content_type"].lower():
+    text = bytes(body).decode(encoding, "replace")
+    out: dict[str, Any] = {"status": status, "url": final_url, "content_type": content_type}
+    if capped:
+        out["truncated"] = True  # body exceeded the size cap; what follows is the first _MAX_BYTES
+    # Only parse JSON from a complete body — a truncated one isn't valid JSON anyway.
+    if not capped and "application/json" in content_type.lower():
         try:
-            out["json"] = resp.json()
+            out["json"] = json.loads(text)
             return out
         except Exception:  # noqa: BLE001 — malformed JSON → fall back to text
             pass
-    out["body"] = resp.text[:max_chars]
+    out["body"] = text[:max_chars]
     return out
